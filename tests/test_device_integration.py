@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""真机集成：只需要一台已授权 USB 调试的 Android 设备，不依赖 Termux/SSH。"""
+"""真机集成：需要一台已授权的 USB 或无线调试 Android 设备。"""
 import os
 import shutil
 import subprocess
@@ -23,13 +23,21 @@ class Device:
 
     def __init__(self):
         self.adb = T.find_adb()
+        self.target_serial = os.environ.get('ANDROBACKUP_ADB_SERIAL')
 
     def _run(self, argv, **kw):
         return subprocess.run(argv, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, **kw)
 
     def adb_run(self, args, **kw):
-        return self._run([self.adb] + args, **kw)
+        command = [self.adb]
+        if getattr(self, 'target_serial', None):
+            command.extend(['-s', self.target_serial])
+        return self._run(command + args, **kw)
+
+    def connect(self):
+        """按显式请求连接无线设备；默认不改变 ADB 连接状态。"""
+        return self._run([self.adb, 'connect', self.target_serial])
 
     def adb_out(self, args, timeout=30):
         result = self.adb_run(args, timeout=timeout)
@@ -43,6 +51,11 @@ class Device:
         return result.stdout
 
     def serial(self):
+        if getattr(self, 'target_serial', None):
+            result = self._run(
+                [self.adb, '-s', self.target_serial, 'get-state'])
+            return (self.target_serial if result.returncode == 0 and
+                    result.stdout.strip() == b'device' else None)
         for line in self.adb_out(['devices']).splitlines()[1:]:
             fields = line.split()
             if len(fields) >= 2 and fields[1] == 'device':
@@ -76,8 +89,14 @@ class DeviceCaseMixin:
         if not cls.dev.adb:
             raise unittest.SkipTest(
                 '找不到 adb：设置 ANDROBACKUP_ADB 或把 platform-tools 加进 PATH')
+        if (cls.dev.target_serial and
+                os.environ.get('ANDROBACKUP_ADB_CONNECT') == '1'):
+            result = cls.dev.connect()
+            if result.returncode:
+                detail = result.stderr.decode('utf-8', 'replace').strip()
+                raise unittest.SkipTest('无法连接无线 ADB：' + detail)
         if not cls.dev.serial():
-            raise unittest.SkipTest('没有已授权的 USB 调试设备（在手机上允许调试）')
+            raise unittest.SkipTest('没有已授权的 USB/无线调试设备（在手机上允许调试）')
 
 
 class TestDevicePreflight(DeviceCaseMixin, unittest.TestCase):
@@ -93,6 +112,27 @@ class TestDevicePreflight(DeviceCaseMixin, unittest.TestCase):
 class TestSourcePathOnDevice(DeviceCaseMixin, unittest.TestCase):
     """用户给定目录的通道与完整备份回归。"""
 
+    def test_exec_out_preserves_lf_bytes(self):
+        """Windows adb.exe 的 exec-out 不能把 LF 转换为 CRLF。"""
+        path = DEVICE_DIR + '/测试.txt'
+        try:
+            direct = self.dev.adb_bytes(['exec-out', 'cat', path])
+        except AssertionError as exc:
+            self.skipTest('测试文件不可读取：' + str(exc))
+        if b'\n' not in direct:
+            self.skipTest('测试文件不含 LF，无法验证换行字节保真')
+
+        work = tempfile.mkdtemp(prefix='paxck-device-lf-')
+        try:
+            local = os.path.join(work, '测试.txt')
+            pulled = self.dev.adb_run(['pull', path, local], timeout=120)
+            self.assertEqual(pulled.returncode, 0,
+                             pulled.stderr.decode('utf-8', 'replace'))
+            with open(local, 'rb') as fh:
+                self.assertEqual(direct, fh.read())
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
     def test_source_contents_stream_intact_over_adb(self):
         """同一文件连读两次，且与 adb pull 的结果逐字节相同。"""
         names = [name.strip() for name in
@@ -107,10 +147,11 @@ class TestSourcePathOnDevice(DeviceCaseMixin, unittest.TestCase):
                 second = self.dev.adb_bytes(['exec-out', 'cat', path])
                 self.assertEqual(first, second, f'{name} 两次读取不一致')
 
-                pulled = self.dev.adb_run(['pull', path, work], timeout=120)
+                local = os.path.join(work, os.path.basename(name))
+                pulled = self.dev.adb_run(['pull', path, local], timeout=120)
                 self.assertEqual(pulled.returncode, 0,
                                  pulled.stderr.decode('utf-8', 'replace'))
-                with open(os.path.join(work, os.path.basename(name)), 'rb') as fh:
+                with open(local, 'rb') as fh:
                     self.assertEqual(fh.read(), first, f'{name} pull 与 cat 不一致')
         finally:
             shutil.rmtree(work, ignore_errors=True)
@@ -123,9 +164,14 @@ class TestSourcePathOnDevice(DeviceCaseMixin, unittest.TestCase):
         try:
             env = dict(os.environ)
             env.update({'ADB': self.dev.adb, 'SOURCE_DIR': DEVICE_DIR, 'OUT': out})
-            result = subprocess.run(
-                [T.BACKUP_SH], env=env, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, timeout=300)
+            if os.name == 'nt':
+                env.update({'PYTHON': T.py(), 'ADB_SERIAL': self.dev.serial()})
+                command = [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c',
+                           T.BACKUP_BAT]
+            else:
+                command = [T.BACKUP_SH]
+            result = subprocess.run(command, env=env, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, timeout=300)
             self.assertEqual(result.returncode, 0,
                              result.stdout.decode('utf-8', 'replace'))
             self.assertGreater(os.path.getsize(out), 0)

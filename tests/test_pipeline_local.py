@@ -79,6 +79,7 @@ class PipelineCase(unittest.TestCase):
         shutil.rmtree(self.case, ignore_errors=True)
 
 
+@unittest.skipIf(TAR is None, '本机没有 GNU/BSD tar，跳过互操作测试')
 class TestPipelineVariants(PipelineCase):
     def _pipeline(self, kind):
         """create | compress > file，和生产环境那条远端管道结构一致。"""
@@ -114,7 +115,10 @@ class TestPipelineVariants(PipelineCase):
                            stderr=subprocess.PIPE)
         self.assertEqual(r.returncode, 0, r.stderr)
         listing = r.stdout.decode('utf-8', 'replace')
-        for name in ('readme.txt', 'sub dir/deep.txt', 'link-to-file'):
+        expected = ['readme.txt', 'sub dir/deep.txt']
+        if os.path.lexists(os.path.join(self.root, 'link-to-file')):
+            expected.append('link-to-file')
+        for name in expected:
             self.assertIn(name, listing)
 
 
@@ -139,6 +143,8 @@ class TestRestoreFidelity(PipelineCase):
         self._restore_and_compare('gzip')
 
     def test_symlink_to_dir_stays_a_symlink(self):
+        if not os.path.lexists(os.path.join(self.root, 'link-to-dir')):
+            self.skipTest('当前 Windows 权限不允许创建符号链接')
         out = os.path.join(self.case, 'r.tar.xz')
         raw = T.make_tar(self.root)
         rc, blob, err = T.run_cli(['compress', 'xz'], stdin=raw)
@@ -151,6 +157,7 @@ class TestRestoreFidelity(PipelineCase):
         self.assertEqual(os.readlink(target), 'sub dir')
 
 
+@unittest.skipIf(os.name == 'nt', 'Windows 文件系统不支持原始非 UTF-8 文件名')
 class TestNonUtf8Names(unittest.TestCase):
     def setUp(self):
         self.case = tempfile.mkdtemp(prefix='paxck-nonutf8-')

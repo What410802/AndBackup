@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import testsupport as T  # noqa: E402
 
 paxck = T.load_paxck()
+backup = T.load_backup()
 
 
 # --------------------------------------------------------------------------
@@ -39,6 +40,45 @@ class TestSniff(unittest.TestCase):
     def test_unknown_is_none(self):
         for head in (b'', b'\x00' * 8, b'\x75\x73\x74\x61\x72', b'plain.txt'):
             self.assertIsNone(paxck.sniff(head))
+
+
+class TestConfig(unittest.TestCase):
+    def test_yaml_subset_and_boolean_values(self):
+        path = os.path.join(tempfile.mkdtemp(prefix='paxck-config-'), 'backup.yaml')
+        try:
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write('# comment\n')
+                fh.write('adb_serial: 192.0.2.1:5555\n')
+                fh.write('adb_connect: true\n')
+                fh.write('source_dir: "/storage/emulated/0/测试.d"\n')
+                fh.write('compress: gzip # inline comment\n')
+            values = backup.read_config(path)
+            self.assertEqual(values['ADB_SERIAL'], '192.0.2.1:5555')
+            self.assertEqual(values['ADB_CONNECT'], '1')
+            self.assertEqual(values['SOURCE_DIR'], '/storage/emulated/0/测试.d')
+            self.assertEqual(values['COMPRESS'], 'gzip')
+        finally:
+            shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+
+    def test_malformed_yaml_is_rejected(self):
+        path = os.path.join(tempfile.mkdtemp(prefix='paxck-config-'), 'bad.yaml')
+        try:
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write('- nested\n')
+            with self.assertRaises(ValueError):
+                backup.read_config(path)
+        finally:
+            shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+
+    def test_list_value_is_rejected(self):
+        path = os.path.join(tempfile.mkdtemp(prefix='paxck-config-'), 'bad.yaml')
+        try:
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write('compress: [xz, gzip]\n')
+            with self.assertRaises(ValueError):
+                backup.read_config(path)
+        finally:
+            shutil.rmtree(os.path.dirname(path), ignore_errors=True)
 
     def test_head_shorter_than_magic(self):
         # 输入可能被截断到只剩两三个字节，这里不能抛异常
@@ -188,6 +228,10 @@ class TestCreateMembers(T.BaseCase):
     def members(self):
         return T.list_members(T.make_tar(self.root))
 
+    def require_link(self, name):
+        if not os.path.lexists(os.path.join(self.root, name)):
+            self.skipTest('当前 Windows 权限不允许创建符号链接')
+
     def test_root_and_subdir_entries(self):
         m = self.members()
         self.assertEqual(m['测试.d'][0], tarfile.DIRTYPE)
@@ -205,6 +249,7 @@ class TestCreateMembers(T.BaseCase):
                          T.deterministic_bytes((1 << 20) + 1234, seed=7))
 
     def test_symlink_to_file(self):
+        self.require_link('link-to-file')
         typ, link, payload, _ = self.members()['测试.d/link-to-file']
         self.assertEqual(typ, tarfile.SYMTYPE)
         self.assertEqual(link, 'readme.txt')
@@ -215,12 +260,14 @@ class TestCreateMembers(T.BaseCase):
         回归：os.walk 把“指向目录的符号链接”放进 dirnames，
         旧实现在那里一律写 DIRTYPE，导致还原后变成一个空目录、链接语义丢失。
         """
+        self.require_link('link-to-dir')
         typ, link, payload, _ = self.members()['测试.d/link-to-dir']
         self.assertEqual(typ, tarfile.SYMTYPE)
         self.assertEqual(link, 'sub dir')
         self.assertIsNone(payload)
 
     def test_broken_symlink_is_preserved(self):
+        self.require_link('link-broken')
         typ, link, _, _ = self.members()['测试.d/link-broken']
         self.assertEqual(typ, tarfile.SYMTYPE)
         self.assertEqual(link, '/nowhere/does/not/exist')
@@ -294,7 +341,7 @@ class TestCreateHardLinks(T.BaseCase):
 
 class TestCreateFaultTolerance(T.BaseCase):
     def test_unreadable_file_skipped_with_warning(self):
-        if os.geteuid() == 0:
+        if os.name == 'nt' or getattr(os, 'geteuid', lambda: -1)() == 0:
             self.skipTest('root 无视文件权限位')
         locked = os.path.join(self.root, 'locked.txt')
         with open(locked, 'wb') as fh:
@@ -370,7 +417,7 @@ class TestCreateFaultTolerance(T.BaseCase):
         os.makedirs(locked_dir, exist_ok=True)
         with open(os.path.join(locked_dir, 'inner.txt'), 'wb') as fh:
             fh.write(b'inner')
-        if os.geteuid() == 0:
+        if os.name == 'nt' or getattr(os, 'geteuid', lambda: -1)() == 0:
             self.skipTest('root 无视目录权限位')
         os.chmod(locked_dir, 0)
         try:

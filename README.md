@@ -34,11 +34,27 @@ OUT=android-backup.tar.xz \
 ./backup-android.sh
 ```
 
-Windows 在 `cmd.exe` 中编辑 `src\backup-android.bat` 顶部的 `ADB`、`SOURCE_DIR`、
-`OUT` 和 `COMPRESS`，然后运行它。不要把命令改在 PowerShell 的 `>` 重定向中执行；
-压缩流必须按字节写入。
+Windows 示例（当前无线调试设备）：
 
-Linux 主控可配置的环境变量：
+```bat
+cd src
+set "ADB_SERIAL=192.0.2.1:5555"
+set "ADB_CONNECT=1"
+set "SOURCE_DIR=/storage/emulated/0/Android/data/com.example.backup/测试.d"
+set "OUT=android-backup.tar.xz"
+backup-android.bat
+```
+
+`ADB_CONNECT=1` 会先执行一次 `adb connect %ADB_SERIAL%`；设备已连接时也可省略它。
+首次使用无线调试时，先在 Android 的“无线调试”页面完成 `adb pair <host>:<pair-port>`。
+必须在 `cmd.exe` 中运行 `.bat`，不要把 `backup-adb` 命令改写为 PowerShell 的 `>`
+重定向，压缩流必须按字节写入。
+
+也可以直接编辑 UTF-8 的 `src\backup-android.yaml`。当前无线 ADB 地址位于该文件的
+`adb_serial` 行（现在是 `192.0.2.1:5555`）；Android 每次显示新端口时只需更新这一
+行。若不希望修改仓库文件，可在 cmd 或 sh 中设置 `BACKUP_CONFIG_FILE` 指向自己的 YAML。
+
+Linux 与 Windows 主控共用以下环境变量：
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
@@ -46,13 +62,31 @@ Linux 主控可配置的环境变量：
 | `SOURCE_DIR` | `/sdcard/DCIM` | 设备上的绝对目录 |
 | `OUT` | 随压缩类型决定 | 主机端归档路径 |
 | `COMPRESS` | `xz` | `xz`、`gzip`、`zstd` 或 `none` |
+| `PYTHON` | 自动查找 | Windows 上 Python 解释器的完整路径（可选） |
+| `ADB_SERIAL` | 未指定 | 要使用的设备 serial；无线设备填 `host:port` |
+| `ADB_CONNECT` | 未指定 | 设为 `1`/`true` 时先连接 `ADB_SERIAL`（Windows 与 Linux 均适用） |
+| `BACKUP_CONFIG_FILE` | `src\backup-android.yaml` | UTF-8 现场配置文件路径；设为空/不存在可禁用 |
 
 `xz` 与 `gzip` 只用 Python 标准库。`zstd` 需要 Python 3.14+ 的
 `compression.zstd`，或主机 `PATH` 中的 `zstd`；缺少时会以退出码 2 失败。
 
+YAML 配置只使用顶层键值（字符串可用单引号或双引号），例如：
+
+```yaml
+adb: adb
+adb_serial: 192.0.2.1:5555
+adb_connect: true
+source_dir: "/storage/emulated/0/Android/data/com.example.backup/测试.d"
+out: android-backup.tar.xz
+compress: xz
+```
+
+同名环境变量优先于 YAML；将 `BACKUP_CONFIG_FILE` 设为空可完全禁用默认配置。配置解析
+由 `paxck.py` 内置完成，不需要安装 PyYAML。
+
 ## 工作方式
 
-主控调用一个主机端进程：
+`.bat` 与 `.sh` 都只是启动同一个跨平台 Python 主控；它读取 YAML 后调用一个主机端进程：
 
 ```sh
 python3 paxck.py backup-adb \
@@ -65,6 +99,10 @@ python3 paxck.py backup-adb \
 设备端不使用 `tar`、`xz`、`gzip` 或 Python。为了在不落盘的情况下枚举并读取文件，
 ADB shell 只调用系统自带的 `find -print0`、`stat`、`readlink` 和 `cat`；这部分无法由
 主机替代。主机端用 Python 标准库流式写 tar 和 xz/gzip，内存不会随归档总大小增长。
+
+读取命令始终使用 `adb exec-out`，而不是把 `adb shell` 的输出经 Windows 控制台或文本管道
+转发。`paxck.py` 从二进制子进程管道读取字节，CMD 只重定向 Python 的二进制 stdout，因此
+文件内的 LF (`0x0A`) 不会被转换成 CRLF (`0x0D 0x0A`)。
 
 每个普通文件经 USB 读取两遍：第一遍取得 SHA-256 与长度，第二遍直接写入 tar。若文件
 在两遍之间变更、短读或 ADB 返回错误，整个命令退出非零，主控不会把部分备份报告为成功。
@@ -82,8 +120,10 @@ ADB shell 只调用系统自带的 `find -print0`、`stat`、`readlink` 和 `cat
 ```text
 src/
   paxck.py                 主机端归档、压缩和校验器
-  backup-android.sh        Linux 主控
-  backup-android.bat       Windows cmd 主控
+  backup.py                 跨平台主控（配置、ADB、原子输出与校验）
+  backup-android.sh        POSIX 启动包装（转发至 backup.py）
+  backup-android.bat       Windows CMD 启动包装（转发至 backup.py）
+  backup-android.yaml       跨平台现场变量（无线 ADB serial 等）
 docs/
   flow.md                  数据流、错误语义与边界
   testing.md               测试层次、覆盖范围和运行方式
@@ -97,7 +137,8 @@ tests/                     单元、离线集成和真机集成测试
 - 本工具不读取受 Android 应用私有沙箱保护的 `/data/user/*`；它针对外部存储上的
   `Android/data/*` 与其他 ADB shell 可读目录。
 - 源文件在备份中持续变化时，工具会失败而非产生不完整的“成功”备份；暂停相关应用后重试。
-- Windows `cmd` 主控尚未在 CI 自动化验证，Linux 端与 Python 核心已有自动化测试。
+- Windows `.bat` 及其 `cmd.exe` 二进制重定向已有离线自动化覆盖；仍建议在首次使用的
+  设备上运行真机集成测试确认 ROM 的 ADB shell 存储权限。
 
 ## 测试
 
@@ -111,6 +152,14 @@ python3 -m pytest tests -q
 ```sh
 ANDROBACKUP_ADB=/path/to/adb \
 python3 -m unittest -v tests.test_device_integration
+```
+
+Windows 无线调试设备可这样运行真机测试：
+
+```bat
+set "ANDROBACKUP_ADB_SERIAL=192.0.2.1:5555"
+set "ANDROBACKUP_ADB_CONNECT=1"
+py -m unittest -v tests.test_device_integration
 ```
 
 完整测试说明见 [docs/testing.md](docs/testing.md)，设计说明见

@@ -262,6 +262,13 @@ def _encode(name):
     return name.encode(enc, 'surrogateescape')
 
 
+def _tar_relpath(path, start):
+    """Return a portable POSIX tar name for a host filesystem path."""
+    rel = os.path.relpath(path, start)
+    # tar headers always use '/', even when the producer runs on Windows.
+    return rel.replace('\\', '/')
+
+
 def cmd_create(root):
     root = os.path.abspath(root)
     if not os.path.isdir(root):
@@ -308,7 +315,7 @@ def cmd_create(root):
             # 只阻止递归下去），此时必须按 SYMTYPE 归档，否则还原时变成空目录。
             for d in dirnames:
                 full = os.path.join(dirpath, d)
-                rel = os.path.relpath(full, os.path.dirname(root))
+                rel = _tar_relpath(full, os.path.dirname(root))
                 st = os.lstat(full)
                 if stat.S_ISLNK(st.st_mode):
                     add_symlink(full, rel, st)
@@ -321,7 +328,7 @@ def cmd_create(root):
 
             for f in filenames:
                 full = os.path.join(dirpath, f)
-                rel = os.path.relpath(full, os.path.dirname(root))
+                rel = _tar_relpath(full, os.path.dirname(root))
                 st = os.lstat(full)
 
                 name = _encode(rel).decode('utf-8', 'surrogateescape')
@@ -336,7 +343,7 @@ def cmd_create(root):
                     continue
 
                 if not stat.S_ISREG(st.st_mode):
-                    # 设备/FIFO 等：归档元数据，跳过数据
+                    # 设备/FIFO/socket 等不写入归档；保持流式归档可继续。
                     continue
 
                 # 硬链接：同一 inode 第二次出现时记为 LNKTYPE
@@ -435,13 +442,23 @@ def _adb_open(adb, command):
 
 def _finish_adb_stream(proc, command):
     """等待 adb exec-out 完整结束，并把远端 cat/stat 的错误传回调用方。"""
+    # Drain the pipe before waiting. Closing it immediately can send SIGPIPE
+    # to adb/cat when tar has no need to call read() (notably zero-byte files).
+    # Draining also lets adb report a clean exit instead of the misleading 141.
+    extra = 0
     if proc.stdout is not None and not proc.stdout.closed:
+        while True:
+            chunk = proc.stdout.read(CHUNK)
+            if not chunk:
+                break
+            extra += len(chunk)
         proc.stdout.close()
     stderr = proc.stderr.read() if proc.stderr is not None else b''
     rc = proc.wait()
     if rc:
         result = subprocess.CompletedProcess([], rc, stderr=stderr)
         raise _adb_error(command, result)
+    return extra
 
 
 def _adb_list_paths(adb, root):
@@ -572,13 +589,14 @@ def cmd_create_adb(root, adb='adb', out=None):
             ti.size = actual_size
             ti.pax_headers = {PAX_KEY: digest}
             command = 'cat -- ' + shlex.quote(full)
+            extra = 0
             try:
                 proc = _adb_open(adb, command)
                 try:
                     wrapper = _ExactReader(proc.stdout, actual_size)
                     tf.addfile(ti, wrapper)
                 finally:
-                    _finish_adb_stream(proc, command)
+                    extra = _finish_adb_stream(proc, command)
             except OSError as e:
                 sys.stderr.write(
                     f'[错误] 写入 {rel} 时 adb 流失败：{e}\n'
@@ -588,6 +606,11 @@ def cmd_create_adb(root, adb='adb', out=None):
                 sys.stderr.write(
                     f'[错误] 写入 {rel} 时第二遍读少了 {wrapper.padded} 字节；\n'
                     '       源文件在备份期间发生变化，归档校验将失败，终止打包\n')
+                return 3
+            if extra:
+                sys.stderr.write(
+                    f'[错误] 写入 {rel} 时 adb 流多出 {extra} 字节；\n'
+                    '       源文件在备份期间发生变化，终止打包\n')
                 return 3
     finally:
         tf.close()

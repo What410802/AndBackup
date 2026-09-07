@@ -38,6 +38,20 @@ def load_paxck():
     return mod
 
 
+def load_backup():
+    """Load the cross-platform launcher and its sibling paxck module."""
+    import importlib.util
+    sys.path.insert(0, SRC_DIR)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            'backup_under_test', os.path.join(SRC_DIR, 'backup.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        sys.path.pop(0)
+
+
 def py():
     return sys.executable or 'python3'
 
@@ -145,10 +159,16 @@ def build_tree(root):
     write(os.path.join(root, '测试.d', 'sub dir', 'deep.txt'), 'deep\n'.encode())
     write(os.path.join(root, '测试.d', 'sub dir', '笔记 — v2.md'),
           'note\n'.encode())
-    os.symlink('readme.txt', os.path.join(root, '测试.d', 'link-to-file'))
-    os.symlink('sub dir', os.path.join(root, '测试.d', 'link-to-dir'))
-    os.symlink('/nowhere/does/not/exist',
-               os.path.join(root, '测试.d', 'link-broken'))
+    # Windows needs Developer Mode or an elevated token to create symlinks.
+    # Keep the common tree usable there; link-specific tests skip themselves.
+    for target, name in (
+            ('readme.txt', 'link-to-file'),
+            ('sub dir', 'link-to-dir'),
+            ('/nowhere/does/not/exist', 'link-broken')):
+        try:
+            os.symlink(target, os.path.join(root, '测试.d', name))
+        except (AttributeError, OSError):
+            pass
     try:
         os.mkfifo(os.path.join(root, '测试.d', 'a-fifo'))
     except (AttributeError, OSError):          # 不支持 FIFO 的文件系统直接跳过

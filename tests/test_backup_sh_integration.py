@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import testsupport as T  # noqa: E402
 
-FAKE_ADB = """#!/bin/sh
+FAKE_ADB = r"""#!/bin/sh
 # 假 adb：用本机临时目录模拟 adb exec-out 的纯字节通道
 echo "adb $*" >> "$FAKE_ADB_LOG"
 [ -n "${FAKE_ADB_FAIL:-}" ] && exit 1
@@ -96,6 +96,9 @@ class HarnessMixin:
             'SOURCE_DIR': self.source,
             'OUT': self.out,
             'COMPRESS': 'xz',
+            # Do not let the repository's live YAML device settings affect
+            # the local fake-ADB harness (especially when run from WSL).
+            'BACKUP_CONFIG_FILE': '',
         })
         base.pop('FAKE_ADB_FAIL', None)
         base.pop('FAKE_ADB_TRUNCATE', None)
@@ -111,6 +114,7 @@ class HarnessMixin:
             return fh.read()
 
 
+@unittest.skipIf(os.name == 'nt', 'Linux shell launcher coverage')
 class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
     def test_full_run_produces_verified_archive(self):
         r = self.run_script()
@@ -145,6 +149,23 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
         self.assertEqual(members[self.root_name + '/space name.txt'][2],
                          b'spaced\n')
 
+    def test_shared_yaml_config_drives_shell_launcher(self):
+        config = os.path.join(self.case, 'backup.yaml')
+        with open(config, 'w', encoding='utf-8') as fh:
+            fh.write('adb: adb\n')
+            fh.write('adb_connect: false\n')
+            fh.write('source_dir: "' + self.source + '"\n')
+            fh.write('out: "' + self.out + '"\n')
+            fh.write('compress: gzip\n')
+        env = self.env(BACKUP_CONFIG_FILE=config)
+        for key in ('SOURCE_DIR', 'OUT', 'COMPRESS'):
+            env.pop(key, None)
+        result = subprocess.run([T.BACKUP_SH], env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
+
     def test_checksums_match_source_bytes(self):
         self.assertEqual(self.run_script().returncode, 0)
         members = T.list_members(T.read_bytes(self.out))
@@ -154,6 +175,7 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
             self.assertEqual(ph[T.PAX_KEY], T.sha256_of(payload), name)
 
 
+@unittest.skipIf(os.name == 'nt', 'Linux shell launcher coverage')
 class TestCompressorSelection(HarnessMixin, unittest.TestCase):
     def _roundtrip(self, compress, suffix):
         r = self.run_script(COMPRESS=compress, OUT=os.path.join(
@@ -192,6 +214,7 @@ class TestCompressorSelection(HarnessMixin, unittest.TestCase):
         self.assertIn('未知压缩类型', r.stdout.decode('utf-8', 'replace'))
 
 
+@unittest.skipIf(os.name == 'nt', 'Linux shell launcher coverage')
 class TestBackupScriptAndroidData(HarnessMixin, unittest.TestCase):
     """Android/data 走 ADB shell，不存在 Termux/SSH 分支。"""
 
@@ -214,6 +237,7 @@ class TestBackupScriptAndroidData(HarnessMixin, unittest.TestCase):
         self.assertNotIn('forward ', log)
 
 
+@unittest.skipIf(os.name == 'nt', 'Linux shell launcher coverage')
 class TestBackupScriptFailurePaths(HarnessMixin, unittest.TestCase):
     def test_missing_source_directory_fails_loudly(self):
         r = self.run_script(SOURCE_DIR=os.path.join(self.device, 'no-such'))
