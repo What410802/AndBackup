@@ -184,6 +184,15 @@ Android shell permissions and scoped-storage boundaries can also prevent
 access to some metadata and directories. Those are platform boundaries, not a
 claim that a different compression format could recover unavailable metadata.
 
+Some Windows `adb.exe` transports merge remote shell stderr into `exec-out`
+stdout. `adb_source.py` discards that remote stderr and removes an internal
+NUL-delimited status trailer before writing the tar stream, so diagnostics
+cannot become path or file bytes. When `find` reports inaccessible descendants,
+the source emits `[WARN]`, skips unreadable entries, writes a valid partial
+archive, and returns exit code `3`; the controller consequently keeps the
+partial file unpublished. Missing roots, protocol corruption, compression
+errors, and files changing between the two reads remain hard failures.
+
 Default extraction accepts only directory, regular-file, symlink, and hardlink
 members. It rejects empty, duplicate, absolute, backslash, dot, parent, NUL,
 and Windows-drive-style member names, and never follows an archive symlink

@@ -8,6 +8,19 @@ import sys
 import time
 
 
+
+def _unwrap_protocol(command):
+    """Run the command part used by adb_source's binary status protocol."""
+    marker = ' 2>/dev/null; __andbackup_rc=$?; printf '
+    if marker not in command:
+        return command, False
+    return command.split(marker, 1)[0], True
+
+
+def _write_status(rc):
+    sys.stdout.buffer.write(b'\0__ANDBACKUP_RC__' + str(rc).encode('ascii') + b'\0')
+
+
 def _log(args):
     path = os.environ.get('FAKE_ADB_LOG')
     if not path:
@@ -88,7 +101,8 @@ def main(args):
         sys.stderr.write('fake adb: unsupported arguments: %r\n' % (args,))
         return 1
     try:
-        words = shlex.split(args[3], posix=True)
+        command, wrapped = _unwrap_protocol(args[3])
+        words = shlex.split(command, posix=True)
         if words[:1] == ['find'] and words[-1:] == ['-print0']:
             _find(words[1])
         elif words[:2] == ['stat', '-c'] and len(words) == 5 and words[3] == '--':
@@ -99,10 +113,15 @@ def main(args):
         elif words[:1] == ['cat'] and len(words) == 3 and words[1] == '--':
             _cat(words[2])
         else:
-            raise ValueError('unsupported shell command: %r' % (args[3],))
+            raise ValueError('unsupported shell command: %r' % (command,))
     except (OSError, ValueError, IndexError) as exc:
+        if wrapped:
+            _write_status(1)
+            return 0
         sys.stderr.write('fake adb: %s\n' % (exc,))
         return 1
+    if wrapped:
+        _write_status(0)
     return 0
 
 

@@ -37,15 +37,30 @@ case "$1" in
         # 的纯字节 stdout 语义。测试的命令仅是 find/stat/readlink/cat。
         shift
         if [ "$1" = sh ] && [ "$2" = -c ]; then
-            case "$3" in
+            command="$3"
+            wrapped=0
+            case "$command" in
+                *' 2>/dev/null; __andbackup_rc=$?; printf '*)
+                    command="${command%% 2>/dev/null;*}"
+                    wrapped=1
+                    ;;
+            esac
+            case "$command" in
                 cat\ *)
                     if [ -n "${FAKE_ADB_TRUNCATE:-}" ]; then
-                        sh -c "$3" | head -c "$FAKE_ADB_TRUNCATE"
+                        sh -c "$command" | head -c "$FAKE_ADB_TRUNCATE"
+                        [ "$wrapped" -eq 1 ] && printf '\000__ANDBACKUP_RC__0\000'
                         exit 0
                     fi
                     ;;
             esac
-            exec sh -c "$3"
+            if [ "$wrapped" -eq 1 ]; then
+                sh -c "$command"
+                rc=$?
+                printf '\000__ANDBACKUP_RC__%s\000' "$rc"
+                exit 0
+            fi
+            exec sh -c "$command"
         fi
         echo "fake adb: unsupported exec-out command: $*" >&2
         exit 1

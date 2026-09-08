@@ -97,6 +97,20 @@ class TestConfig(unittest.TestCase):
 
 
 class TestAdbSourceMetadata(unittest.TestCase):
+    def test_adb_status_protocol_separates_payload_from_remote_status(self):
+        payload, rc = adb_source._split_status(
+            b'path\0\0__ANDBACKUP_RC__1\0', 'find /root -print0')
+        self.assertEqual(payload, b'path\0')
+        self.assertEqual(rc, 1)
+        self.assertIn('2>/dev/null', adb_source._protocol_command('find /root -print0'))
+
+    def test_adb_payload_reader_hides_status_marker(self):
+        stream = io.BytesIO(b'abc\0__ANDBACKUP_RC__0\0')
+        reader = adb_source._AdbPayloadReader(stream, 'cat -- /file')
+        self.assertEqual(reader.read(2), b'ab')
+        self.assertEqual(reader.read(10), b'c')
+        self.assertEqual(reader.read(1), b'')
+
     def test_lstat_preserves_fractional_mtime_from_toybox(self):
         raw = (b'81b0|53|1788676937|2026-09-06 14:42:17.181008465 +0800|644\n')
         with mock.patch.object(adb_source, '_adb_exec', return_value=raw) as adb_exec:
@@ -133,6 +147,28 @@ class TestAdbSourceMetadata(unittest.TestCase):
         self.assertEqual(members['tree/file.txt'][3][T.PAX_KEY], T.sha256_of(b'abc'))
         self.assertEqual(members['tree/link'][0], tarfile.SYMTYPE)
         self.assertEqual(members['tree/link'][1], 'file.txt')
+
+    def test_source_adapter_skips_entry_metadata_failure_and_reports_incomplete(self):
+        root = '/storage/emulated/0/tree'
+        good = root + '/ok.txt'
+        denied = root + '/denied.txt'
+        metadata = {
+            root: {'mode': stat.S_IFDIR | 0o755, 'size': 0, 'mtime': 1, 'perm': 0o755},
+            good: {'mode': stat.S_IFREG | 0o644, 'size': 2, 'mtime': 1, 'perm': 0o644},
+        }
+        out = io.BytesIO()
+        def lstat(_adb, path):
+            if path == denied:
+                raise OSError('Permission denied')
+            return metadata[path]
+        with mock.patch.object(adb_source, '_lstat', side_effect=lstat), \
+             mock.patch.object(adb_source, '_list_paths', return_value=([root, good, denied], 0)), \
+             mock.patch.object(adb_source, '_hash_file', return_value=(T.sha256_of(b'ok'), 2)), \
+             mock.patch.object(adb_source, '_open_stream', return_value=(io.BytesIO(b'ok'), lambda: 0)):
+            with mock.patch('sys.stderr', new_callable=io.StringIO) as err:
+                self.assertEqual(adb_source.write_tar(root, 'fake-adb', out), 3)
+        self.assertIn('跳过', err.getvalue())
+        self.assertIn('tree/ok.txt', T.list_members(out.getvalue()))
 
 
 class TestPrependReader(unittest.TestCase):

@@ -45,6 +45,15 @@ subprocess. `exec-out` is kept as a binary subprocess pipe. In particular,
 Windows CMD redirects Python's binary stdout; it must not be replaced by a
 PowerShell text pipeline, which can alter arbitrary archive bytes.
 
+Some Windows `adb.exe` versions/transports merge remote shell stderr into
+`exec-out` stdout. The adapter discards remote stderr and appends an internal
+NUL-delimited status trailer to each command, removing that trailer before PAX
+writing. If scoped storage, permissions, or the shell UID prevent access to a
+descendant, it emits `[WARN]`, skips unreadable entries, writes a valid partial
+archive, and exits `3` to report incompleteness. Missing roots, protocol
+corruption, compressor failures, and files changing between the two reads
+remain hard failures, matching common tar behavior.
+
 ## Consistency Model
 
 For each Android regular file, the adapter:
