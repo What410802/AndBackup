@@ -4,7 +4,7 @@
 集成测试（离线）：把 create / compress / verify 当成一条产线跑。
 
 关注点：
-  * create | compress 的管道组合（与 backup-android.sh 里远端那条管道同构）
+  * create | compress 的管道组合（与 Android 数据源接入压缩器的结构同构）
   * 产出的归档能被系统 tar 读.py（互操作性）
   * 解压还原后与原目录逐字节一致（符号链接、中文名、空目录都在内）
   * 非 UTF-8 文件名（surrogateescape 兼容路径）
@@ -38,6 +38,14 @@ def compare_trees(origin, restored, root_name):
     """
     diff = []
 
+    def link_target(target):
+        # Windows tar.exe restores a POSIX absolute link such as /missing as
+        # \\missing. Both identify the current drive root; the archive-level
+        # tests still assert the original POSIX linkname byte-for-byte.
+        if os.name == 'nt' and target.startswith(('/', '\\')):
+            return target.replace('\\', '/')
+        return target
+
     def walk(base):
         out = {}
         for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
@@ -46,7 +54,7 @@ def compare_trees(origin, restored, root_name):
                 rel = os.path.relpath(full, base)
                 st = os.lstat(full)
                 if os.path.islink(full):
-                    out[rel] = ('link', os.readlink(full))
+                    out[rel] = ('link', link_target(os.readlink(full)))
                 elif os.path.isdir(full):
                     out[rel] = ('dir', None)
                 elif os.path.isfile(full):
@@ -82,7 +90,7 @@ class PipelineCase(unittest.TestCase):
 @unittest.skipIf(TAR is None, '本机没有 GNU/BSD tar，跳过互操作测试')
 class TestPipelineVariants(PipelineCase):
     def _pipeline(self, kind):
-        """create | compress > file，和生产环境那条远端管道结构一致。"""
+        """create | compress > file，和 Android 生产组合的压缩段同构。"""
         out = os.path.join(self.case, f'out.tar.{kind}' if kind != 'none'
                            else 'out.tar')
         create = subprocess.Popen([T.py(), T.PAXCK, 'create', self.root],

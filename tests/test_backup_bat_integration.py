@@ -69,14 +69,16 @@ class TestBackupBatch(unittest.TestCase):
         })
         env.pop('ADB_SERIAL', None)
         env.pop('ADB_CONNECT', None)
+        env.pop('ANDROID_SERIAL', None)
         env.pop('FAKE_ADB_FAIL', None)
         env.pop('FAKE_ADB_TRUNCATE', None)
         env.update(overrides)
         return env
 
     def run_script(self, **overrides):
+        args = overrides.pop('_args', ())
         return subprocess.run(
-            [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', T.BACKUP_BAT],
+            [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', T.BACKUP_BAT, *args],
             cwd=self.case, env=self.env(**overrides), stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, timeout=120)
 
@@ -108,6 +110,19 @@ class TestBackupBatch(unittest.TestCase):
         self.assertTrue(os.path.isfile(self.out))
         self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
 
+    def test_command_line_config_path_overrides_environment(self):
+        env = self.env(BACKUP_CONFIG_FILE=os.path.join(self.case, 'missing.yaml'))
+        for key in ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'SOURCE_DIR', 'OUT', 'COMPRESS'):
+            env.pop(key, None)
+        result = subprocess.run(
+            [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', T.BACKUP_BAT,
+             '--config', self.config],
+            cwd=self.case, env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, timeout=120)
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
+
     def test_gzip_and_plain_tar(self):
         for kind, filename in (('gzip', 'out.tar.gz'), ('none', 'out.tar')):
             target = os.path.join(self.case, filename)
@@ -123,6 +138,16 @@ class TestBackupBatch(unittest.TestCase):
         log = self.log_text()
         self.assertIn('connect ' + serial, log)
         self.assertIn('serial=' + serial, log)
+
+    def test_usb_serial_is_forwarded_without_tcp_connect(self):
+        """USB 设备可显式选择 serial，但不能触发无线 adb connect。"""
+        serial = 'USB-SERIAL-001'
+        result = self.run_script(ADB_SERIAL=serial, ADB_CONNECT='0')
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        log = self.log_text()
+        self.assertIn('serial=' + serial, log)
+        self.assertNotIn('connect ' + serial, log)
 
     def test_failed_transfer_keeps_target_and_removes_partial(self):
         original = b'previous verified backup'

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-paxck — 生成/校验带 pax 内嵌 SHA-256 的 tar 归档
+paxck — 生成/校验带 PAX 内嵌 SHA-256 的 tar 归档
 
 设计原则（针对跨平台与抗依赖）：
   * 仅用 Python 标准库：tarfile / hashlib / os / sys / argparse
@@ -11,11 +11,14 @@ paxck — 生成/校验带 pax 内嵌 SHA-256 的 tar 归档
   * 不依赖 GNU tar 的 --pax-option（它只支持全局 key，无法写每文件 key）
 
 用法：
-  # 创建（写 stdout 裸 tar 流）
+  # 打包本机目录（写 stdout 裸 tar 流）
   paxck.py create <目录> > out.tar
 
-  # 压缩：纯 Python 实现，不需要手机上有任何 xz / gzip / zstd 二进制
+  # 压缩：纯 Python 实现，不需要源端有任何 xz / gzip / zstd 二进制
   paxck.py create <目录> | paxck.py compress xz > out.tar.xz
+
+  # Android 目录由独立数据源适配器提供，再复用本压缩/校验工具
+  adb_source.py --adb adb /storage/emulated/0/path | paxck.py compress xz > out.tar.xz
 
   # 校验：自动识别 xz / gzip 压缩流，也可直接吃裸 tar 或文件路径
   paxck.py verify < out.tar.xz
@@ -42,8 +45,6 @@ import shutil
 import hashlib
 import tarfile
 import argparse
-import posixpath
-import shlex
 import subprocess
 import threading
 
@@ -53,7 +54,7 @@ CHUNK = 1 << 20          # 1 MiB，分块哈希
 BLOCKSIZE = tarfile.RECORDSIZE  # tar 记录大小 512
 
 
-def _bin_out():
+def binary_stdout():
     """获取二进制安全的 stdout（Windows 下 sys.stdout 是文本模式，会破坏二进制）。"""
     buf = getattr(sys.stdout, 'buffer', None)
     return buf if buf is not None else sys.stdout
@@ -62,6 +63,10 @@ def _bin_out():
 def _bin_in():
     buf = getattr(sys.stdin, 'buffer', None)
     return buf if buf is not None else sys.stdin
+
+
+def open_pax_writer(out):
+    return tarfile.open(fileobj=out, mode='w|', format=tarfile.PAX_FORMAT)
 
 
 # 压缩流魔术字节
@@ -256,6 +261,84 @@ def sha256_stream(fobj):
     return h.hexdigest(), size
 
 
+def write_regular(tf, ti, expected_size, measure, open_stream, label,
+                  strict_before_write, warn):
+    """Write one regular-file entry independently of its local/ADB source."""
+    try:
+        digest, actual_size = measure()
+    except OSError as e:
+        if strict_before_write:
+            sys.stderr.write(f'[错误] 读取 {label} 失败：{e}\n')
+            return 3, False
+        warn(f'跳过 {label}: {e.strerror or e}')
+        return 0, False
+
+    if actual_size != expected_size:
+        message = (f'{label}: 读取前后大小不一致'
+                   f'（{expected_size} -> {actual_size}），文件正在被修改')
+        if strict_before_write:
+            sys.stderr.write(f'[错误] {message}，终止打包\n')
+            return 3, False
+        warn(f'跳过 {message}')
+        return 0, False
+
+    try:
+        data, finish = open_stream()
+    except OSError as e:
+        if strict_before_write:
+            sys.stderr.write(f'[错误] 再次打开 {label} 失败：{e}\n')
+            return 3, False
+        warn(f'跳过 {label}: {e.strerror or e}')
+        return 0, False
+
+    ti.size = actual_size
+    ti.pax_headers = {PAX_KEY: digest}
+    wrapper = _ExactReader(data, actual_size)
+    write_error = None
+    extra = 0
+    try:
+        tf.addfile(ti, wrapper)
+    except OSError as e:
+        write_error = e
+    finally:
+        try:
+            extra = finish()
+        except OSError as e:
+            write_error = write_error or e
+
+    if write_error is not None:
+        sys.stderr.write(
+            f'[错误] 写入 {label} 时数据源失败：{write_error}\n'
+            '       归档流已不可恢复，终止打包\n')
+        return 3, False
+    if wrapper.padded:
+        sys.stderr.write(
+            f'[错误] 写入 {label} 时第二遍读少了 {wrapper.padded} 字节；\n'
+            '       源文件在打包期间发生变化，归档校验将失败，终止打包\n')
+        return 3, False
+    if extra:
+        sys.stderr.write(
+            f'[错误] 写入 {label} 时数据源多出 {extra} 字节；\n'
+            '       源文件在打包期间发生变化，终止打包\n')
+        return 3, False
+    return 0, True
+
+
+def _local_measure(path):
+    with open(path, 'rb') as fh:
+        return sha256_stream(fh)
+
+
+def _local_open_stream(path):
+    fh = open(path, 'rb')
+
+    def finish():
+        fh.close()
+        return 0
+
+    return fh, finish
+
+
 def _encode(name):
     """用 surrogateescape 编码路径，容忍非 UTF-8 字节的文件名。"""
     enc = sys.getfilesystemencoding()
@@ -277,9 +360,9 @@ def cmd_create(root):
     # 硬链接检测：inode -> 首个已成功归档的相对路径
     seen_ino = {}
     warned = 0
-    out = _bin_out()
+    out = binary_stdout()
     # mode='w|' 表示不可 seek 的流式写入，适合管道
-    tf = tarfile.open(fileobj=out, mode='w|', format=tarfile.PAX_FORMAT)
+    tf = open_pax_writer(out)
 
     def warn(msg):
         sys.stderr.write(f'[WARN] {msg}\n')
@@ -355,50 +438,20 @@ def cmd_create(root):
                     tf.addfile(ti)
                     continue
 
-                # 第一遍读：算哈希并确认长度没有变化。
-                # 头信息尚未写出，此时发现问题只需跳过，归档仍然完好。
-                try:
-                    with open(full, 'rb') as fh:
-                        digest, size = sha256_stream(fh)
-                except OSError as e:
+                def counted_warn(message):
+                    nonlocal warned
                     warned += 1
-                    warn(f'跳过 {rel}: {e.strerror or e}')
+                    warn(message)
+
+                rc, written = write_regular(
+                    tf, ti, st.st_size,
+                    lambda path=full: _local_measure(path),
+                    lambda path=full: _local_open_stream(path),
+                    rel, False, counted_warn)
+                if rc:
+                    return rc
+                if not written:
                     continue
-
-                if size != st.st_size:
-                    warned += 1
-                    warn(f'跳过 {rel}: 读取前后大小不一致（{st.st_size} -> {size}），'
-                         f'文件正在被修改')
-                    continue
-
-                ti.size = size
-                ti.pax_headers = {PAX_KEY: digest}
-
-                # 第二遍读：让 tarfile 自己流式写入。
-                # 第二遍连 open 都失败，说明文件刚刚被删掉——此时头还没写出去，
-                # 直接跳过即可；只有写到一半才失败才是真正的不可恢复。
-                try:
-                    fh2 = open(full, 'rb')
-                except OSError as e:
-                    warned += 1
-                    warn(f'跳过 {rel}: {e.strerror or e}')
-                    continue
-
-                try:
-                    with fh2:
-                        wrapper = _ExactReader(fh2, size)
-                        tf.addfile(ti, wrapper)
-                    if wrapper.padded:
-                        sys.stderr.write(
-                            f'[错误] 写入 {rel} 时第二遍读少了 {wrapper.padded} 字节；\n'
-                            '       源文件在备份期间发生变化，归档校验将失败，终止打包\n')
-                        return 3
-                except OSError as e:
-                    # 写到一半失败：这条流已经不可解析，继续只会产出坏归档
-                    sys.stderr.write(
-                        f'[错误] 写入 {rel} 时失败：{e.strerror or e}\n'
-                        '       归档流已不可恢复，终止打包\n')
-                    return 3
 
                 # 只有完整写入成功后，才允许后续硬链接指向它
                 if st.st_nlink > 1:
@@ -407,270 +460,6 @@ def cmd_create(root):
     finally:
         tf.close()
     return 0
-
-
-def _adb_error(command, result):
-    """把 adb exec-out 的错误转成可读的 OSError。"""
-    detail = result.stderr.decode('utf-8', 'replace').strip()
-    if not detail:
-        detail = f'exit {result.returncode}'
-    return OSError(f'adb exec-out {command!r}: {detail}')
-
-
-def _adb_exec(adb, command):
-    """运行一条无 PTY 的 Android shell 命令，保留 stdout 的原始字节。"""
-    try:
-        result = subprocess.run(
-            [adb, 'exec-out', 'sh', '-c', command],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-    except OSError as e:
-        raise OSError(f'无法启动 adb {adb!r}: {e}') from e
-    if result.returncode:
-        raise _adb_error(command, result)
-    return result.stdout
-
-
-def _adb_open(adb, command):
-    """打开 adb exec-out 流；调用者必须读取、关闭并等待返回的进程。"""
-    try:
-        return subprocess.Popen(
-            [adb, 'exec-out', 'sh', '-c', command],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except OSError as e:
-        raise OSError(f'无法启动 adb {adb!r}: {e}') from e
-
-
-def _finish_adb_stream(proc, command):
-    """等待 adb exec-out 完整结束，并把远端 cat/stat 的错误传回调用方。"""
-    # Drain the pipe before waiting. Closing it immediately can send SIGPIPE
-    # to adb/cat when tar has no need to call read() (notably zero-byte files).
-    # Draining also lets adb report a clean exit instead of the misleading 141.
-    extra = 0
-    if proc.stdout is not None and not proc.stdout.closed:
-        while True:
-            chunk = proc.stdout.read(CHUNK)
-            if not chunk:
-                break
-            extra += len(chunk)
-        proc.stdout.close()
-    stderr = proc.stderr.read() if proc.stderr is not None else b''
-    rc = proc.wait()
-    if rc:
-        result = subprocess.CompletedProcess([], rc, stderr=stderr)
-        raise _adb_error(command, result)
-    return extra
-
-
-def _adb_list_paths(adb, root):
-    """用 toybox find -print0 枚举 Android 路径，避免空格和换行分隔歧义。"""
-    command = f'find {shlex.quote(root)} -print0'
-    raw = _adb_exec(adb, command)
-    if not raw:
-        raise OSError(f'adb exec-out 未列出源目录 {root!r}')
-    if not raw.endswith(b'\0'):
-        raise OSError('adb exec-out find 输出没有 NUL 终止，拒绝解析不完整目录清单')
-    return [part.decode('utf-8', 'surrogateescape')
-            for part in raw[:-1].split(b'\0') if part]
-
-
-def _adb_lstat(adb, path):
-    """读取 Android 条目的类型、大小、mtime 与权限，不依赖 ls 的本地化输出。"""
-    command = "stat -c '%f|%s|%Y|%a' -- " + shlex.quote(path)
-    raw = _adb_exec(adb, command)
-    try:
-        mode_hex, size, mtime, mode_octal = raw.decode('ascii').strip().split('|')
-        return {
-            'mode': int(mode_hex, 16),
-            'size': int(size),
-            'mtime': int(mtime),
-            'perm': int(mode_octal, 8),
-        }
-    except (UnicodeDecodeError, ValueError) as e:
-        raise OSError(f'无法解析 Android stat 输出 {raw!r}: {e}') from e
-
-
-def _adb_readlink(adb, path):
-    raw = _adb_exec(adb, 'readlink -n -- ' + shlex.quote(path))
-    return raw.decode('utf-8', 'surrogateescape')
-
-
-def _adb_hash_file(adb, path):
-    command = 'cat -- ' + shlex.quote(path)
-    proc = _adb_open(adb, command)
-    try:
-        digest, size = sha256_stream(proc.stdout)
-    finally:
-        _finish_adb_stream(proc, command)
-    return digest, size
-
-
-def _tar_name(path):
-    """把 Android 的 POSIX 路径稳定地变成 tar 条目名。"""
-    return _encode(path).decode('utf-8', 'surrogateescape')
-
-
-def cmd_create_adb(root, adb='adb', out=None):
-    """
-    经 adb exec-out 把 Android 目录写成 stdout 上的裸 tar 流。
-
-    这是 Android/data 等受 scoped storage 限制目录的主路径。
-    设备端只调用 toybox 的 find/stat/cat；每个普通文件两遍从 USB 读取，先算
-    SHA-256，再在不落盘的前提下写入 tar。压缩仍由主机上的本脚本完成。
-    """
-    root = root.rstrip('/') or '/'
-    if not root.startswith('/') or root == '/':
-        sys.stderr.write(f'[错误] create-adb 需要一个非根目录的绝对 Android 路径：{root!r}\n')
-        return 1
-
-    try:
-        root_st = _adb_lstat(adb, root)
-        if not stat.S_ISDIR(root_st['mode']):
-            sys.stderr.write(f'[错误] create-adb 源路径不是目录：{root}\n')
-            return 1
-        paths = _adb_list_paths(adb, root)
-    except OSError as e:
-        sys.stderr.write(f'[错误] 无法枚举 Android 源目录：{e}\n')
-        return 1
-
-    parent = posixpath.dirname(root)
-    paths.sort(key=lambda path: path.encode('utf-8', 'surrogateescape'))
-    if out is None:
-        out = _bin_out()
-    tf = tarfile.open(fileobj=out, mode='w|', format=tarfile.PAX_FORMAT)
-
-    def warn(message):
-        sys.stderr.write(f'[WARN] {message}\n')
-
-    try:
-        for full in paths:
-            try:
-                st = _adb_lstat(adb, full)
-            except OSError as e:
-                sys.stderr.write(f'[错误] 读取 {full} 的元数据失败：{e}\n')
-                return 3
-
-            rel = posixpath.relpath(full, parent)
-            ti = tarfile.TarInfo(_tar_name(rel))
-            ti.mode = st['perm']
-            ti.mtime = st['mtime']
-            mode = st['mode']
-
-            if stat.S_ISDIR(mode):
-                ti.type = tarfile.DIRTYPE
-                tf.addfile(ti)
-                continue
-
-            if stat.S_ISLNK(mode):
-                try:
-                    ti.type = tarfile.SYMTYPE
-                    ti.linkname = _adb_readlink(adb, full)
-                    tf.addfile(ti)
-                except OSError as e:
-                    sys.stderr.write(f'[错误] 读取符号链接 {rel} 失败：{e}\n')
-                    return 3
-                continue
-
-            if not stat.S_ISREG(mode):
-                warn(f'跳过非普通文件 {rel}')
-                continue
-
-            # 第一遍：先确认内容大小和 stat 一致，避免给变化中的文件写 header。
-            try:
-                digest, actual_size = _adb_hash_file(adb, full)
-            except OSError as e:
-                sys.stderr.write(f'[错误] 读取 {rel} 失败：{e}\n')
-                return 3
-            if actual_size != st['size']:
-                sys.stderr.write(
-                    f'[错误] {rel} 读取前后大小不一致（{st["size"]} -> {actual_size}），'
-                    '文件正在被修改，终止打包\n')
-                return 3
-
-            ti.size = actual_size
-            ti.pax_headers = {PAX_KEY: digest}
-            command = 'cat -- ' + shlex.quote(full)
-            extra = 0
-            try:
-                proc = _adb_open(adb, command)
-                try:
-                    wrapper = _ExactReader(proc.stdout, actual_size)
-                    tf.addfile(ti, wrapper)
-                finally:
-                    extra = _finish_adb_stream(proc, command)
-            except OSError as e:
-                sys.stderr.write(
-                    f'[错误] 写入 {rel} 时 adb 流失败：{e}\n'
-                    '       归档流已不可恢复，终止打包\n')
-                return 3
-            if wrapper.padded:
-                sys.stderr.write(
-                    f'[错误] 写入 {rel} 时第二遍读少了 {wrapper.padded} 字节；\n'
-                    '       源文件在备份期间发生变化，归档校验将失败，终止打包\n')
-                return 3
-            if extra:
-                sys.stderr.write(
-                    f'[错误] 写入 {rel} 时 adb 流多出 {extra} 字节；\n'
-                    '       源文件在备份期间发生变化，终止打包\n')
-                return 3
-    finally:
-        tf.close()
-    return 0
-
-
-def cmd_backup_adb(root, adb='adb', kind='xz'):
-    """
-    直接把 Android 目录写成压缩 tar 流。
-
-    这是主控脚本使用的原子入口：create-adb 的错误就是本进程的退出码，
-    Windows cmd 不需要猜测管道前半段是否失败，也不会在主机或手机制造 tar 中间文件。
-    """
-    out = _bin_out()
-    if kind == 'none':
-        return cmd_create_adb(root, adb, out)
-    if kind == 'xz':
-        with lzma.LZMAFile(out, 'wb', preset=6) as compressed:
-            return cmd_create_adb(root, adb, compressed)
-    if kind == 'gzip':
-        with gzip.GzipFile(fileobj=out, mode='wb', compresslevel=6, mtime=0) as compressed:
-            return cmd_create_adb(root, adb, compressed)
-    if kind != 'zstd':
-        sys.stderr.write(f'错误：未知压缩类型 {kind}（可选 xz / gzip / zstd / none）\n')
-        return 1
-
-    try:
-        from compression import zstd  # Python 3.14+
-    except ImportError:
-        zstd = None
-
-    if zstd is not None:
-        writer = getattr(zstd, 'ZstdFile', None)
-        if writer is not None:
-            with writer(out, 'wb') as compressed:
-                return cmd_create_adb(root, adb, compressed)
-        with zstd.ZstdCompressor().stream_writer(out) as compressed:
-            return cmd_create_adb(root, adb, compressed)
-
-    exe = shutil.which('zstd')
-    if exe is None:
-        sys.stderr.write(
-            '错误：本机没有可用的 zstd 支持（无标准库 zstd，PATH 里也没有 zstd）\n'
-            '  方案一：安装 zstd\n'
-            '  方案二：升级到 Python 3.14+\n'
-            '  方案三：改用 xz 压缩（本脚本原生支持）\n')
-        return 2
-
-    proc = subprocess.Popen([exe, '-12', '-c'], stdin=subprocess.PIPE, stdout=out)
-    try:
-        create_rc = cmd_create_adb(root, adb, proc.stdin)
-    except BrokenPipeError:
-        create_rc = 3
-    finally:
-        try:
-            proc.stdin.close()
-        except OSError:
-            pass
-    zstd_rc = proc.wait()
-    return create_rc if create_rc else (0 if zstd_rc == 0 else 3)
 
 
 def _copy_stream(src, dst):
@@ -692,7 +481,7 @@ def cmd_compress(kind):
     刻意优先使用 Python 标准库，不依赖调用环境的 xz 或 gzip 二进制。
     """
     data = _bin_in()
-    out = _bin_out()
+    out = binary_stdout()
 
     if kind == 'none':
         _copy_stream(data, out)
@@ -876,22 +665,8 @@ def main():
         description='创建/校验带 pax 内嵌 SHA-256 的 tar 归档（流式，仅用标准库）')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
-    c = sub.add_parser('create', help='打包目录到 stdout')
+    c = sub.add_parser('create', help='打包本机目录到 stdout')
     c.add_argument('directory')
-
-    a = sub.add_parser(
-        'create-adb',
-        help='经 adb exec-out 打包 Android 目录到 stdout（适用于 Android/data）')
-    a.add_argument('directory', help='设备上的绝对目录路径')
-    a.add_argument('--adb', default='adb', help='adb 可执行文件路径（默认 adb）')
-
-    b = sub.add_parser(
-        'backup-adb',
-        help='经 adb exec-out 直接生成压缩归档（主控脚本使用）')
-    b.add_argument('directory', help='设备上的绝对目录路径')
-    b.add_argument('--adb', default='adb', help='adb 可执行文件路径（默认 adb）')
-    b.add_argument('--compress', default='xz',
-                   choices=('xz', 'gzip', 'zstd', 'none'))
 
     z = sub.add_parser('compress', help='把 stdin 压缩后写到 stdout（取代外部 xz/gzip）')
     z.add_argument('kind', choices=('xz', 'gzip', 'zstd', 'none'))
@@ -904,10 +679,6 @@ def main():
     args = ap.parse_args()
     if args.cmd == 'create':
         return cmd_create(args.directory)
-    if args.cmd == 'create-adb':
-        return cmd_create_adb(args.directory, args.adb)
-    if args.cmd == 'backup-adb':
-        return cmd_backup_adb(args.directory, args.adb, args.compress)
     if args.cmd == 'compress':
         return cmd_compress(args.kind)
     return cmd_verify(args.quiet, args.infile or args.path)

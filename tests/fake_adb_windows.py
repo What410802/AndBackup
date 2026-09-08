@@ -5,6 +5,7 @@ import posixpath
 import shlex
 import stat
 import sys
+import time
 
 
 def _log(args):
@@ -49,8 +50,11 @@ def _find(source):
 
 def _stat(device_path):
     item = os.lstat(_local_path(device_path))
-    text = '%x|%d|%d|%o\n' % (
-        item.st_mode, item.st_size, int(item.st_mtime), stat.S_IMODE(item.st_mode))
+    seconds, nanos = divmod(item.st_mtime_ns, 1000000000)
+    human = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(seconds))
+    text = '%x|%d|%d|%s.%09d +0000|%o\n' % (
+        item.st_mode, item.st_size, seconds, human, nanos,
+        stat.S_IMODE(item.st_mode))
     sys.stdout.buffer.write(text.encode('ascii'))
 
 

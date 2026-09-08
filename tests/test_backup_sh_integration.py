@@ -20,10 +20,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import testsupport as T  # noqa: E402
 
 FAKE_ADB = r"""#!/bin/sh
-# 假 adb：用本机临时目录模拟 adb exec-out 的纯字节通道
+# 假 adb：用本机临时目录模拟 adb exec-out 的纯字节通道；记录 serial 以区分
+# USB 默认/显式 serial 与无线 host:port 两种主控路径。
+echo "serial=${ANDROID_SERIAL:-}" >> "$FAKE_ADB_LOG"
 echo "adb $*" >> "$FAKE_ADB_LOG"
 [ -n "${FAKE_ADB_FAIL:-}" ] && exit 1
 case "$1" in
+    connect)
+        echo "connected to $2"
+        ;;
     get-state)
         echo device
         ;;
@@ -100,6 +105,11 @@ class HarnessMixin:
             # the local fake-ADB harness (especially when run from WSL).
             'BACKUP_CONFIG_FILE': '',
         })
+        # Keep the transport mode under test independent of the caller's live
+        # ADB environment and repository YAML.
+        base.pop('ADB_SERIAL', None)
+        base.pop('ADB_CONNECT', None)
+        base.pop('ANDROID_SERIAL', None)
         base.pop('FAKE_ADB_FAIL', None)
         base.pop('FAKE_ADB_TRUNCATE', None)
         base.update(over)
@@ -165,6 +175,43 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
         self.assertEqual(result.returncode, 0,
                          result.stdout.decode('utf-8', 'replace'))
         self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
+
+    def test_command_line_config_path_overrides_environment(self):
+        config = os.path.join(self.case, 'backup-cli.yaml')
+        with open(config, 'w', encoding='utf-8') as fh:
+            fh.write('adb: adb\n')
+            fh.write('adb_connect: false\n')
+            fh.write('source_dir: "' + self.source + '"\n')
+            fh.write('out: "' + self.out + '"\n')
+            fh.write('compress: gzip\n')
+        env = self.env(BACKUP_CONFIG_FILE=os.path.join(self.case, 'missing.yaml'))
+        for key in ('SOURCE_DIR', 'OUT', 'COMPRESS'):
+            env.pop(key, None)
+        result = subprocess.run(
+            [T.BACKUP_SH, '--config', config], env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
+
+    def test_usb_serial_is_forwarded_without_tcp_connect(self):
+        """USB 设备可显式选择 serial，但不能触发无线 adb connect。"""
+        serial = 'USB-SERIAL-001'
+        result = self.run_script(ADB_SERIAL=serial, ADB_CONNECT='0')
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        log = self.adb_log_text()
+        self.assertIn('serial=' + serial, log)
+        self.assertNotIn('adb connect ', log)
+
+    def test_wireless_tcp_serial_is_connected_and_forwarded(self):
+        serial = '192.0.2.1:5555'
+        result = self.run_script(ADB_SERIAL=serial, ADB_CONNECT='1')
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        log = self.adb_log_text()
+        self.assertIn('adb connect ' + serial, log)
+        self.assertIn('serial=' + serial, log)
 
     def test_checksums_match_source_bytes(self):
         self.assertEqual(self.run_script().returncode, 0)
@@ -264,7 +311,7 @@ class TestBackupScriptFailurePaths(HarnessMixin, unittest.TestCase):
 
     def test_file_instead_of_source_directory_fails_loudly(self):
         """
-        create-adb 必须先验证源路径是目录；不能把普通文件误当作备份根目录。
+        ADB 数据源适配器必须先验证源路径是目录；不能把普通文件误当作备份根目录。
         """
         solo = os.path.join(self.case, 'plain-file')
         with open(solo, 'wb') as fh:

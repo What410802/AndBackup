@@ -59,7 +59,11 @@ class Device:
         for line in self.adb_out(['devices']).splitlines()[1:]:
             fields = line.split()
             if len(fields) >= 2 and fields[1] == 'device':
-                return fields[0]
+                # ADB commands without -s fail once a wireless endpoint and a
+                # USB/mDNS entry coexist. Bind the selected device for every
+                # following command in this test process.
+                self.target_serial = fields[0]
+                return self.target_serial
         return None
 
     def free_bytes(self):
@@ -163,13 +167,21 @@ class TestSourcePathOnDevice(DeviceCaseMixin, unittest.TestCase):
         out = os.path.join(work, 'android-backup.tar.xz')
         try:
             env = dict(os.environ)
-            env.update({'ADB': self.dev.adb, 'SOURCE_DIR': DEVICE_DIR, 'OUT': out})
+            # Real-device transport is selected only by the test environment:
+            # an explicit USB serial selects the authorized wired device, while
+            # host:port selects the wireless device.  Do not let the repository's
+            # live YAML endpoint change that choice.
+            env.update({'ADB': self.dev.adb, 'SOURCE_DIR': DEVICE_DIR, 'OUT': out,
+                        'BACKUP_CONFIG_FILE': ''})
             if os.name == 'nt':
-                env.update({'PYTHON': T.py(), 'ADB_SERIAL': self.dev.serial()})
+                env.update({'PYTHON': T.py()})
                 command = [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c',
                            T.BACKUP_BAT]
             else:
                 command = [T.BACKUP_SH]
+            env['ADB_SERIAL'] = self.dev.serial()
+            env.pop('ADB_CONNECT', None)
+            env.pop('ANDROID_SERIAL', None)
             result = subprocess.run(command, env=env, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, timeout=300)
             self.assertEqual(result.returncode, 0,
@@ -202,6 +214,7 @@ class TestDeviceParsingWithoutHardware(unittest.TestCase):
     def test_serial_from_authorized_device(self):
         dev = self._device('List of devices attached\nUSB-TEST-SERIAL\tdevice\n\n')
         self.assertEqual(dev.serial(), 'USB-TEST-SERIAL')
+        self.assertEqual(dev.target_serial, 'USB-TEST-SERIAL')
 
     def test_serial_ignores_unauthorized_and_offline(self):
         dev = self._device('List of devices attached\nABC\tunauthorized\nXYZ\toffline\n')

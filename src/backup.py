@@ -7,6 +7,7 @@ all configuration, ADB setup, streaming, verification and atomic replacement
 live here so Windows and POSIX follow exactly the same code path.
 """
 import ast
+import argparse
 import os
 import subprocess
 import sys
@@ -69,16 +70,20 @@ def read_config(path):
     return values
 
 
-def _settings():
+def _settings(config_path=None):
     """Merge YAML config, environment overrides and launcher defaults."""
-    config_path = os.environ.get(
-        'BACKUP_CONFIG_FILE', os.path.join(_script_dir(), 'backup-android.yaml'))
+    explicit_config = config_path is not None
+    if config_path is None:
+        config_path = os.environ.get(
+            'BACKUP_CONFIG_FILE', os.path.join(_script_dir(), 'backup-android.yaml'))
     values = {}
     if config_path and os.path.isfile(config_path):
         try:
             values.update(read_config(config_path))
         except (OSError, ValueError) as e:
             raise RuntimeError(str(e)) from e
+    elif explicit_config and config_path:
+        raise RuntimeError(f'指定的配置文件不存在：{config_path!r}')
     for key in ENV_KEYS:
         if key in os.environ:
             values[key] = os.environ[key]
@@ -99,6 +104,47 @@ def _run_adb(adb, args, env):
 def _display_error(prefix, result):
     detail = result.stderr.decode('utf-8', 'replace').strip()
     return f'{prefix}: {detail or "exit " + str(result.returncode)}'
+
+
+def _stream_android_archive(source, adb, compress, output, env):
+    """Compose the Android source adapter and generic compressor safely."""
+    # stderr must not remain an unread PIPE: a large number of source warnings
+    # could otherwise block the producer before the compressor reaches EOF.
+    with tempfile.TemporaryFile() as source_log, tempfile.TemporaryFile() as compressor_log:
+        source_process = subprocess.Popen(
+            [sys.executable, os.path.join(_script_dir(), 'adb_source.py'),
+             '--adb', adb, source],
+            env=env, stdout=subprocess.PIPE, stderr=source_log)
+        try:
+            compressor = subprocess.Popen(
+                [sys.executable, os.path.join(_script_dir(), 'paxck.py'),
+                 'compress', compress],
+                env=env, stdin=source_process.stdout, stdout=output,
+                stderr=compressor_log)
+        except OSError:
+            source_process.stdout.close()
+            source_process.kill()
+            source_process.wait()
+            raise
+
+        source_process.stdout.close()
+        compressor.wait()
+        source_rc = source_process.wait()
+        source_log.seek(0)
+        compressor_log.seek(0)
+        source_stderr = source_log.read()
+        compressor_stderr = compressor_log.read()
+    if source_rc or compressor.returncode:
+        details = []
+        if source_stderr:
+            details.append(source_stderr.decode('utf-8', 'replace').strip())
+        if compressor_stderr:
+            details.append(compressor_stderr.decode('utf-8', 'replace').strip())
+        detail = '\n'.join(part for part in details if part)
+        raise RuntimeError(
+            '传输失败：Android 源退出码 %d，压缩器退出码 %d%s' % (
+                source_rc, compressor.returncode,
+                f'：{detail}' if detail else ''))
 
 
 def run(settings):
@@ -141,16 +187,9 @@ def run(settings):
     os.close(fd)
     try:
         print('[1/3] checking ADB and source directory...')
-        print('[2/3] streaming from ADB to local tar and compressor...')
+        print('[2/3] streaming Android source through PAX tar and compressor...')
         with open(partial, 'wb') as fh:
-            child = subprocess.run(
-                [sys.executable, os.path.join(_script_dir(), 'paxck.py'),
-                 'backup-adb', '--adb', adb, '--compress', compress, source],
-                env=env, stdout=fh, stderr=subprocess.PIPE, check=False)
-        if child.returncode:
-            detail = child.stderr.decode('utf-8', 'replace').strip()
-            raise RuntimeError(
-                f'传输失败，退出码 {child.returncode}' + (f'：{detail}' if detail else ''))
+            _stream_android_archive(source, adb, compress, fh, env)
 
         print('[3/3] verifying archive...')
         verify = subprocess.run(
@@ -173,9 +212,15 @@ def run(settings):
                 pass
 
 
-def main():
+def main(argv=None):
     try:
-        settings, _config = _settings()
+        parser = argparse.ArgumentParser(
+            description='AndBackup 主控：读取 YAML 并执行 ADB 流式归档')
+        parser.add_argument(
+            '--config', metavar='PATH',
+            help='配置文件路径（默认脚本目录中的 backup-android.yaml；覆盖 BACKUP_CONFIG_FILE）')
+        args = parser.parse_args(argv)
+        settings, _config = _settings(args.config)
         return run(settings)
     except (RuntimeError, OSError) as e:
         print(f'[错误] {e}', file=sys.stderr)

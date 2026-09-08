@@ -23,6 +23,7 @@ TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(TESTS_DIR)
 SRC_DIR = os.path.join(REPO_ROOT, 'src')
 PAXCK = os.path.join(SRC_DIR, 'paxck.py')
+ADB_SOURCE = os.path.join(SRC_DIR, 'adb_source.py')
 BACKUP_SH = os.path.join(SRC_DIR, 'backup-android.sh')
 BACKUP_BAT = os.path.join(SRC_DIR, 'backup-android.bat')
 
@@ -36,6 +37,20 @@ def load_paxck():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def load_adb_source():
+    """Load the ADB source adapter, including its sibling paxck dependency."""
+    import importlib.util
+    sys.path.insert(0, SRC_DIR)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            'adb_source_under_test', ADB_SOURCE)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        sys.path.pop(0)
 
 
 def load_backup():

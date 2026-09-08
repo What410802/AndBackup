@@ -1,8 +1,24 @@
 # Android 到主机的流式备份
 
-本项目只使用 ADB 直读，不再包含 Termux、SSH、端口转发或设备端 Python。原因是
+本项目只使用 ADB 直读，不再包含 Termux、SSH、端口转发或设备端 Python。ADB 可以通过
+USB 有线链路或 TCP 无线链路承载，备份协议和主机处理流程完全相同。原因是
 Android 11+ 的 scoped storage 会阻止 Termux 等普通应用读取其他应用的
-`Android/data/*`，而已授权 USB 调试的 `adb shell` 可读取测试目标。
+`Android/data/*`，而已授权的 ADB shell 可读取测试目标。
+
+## 职责与组合
+
+归档写入与 Android 读取是两个独立层次：
+
+- `paxck.py create <本机目录>` 是通用本机目录打包器；`compress` 和 `verify` 可处理它产生的
+  裸 PAX tar。
+- `adb_source.py --adb <ADB> <Android目录>` 只负责以 `adb exec-out` 枚举/读取设备目录，并把
+  条目交给 `paxck.py` 的通用 PAX writer。它的 stdout 是裸 tar，不负责压缩或最终落盘。
+- `backup.py` 是 Android 组合入口：启动前两者、检查两个子进程的退出码，写入并校验
+  `OUT.partial.*` 后再原子替换最终输出。`.bat` 和 `.sh` 仅转发到它。
+
+因此 `paxck.py` 可以完全脱离 Android 使用；Android 手动组合为
+`adb_source.py ... | paxck.py compress xz`，但生产备份应使用 `backup.py` 以得到完整的失败清理
+和双端退出码检查。
 
 ## 数据流
 
@@ -10,26 +26,28 @@ Android 11+ 的 scoped storage 会阻止 Termux 等普通应用读取其他应�
 sequenceDiagram
     autonumber
     participant SH as backup-android.sh / .bat
-    participant ADB as adb exec-out
+    participant ADB as adb exec-out (USB/TCP)
     participant SYS as Android shell
     participant BP as 主机 backup.py
-    participant PX as 主机 paxck.py backup-adb
+    participant AS as 主机 adb_source.py
+    participant PX as 主机 paxck.py compress
     participant DISK as 主机临时归档
     participant VFY as 主机 paxck.py verify
 
     SH->>BP: 读取 YAML + 环境覆盖
     BP->>ADB: get-state / 可选 connect
-    BP->>PX: backup-adb --adb ADB --compress xz SOURCE_DIR
-    PX->>ADB: exec-out sh -c "find SOURCE_DIR -print0"
+    BP->>AS: --adb ADB SOURCE_DIR
+    AS->>ADB: exec-out sh -c "find SOURCE_DIR -print0"
     ADB->>SYS: 以 shell 用户枚举目录
     loop 每个条目
-        PX->>ADB: exec-out stat / readlink
+        AS->>ADB: exec-out stat / readlink
         alt 普通文件
-            PX->>ADB: exec-out cat（第一遍 SHA-256）
-            PX->>ADB: exec-out cat（第二遍写 tar）
+            AS->>ADB: exec-out cat（第一遍 SHA-256）
+            AS->>ADB: exec-out cat（第二遍写 tar）
         end
     end
-    PX->>DISK: tar 流经主机 Python xz/gzip/zstd 写入 .partial
+    AS->>PX: 裸 PAX tar（二进制管道）
+    PX->>DISK: 压缩流写入 .partial
     BP->>VFY: verify .partial
     VFY->>DISK: 解压、解析 tar、逐文件 SHA-256
     VFY-->>SH: 成功
@@ -40,6 +58,20 @@ sequenceDiagram
 `readlink` 读取链接以及 `cat` 把文件内容写进 ADB 通道。不会调用设备端
 `tar`、压缩程序或 Python，也不会创建文件。
 
+## USB 与无线 ADB
+
+两种连接方式只改变 ADB 客户端到设备 adbd 的传输链路，不改变设备端 shell 命令、
+`exec-out` 的二进制语义、双遍读取校验或主机端 tar/压缩流程。
+
+| 连接方式 | 设备选择 | 连接准备 | YAML 关键设置 |
+|---|---|---|---|
+| USB 有线 | `adb devices` 输出的 USB serial；单设备可不指定 | 打开 USB 调试、接线并在设备上授权主机 | `adb_serial: ""`（或 USB serial）；`adb_connect: false` |
+| TCP 无线 | `host:port` | 先 `adb pair host:pair-port`，再使用无线调试页显示的连接端口 | `adb_serial: host:port`；`adb_connect: true`（已连接时可为 `false`） |
+
+`adb_connect` 只适用于 TCP serial：主控会先执行 `adb connect`，然后通过
+`ANDROID_SERIAL` 让 `get-state`、目录枚举和两遍 `exec-out cat` 都指向同一设备。
+USB 模式不要设置 `adb_connect: true`；多台 USB 设备在线时应显式填写目标 serial。
+
 数据通道必须保持为 `adb exec-out -> Python subprocess.PIPE -> Python binary stdout`。不能用
 `adb shell ... > file` 或把 `exec-out` 接到 PowerShell 的文本管道；前者可能分配终端，后者会
 按文本编码处理数据。Windows 的 `.bat` 重定向的是 Python 的二进制 stdout，`0x0A` 保持原样。
@@ -48,7 +80,7 @@ sequenceDiagram
 Windows 脚本都会清除它，因此已有的有效备份不会被失败传输覆盖，并发运行也不会互删临时
 文件。
 
-## `backup-adb` 的一致性规则
+## `adb_source.py` 的一致性规则
 
 ```mermaid
 flowchart TD
@@ -71,7 +103,7 @@ flowchart TD
     LINK --> NEXT
     SKIP --> NEXT
     NEXT -- 是 --> META
-    NEXT -- 否 --> END([压缩流关闭，退出 0])
+    NEXT -- 否 --> END([写完裸 tar，退出 0])
 
     style E1 fill:#ffe0e0
     style E3 fill:#ffe0e0
@@ -116,6 +148,73 @@ flowchart TD
 标签以及目录时间之外的目录内容属性。FIFO、Unix socket、设备节点等非普通文件也不会生成
 条目；程序只保留目录、普通文件、符号链接和（本机模式的）硬链接。
 
+### 时间精度与 Android 元数据来源
+
+- 本机目录模式把 Python `os.lstat()` 返回的 `st_mtime` 传给 `TarInfo.mtime`。PAX 格式
+  能保存小数秒；最终可用精度取决于本机文件系统/操作系统提供的时间戳以及 Python 浮点
+  表示，不承诺固定的纳秒精度。
+- ADB 目录模式执行 Android `stat -c '%f|%s|%Y|%y|%a'`。`%Y` 提供自 Unix epoch 起的
+  整数秒基准，`%y` 提供带小数部分的可读时间；主机从 `%y` 提取小数并合并回 `%Y`。
+  因此归档不再主动截断到整秒，但最终精度仍由设备实际暴露的时间戳、Python 浮点和 PAX
+  表示共同决定。
+- 当前实测设备的 `/storage/emulated/0/Android/data/...` 中，文件和目录的 `%y` 均出现
+  9 位小数（例如 `...17.181008465 +0800`），说明该挂载至少通过 `stat` 暴露了纳秒格式
+  的值。小数位数不等于所有设备都保证纳秒写入精度；不同 ROM、FUSE/媒体存储实现和文件
+  系统仍可能量化到微秒、毫秒或整秒。
+- 可针对具体路径直接检查：
+
+  ```sh
+  adb shell "stat -c '%y|%Y' -- /storage/emulated/0/path/to/file"
+  ```
+
+  `%y` 的小数位是当前接口返回的可观察精度；要验证实际写入量化，还应对测试文件设置
+  不同的亚秒 `mtime` 后重新读取并比较（在临时目录中操作，避免改动用户数据）。
+- 当前实现没有请求 `atime`、`ctime`、创建时间（birth time）、inode、UID/GID、用户名或
+  组名。因而这些字段缺失首先是项目归档格式的明确取舍，而不是声称 Android 一定没有
+  这些字段；即使设备能返回它们，当前版本也不会写入。
+- Android 上的 `adb shell` 通常以 `shell` UID 运行。Android scoped storage、Unix 权限、
+  `/storage` 的 FUSE/媒体存储抽象以及不同文件系统的能力，可能使某些目录的创建/访问/
+  状态改变时间或 UID/GID 查询被拒绝、被合成或不稳定；应用私有目录尤其如此。遇到这种
+  情况是 Android 的权限/存储边界，不是本项目主动抹除元数据，但本项目仍必须至少读到
+  类型、权限、大小和 `mtime` 才能生成当前归档。
+- 因此，若用户需要纳秒级修改时间、访问/创建时间或 Android UID/GID，应先确认目标目录
+  在当前 ROM、挂载方式和授权级别下能由 `adb shell stat` 读取，再扩展协议和 PAX 字段；
+  不能仅靠更换 tar 压缩格式恢复设备端未提供或当前未采集的字段。
+
+## 发布依赖与版本策略
+
+生产路径只需要 Python 标准库和主机上的 Android SDK Platform-Tools `adb`。源码没有导入
+PyYAML、`zstandard` 或其他第三方 Python 包，因此不需要 `requirements.txt` 或虚拟环境来
+安装运行依赖。
+
+Python 3.10+ 是当前最低支持版本，覆盖 tar/PAX、ADB、xz、gzip、裸 tar 和内置 YAML 子集
+解析。zstd 有两条路径：Python 3.14+ 使用标准库 `compression.zstd`；Python 3.10--3.13
+需要主机 `PATH` 中的 `zstd` 命令。发布时建议在 CI 测试 Python 3.10、3.13、3.14，而不是
+强制所有用户使用同一个补丁版本。只有需要可复现的 zstd 压缩字节时，才需要同时固定 Python
+和 zstd 版本；归档逻辑和校验结果不依赖补丁版本。
+
+`adb` 是外部的 Android 调试工具，不是 Python 依赖。设备端只使用 ROM 提供的
+`find`、`stat`、`readlink` 和 `cat`，不需要安装 Python、tar 或压缩程序。
+
+## 与设备端 tar 的效果差异
+
+可以把 tar 二进制和压缩程序上传到 Android `/data/local/tmp/`，让设备端 tar 遍历目录并把
+结果流回主机。这种方案与当前实现的逻辑文件树可能相同，但最终归档不保证等价：
+
+| 维度 | 当前方案：主机生成 tar | 备选方案：Android 生成 tar |
+|---|---|---|
+| 实现与版本 | 主机 Python `tarfile` + 主机压缩器 | 设备端 tar/压缩器版本与参数 |
+| 设备资源 | 只读命令和 ADB 通道，不上传可执行文件 | 需要架构、linker、SELinux 和执行权限兼容 |
+| 普通文件 | 两遍读取，写入 PAX SHA-256，变化则失败 | 通常一遍读取，无同等校验语义 |
+| 硬链接 | ADB 模式不恢复 inode 关系 | 可能保留，取决于 tar |
+| 特殊文件 | FIFO/socket/设备节点跳过 | 可能记录或尝试读取 |
+| UID/GID 与扩展属性 | ADB UID/GID 默认值，不保存 xattr/ACL/SELinux | 可能保留，取决于权限与参数 |
+| 字节级结果 | 条目顺序、PAX 头和压缩参数由主机固定 | 由 Android tar 实现决定，通常不同 |
+
+因此，“解压后文件内容相同”是可实现的目标，“tar 文件逐字节相同”不是自然结果。若需要
+跨实现比较，应比较解压后的路径、类型、内容哈希和明确选定的元信息集合，而不是直接比较
+归档文件的 SHA-256。
+
 ## 校验与退出码
 
 `verify` 根据魔术字节识别裸 tar、xz、gzip 和 zstd，并在流式读取 tar 时校验 PAX 扩展头
@@ -134,7 +233,8 @@ flowchart TD
 ## 平台边界
 
 - ADB shell 的外部存储权限取决于 ROM、设备策略与调试授权。主控先执行 `adb get-state`，
-  真机测试会实际读取目标目录。Windows 可设 `ADB_SERIAL=host:port` 选择无线设备；再设
+  真机测试会实际读取目标目录。USB 设备可省略 `ADB_SERIAL`（单设备）或填写
+  `adb devices` 的 USB serial；无线设备填写 `ADB_SERIAL=host:port`，再设
   `ADB_CONNECT=1` 会在检查前运行 `adb connect`。脚本将 serial 导出为 `ANDROID_SERIAL`，
   所以主机 Python 后续启动的每一个 `adb exec-out` 也会指向同一设备。
 - `/data/user/*` 等应用私有沙箱仍受 Android UID 隔离保护，不在本项目范围。

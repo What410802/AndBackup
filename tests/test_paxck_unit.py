@@ -15,16 +15,19 @@ import io
 import lzma
 import os
 import shutil
+import stat
 import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import testsupport as T  # noqa: E402
 
 paxck = T.load_paxck()
+adb_source = T.load_adb_source()
 backup = T.load_backup()
 
 
@@ -80,10 +83,56 @@ class TestConfig(unittest.TestCase):
         finally:
             shutil.rmtree(os.path.dirname(path), ignore_errors=True)
 
+    def test_explicit_missing_config_path_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix='paxck-missing-config-') as directory:
+            missing = os.path.join(directory, 'not-here.yaml')
+            with mock.patch.dict(os.environ, {}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, '指定的配置文件不存在'):
+                    backup._settings(missing)
+
     def test_head_shorter_than_magic(self):
         # 输入可能被截断到只剩两三个字节，这里不能抛异常
         self.assertIsNone(paxck.sniff(b'\xfd'))
         self.assertIsNone(paxck.sniff(b'\x1f'))
+
+
+class TestAdbSourceMetadata(unittest.TestCase):
+    def test_lstat_preserves_fractional_mtime_from_toybox(self):
+        raw = (b'81b0|53|1788676937|2026-09-06 14:42:17.181008465 +0800|644\n')
+        with mock.patch.object(adb_source, '_adb_exec', return_value=raw) as adb_exec:
+            result = adb_source._lstat('adb', '/storage/emulated/0/file')
+        self.assertAlmostEqual(result['mtime'], 1788676937.181008465,
+                               places=6)
+        self.assertEqual(result['size'], 53)
+        self.assertIn("%Y|%y|", adb_exec.call_args.args[1])
+
+    def test_source_adapter_writes_entries_with_generic_pax_writer(self):
+        root = '/storage/emulated/0/tree'
+        paths = [root, root + '/file.txt', root + '/link']
+        metadata = {
+            root: {'mode': stat.S_IFDIR | 0o755, 'size': 0,
+                   'mtime': 1788676937.25, 'perm': 0o755},
+            root + '/file.txt': {'mode': stat.S_IFREG | 0o640, 'size': 3,
+                                 'mtime': 1788676937.5, 'perm': 0o640},
+            root + '/link': {'mode': stat.S_IFLNK | 0o777, 'size': 8,
+                             'mtime': 1788676937.75, 'perm': 0o777},
+        }
+        out = io.BytesIO()
+        with mock.patch.object(adb_source, '_lstat',
+                               side_effect=lambda _adb, path: metadata[path]), \
+             mock.patch.object(adb_source, '_list_paths', return_value=paths), \
+             mock.patch.object(adb_source, '_hash_file',
+                               return_value=(T.sha256_of(b'abc'), 3)), \
+             mock.patch.object(adb_source, '_open_stream',
+                               return_value=(io.BytesIO(b'abc'), lambda: 0)), \
+             mock.patch.object(adb_source, '_readlink', return_value='file.txt'):
+            self.assertEqual(adb_source.write_tar(root, 'fake-adb', out), 0)
+
+        members = T.list_members(out.getvalue())
+        self.assertEqual(members['tree/file.txt'][2], b'abc')
+        self.assertEqual(members['tree/file.txt'][3][T.PAX_KEY], T.sha256_of(b'abc'))
+        self.assertEqual(members['tree/link'][0], tarfile.SYMTYPE)
+        self.assertEqual(members['tree/link'][1], 'file.txt')
 
 
 class TestPrependReader(unittest.TestCase):
