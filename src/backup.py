@@ -217,6 +217,8 @@ def main(argv=None):
         parser = argparse.ArgumentParser(
             description='AndBackup 主控：读取 YAML 并执行 ADB 流式归档')
         parser.add_argument(
+            '--version', action='version', version=f'%(prog)s {paxck.VERSION}')
+        parser.add_argument(
             '--config', metavar='PATH',
             help='配置文件路径（默认脚本目录中的 backup-android.yaml；覆盖 BACKUP_CONFIG_FILE）')
         args = parser.parse_args(argv)

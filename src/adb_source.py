@@ -196,6 +196,8 @@ def write_tar(root, adb='adb', out=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description='经 adb exec-out 把 Android 目录写为 stdout 上的裸 PAX tar')
+    parser.add_argument(
+        '--version', action='version', version=f'%(prog)s {paxck.VERSION}')
     parser.add_argument('directory', help='设备上的非根绝对目录')
     parser.add_argument('--adb', default='adb', help='adb 可执行文件路径（默认 adb）')
     args = parser.parse_args(argv)

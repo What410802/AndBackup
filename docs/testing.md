@@ -1,5 +1,7 @@
 # 测试说明
 
+[English version](testing.en.md) | [中文 README](../README.md)
+
 测试分为四层：不依赖设备的 Python 单元测试（包括通用 PAX writer 与 ADB 源适配器）、替身
 ADB 驱动的 Linux 主控集成测试、替身 ADB 驱动的 Windows/CMD 主控集成测试，以及连接 Android
 设备后的真机集成测试。
@@ -20,10 +22,12 @@ Windows 在已安装 Python 3 后，从 `cmd.exe` 运行：
 py -m unittest discover -s tests -t . -v
 ```
 
-真机测试会自动查找 `adb`；也可指定：
+真机测试会自动查找 `adb`，但必须显式填写一个可读取的 Android 目录，避免仓库假设现场路径；也可指定
+`adb`：
 
 ```sh
 ANDROBACKUP_ADB=/path/to/platform-tools/adb \
+ANDROBACKUP_DEVICE_DIR=/storage/emulated/0/DCIM \
 python3 -m unittest -v tests.test_device_integration
 ```
 
@@ -31,6 +35,7 @@ python3 -m unittest -v tests.test_device_integration
 
 ```sh
 unset ANDROBACKUP_ADB_SERIAL ANDROBACKUP_ADB_CONNECT
+export ANDROBACKUP_DEVICE_DIR=/storage/emulated/0/DCIM
 python3 -m unittest -v tests.test_device_integration
 ```
 
@@ -43,6 +48,7 @@ serial；测试会用 `adb -s <serial>`，但不会执行 `adb connect`。未设
 ```sh
 export ANDROBACKUP_ADB_SERIAL=192.0.2.1:5555
 export ANDROBACKUP_ADB_CONNECT=1
+export ANDROBACKUP_DEVICE_DIR=/storage/emulated/0/DCIM
 python3 -m unittest -v tests.test_device_integration
 ```
 
@@ -52,16 +58,19 @@ Windows CMD 下的等价用法：
 rem USB 单设备：清空两个变量
 set "ANDROBACKUP_ADB_SERIAL="
 set "ANDROBACKUP_ADB_CONNECT="
+set "ANDROBACKUP_DEVICE_DIR=/storage/emulated/0/DCIM"
 py -m unittest -v tests.test_device_integration
 
 rem 无线：先完成 adb pair，再填写无线连接端点
 set "ANDROBACKUP_ADB_SERIAL=192.0.2.1:5555"
 set "ANDROBACKUP_ADB_CONNECT=1"
+set "ANDROBACKUP_DEVICE_DIR=/storage/emulated/0/DCIM"
 py -m unittest -v tests.test_device_integration
 ```
 
-Windows 与 Linux 主控的默认现场变量集中在 UTF-8 `src/backup-android.yaml`；无线调试端点
-更新时只改其中的 `adb_serial` 行。也可以在包装命令后追加 `--config PATH` 选择任意位置的 YAML，
+Windows 与 Linux 主控的本地现场变量应先从 UTF-8 `src/backup-android.example.yaml` 复制为
+`src/backup-android.yaml`；后者已忽略，无线调试端点更新时只改其中的 `adb_serial` 行。也可以在
+包装命令后追加 `--config PATH` 选择任意位置的 YAML，
 其优先级高于 `BACKUP_CONFIG_FILE` 和默认文件。离线测试通过将 `BACKUP_CONFIG_FILE` 指向不存在
 的文件来隔离现场配置。`.bat` 与 `.sh` 只是调用同一个 `backup.py` 的薄包装。
 
@@ -77,12 +86,12 @@ flowchart LR
     W --> D
     U --> V[校验器\n退出码与损坏归档]
     I --> B[主控脚本\n路径/压缩/失败清理]
-    D --> P[用户目标路径\nAndroid/data]
+    D --> P[用户指定目标路径]
 ```
 
 | 文件 | 类型 | 重点 |
 |---|---|---|
-| `tests/test_paxck_unit.py` | 单元 | 通用 PAX writer、魔术字节、流读取器、PAX 哈希、符号链接、硬链接、变化文件、压缩、校验退出码，以及 `adb_source` 的 Android `%Y/%y` 元数据解析 |
+| `tests/test_paxck_unit.py` | 单元 | 通用 PAX writer、魔术字节、流读取器、PAX 哈希、符号链接、硬链接、变化文件、压缩、校验/提取退出码、默认安全提取与 `tarfile` 直接提取，以及 `adb_source` 的 Android `%Y/%y` 元数据解析 |
 | `tests/test_pipeline_local.py` | 离线集成 | 独立本机 `create | compress | verify`、系统 tar 互操作、还原保真、非 UTF-8 文件名 |
 | `tests/test_backup_sh_integration.py` | 离线集成 | 真实 `.sh` + 替身 ADB；`backup.py -> adb_source.py -> paxck.py` 组合、USB serial（不 connect）与 TCP serial（connect）、中文/空格/单引号路径、二进制安全、截断、错误退出、Android/data 路径 |
 | `tests/test_backup_bat_integration.py` | Windows 离线集成 | 真实 `cmd.exe` + `.bat` + `.cmd` 替身 ADB；`backup.py -> adb_source.py -> paxck.py` 组合、USB serial（不 connect）与 TCP serial（connect）、UTF-8 路径、二进制重定向、gzip/裸 tar、失败清理、命令行 YAML 路径 |
@@ -97,9 +106,14 @@ flowchart LR
 亚秒 `mtime`，并直接验证其目录、普通文件和符号链接均经通用 PAX writer 写入，避免回归为
 只读取整数秒或把 ADB 打包逻辑重新耦合回 `paxck.py`。
 
-发布验证还应在 Python 3.10、3.13 和 3.14 至少各运行一次离线测试：3.10/3.13 的 zstd
+发布验证应在 Python 3.12、3.13 和 3.14 至少各运行一次离线测试：3.12/3.13 的 zstd
 用例需要 PATH 中的 `zstd`，3.14 可验证标准库 `compression.zstd` 路径。xz、gzip 和裸 tar
 不需要任何第三方 Python 包。
+
+当前本地实际验证版本为 Windows CPython 3.13.15（完整离线套件）和 WSL Ubuntu CPython
+3.14.4（跨平台选择用例）。Python 3.12 是最低支持版本，未为发布准备额外安装到本机；CI
+会在提交后覆盖。Ubuntu 24.04 默认 Python 3.12，而 Debian 12 默认 Python 3.11，后者需
+自行提供 3.12+ 解释器。
 
 `paxck.py create` 的样例树包含普通文件、空文件、跨 1 MiB 边界的大文件、中文和空格名、
 指向文件/目录的符号链接、断链以及 FIFO。测试确认：
@@ -109,6 +123,8 @@ flowchart LR
 - 文件在两遍读取间被删除、缩短或权限改变时不会产出“成功”的坏归档。
 - ADB/管道的合法短读不会被误判为 EOF。
 - 归档缺条目、截断、内容翻转或没有任何 SHA-256 记录时，`verify` 返回 1。
+- 默认 `extract` 对校验不符、路径穿越或已有目标返回失败且不发布目标目录；`--direct-tarfile`
+  明确标识为未校验、非原子，仅测试其对可信普通 tar 的互操作行为。
 
 ## 离线主控集成
 
@@ -137,8 +153,8 @@ Windows 的系统 `tar.exe` 会将归档中 POSIX 绝对符号链接目标的 `/
 
 ## 真机测试
 
-真机测试默认目标是 `/storage/emulated/0/Android/data/com.example.backup/测试.d`，可用
-`ANDROBACKUP_DEVICE_DIR` 覆盖。测试不上传被测数据，只通过 `adb exec-out` 读取。
+真机测试不再内置目标路径，必须设置 `ANDROBACKUP_DEVICE_DIR`。测试不上传被测数据，只通过
+`adb exec-out` 读取。
 
 重点用例：
 
@@ -146,7 +162,7 @@ Windows 的系统 `tar.exe` 会将归档中 POSIX 绝对符号链接目标的 `/
 2. 文件两次 `exec-out cat` 与 `adb pull` 逐字节一致。
 3. 真实 `backup-android.sh`（Linux）或 `backup-android.bat`（Windows）输出可由本机 `verify`
    完整校验；通过环境变量可分别运行 USB 与无线传输。
-4. 归档中的 `测试.txt` 与设备源字节一致。
+4. 从指定目录中选择普通文件，确认归档条目与设备源字节一致；若目录无普通文件则失败。
 5. 备份前后设备可用空间变化小于 32 MiB，防止未来回退为设备端中转文件。
 6. 对含 LF 的真实设备文件，Windows `adb exec-out cat` 与 `adb pull` 的字节完全一致。
 

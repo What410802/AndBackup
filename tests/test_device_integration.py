@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 """真机集成：需要一台已授权的 USB 或无线调试 Android 设备。"""
 import os
+import posixpath
+import shlex
 import shutil
 import subprocess
 import sys
@@ -14,7 +16,7 @@ import testsupport as T  # noqa: E402
 
 DEVICE_DIR = os.environ.get(
     'ANDROBACKUP_DEVICE_DIR',
-    '/storage/emulated/0/Android/data/com.example.backup/测试.d')
+    '')
 SPACE_SLACK_BYTES = 32 * 1024 * 1024
 
 
@@ -101,6 +103,9 @@ class DeviceCaseMixin:
                 raise unittest.SkipTest('无法连接无线 ADB：' + detail)
         if not cls.dev.serial():
             raise unittest.SkipTest('没有已授权的 USB/无线调试设备（在手机上允许调试）')
+        if not DEVICE_DIR:
+            raise unittest.SkipTest(
+                '未设置 ANDROBACKUP_DEVICE_DIR；真机测试不会假定现场 Android 路径')
 
 
 class TestDevicePreflight(DeviceCaseMixin, unittest.TestCase):
@@ -116,14 +121,35 @@ class TestDevicePreflight(DeviceCaseMixin, unittest.TestCase):
 class TestSourcePathOnDevice(DeviceCaseMixin, unittest.TestCase):
     """用户给定目录的通道与完整备份回归。"""
 
+    def _regular_files(self):
+        """Return shell-readable regular files without assuming a site tree."""
+        cached = getattr(self, '_device_regular_files', None)
+        if cached is not None:
+            return cached
+        raw = self.dev.adb_bytes([
+            'exec-out', 'sh', '-c',
+            f'find {shlex.quote(DEVICE_DIR)} -type f -print0'])
+        if not raw.endswith(b'\0'):
+            self.fail('设备 find 输出没有 NUL 终止，无法安全解析文件名')
+        files = [item.decode('utf-8', 'surrogateescape')
+                 for item in raw[:-1].split(b'\0') if item]
+        self.assertTrue(files, '源目录不含普通文件，无法验证字节传输')
+        self._device_regular_files = files
+        return files
+
     def test_exec_out_preserves_lf_bytes(self):
         """Windows adb.exe 的 exec-out 不能把 LF 转换为 CRLF。"""
-        path = DEVICE_DIR + '/测试.txt'
-        try:
-            direct = self.dev.adb_bytes(['exec-out', 'cat', path])
-        except AssertionError as exc:
-            self.skipTest('测试文件不可读取：' + str(exc))
-        if b'\n' not in direct:
+        path = None
+        direct = None
+        for candidate in self._regular_files():
+            try:
+                data = self.dev.adb_bytes(['exec-out', 'cat', candidate])
+            except AssertionError:
+                continue
+            if b'\n' in data:
+                path, direct = candidate, data
+                break
+        if path is None:
             self.skipTest('测试文件不含 LF，无法验证换行字节保真')
 
         work = tempfile.mkdtemp(prefix='paxck-device-lf-')
@@ -139,24 +165,20 @@ class TestSourcePathOnDevice(DeviceCaseMixin, unittest.TestCase):
 
     def test_source_contents_stream_intact_over_adb(self):
         """同一文件连读两次，且与 adb pull 的结果逐字节相同。"""
-        names = [name.strip() for name in
-                 self.dev.adb_out(['shell', 'ls', '-1', DEVICE_DIR]).splitlines()
-                 if name.strip()]
-        self.assertTrue(names, '源目录是空的，无法验证传输')
+        paths = self._regular_files()
         work = tempfile.mkdtemp(prefix='paxck-device-src-')
         try:
-            for name in names:
-                path = f'{DEVICE_DIR}/{name}'
+            for number, path in enumerate(paths):
                 first = self.dev.adb_bytes(['exec-out', 'cat', path])
                 second = self.dev.adb_bytes(['exec-out', 'cat', path])
-                self.assertEqual(first, second, f'{name} 两次读取不一致')
+                self.assertEqual(first, second, f'{path} 两次读取不一致')
 
-                local = os.path.join(work, os.path.basename(name))
+                local = os.path.join(work, str(number))
                 pulled = self.dev.adb_run(['pull', path, local], timeout=120)
                 self.assertEqual(pulled.returncode, 0,
                                  pulled.stderr.decode('utf-8', 'replace'))
                 with open(local, 'rb') as fh:
-                    self.assertEqual(fh.read(), first, f'{name} pull 与 cat 不一致')
+                    self.assertEqual(fh.read(), first, f'{path} pull 与 cat 不一致')
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
@@ -191,8 +213,12 @@ class TestSourcePathOnDevice(DeviceCaseMixin, unittest.TestCase):
             self.assertEqual(rc, 0, err.decode('utf-8', 'replace'))
 
             members = T.list_members(T.read_bytes(out))
-            source = self.dev.adb_bytes(['exec-out', 'cat', DEVICE_DIR + '/测试.txt'])
-            self.assertEqual(members['测试.d/测试.txt'][2], source)
+            source_path = self._regular_files()[0]
+            source = self.dev.adb_bytes(['exec-out', 'cat', source_path])
+            root_name = posixpath.basename(DEVICE_DIR.rstrip('/'))
+            member_name = root_name + '/' + posixpath.relpath(source_path, DEVICE_DIR)
+            self.assertIn(member_name, members)
+            self.assertEqual(members[member_name][2], source)
 
             if free_before is not None:
                 free_after = self.dev.free_bytes()

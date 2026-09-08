@@ -24,6 +24,9 @@ paxck — 生成/校验带 PAX 内嵌 SHA-256 的 tar 归档
   paxck.py verify < out.tar.xz
   paxck.py verify -i out.tar.xz
 
+  # 安全提取：校验 PAX SHA-256 后原子发布到一个尚不存在的目录
+  paxck.py extract -i out.tar.xz -C restored
+
 说明：
   verify 会自动嗅探输入的魔术字节。xz 与 gzip 用标准库 lzma / gzip 原生解压，
   因此 Windows 端无需安装任何压缩工具，只要有 Python 即可完成端到端校验。
@@ -31,9 +34,9 @@ paxck — 生成/校验带 PAX 内嵌 SHA-256 的 tar 归档
 
 退出码：
   0  成功
-  1  create 参数错误 / verify 校验失败（含空归档、截断、无 SHA-256 记录）
+  1  参数错误 / verify、extract 校验失败（含空归档、截断、无 SHA-256 记录或不安全路径）
   2  输入为 zstd 流但当前 Python 无标准库支持
-  3  create 写入过程中发生不可恢复的错误，归档流已损坏
+  3  create 写入或 extract 落盘过程中发生不可恢复的错误
 """
 
 import os
@@ -47,11 +50,24 @@ import tarfile
 import argparse
 import subprocess
 import threading
+import tempfile
 
 # pax key 名：全大写 vendor 前缀，POSIX 保留给厂商扩展，避免与未来标准冲突
 PAX_KEY = 'PAXCK.checksum.sha256'
 CHUNK = 1 << 20          # 1 MiB，分块哈希
 BLOCKSIZE = tarfile.RECORDSIZE  # tar 记录大小 512
+
+
+def _read_version():
+    path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'VERSION')
+    try:
+        with open(path, encoding='ascii') as fh:
+            return fh.read().strip() or '0.1.0'
+    except OSError:
+        return '0.1.0'
+
+
+VERSION = _read_version()
 
 
 def binary_stdout():
@@ -659,10 +675,310 @@ def cmd_verify(quiet=False, infile=None):
     return 1 if bad else 0
 
 
-def main():
+class _UnsafeArchive(ValueError):
+    """The archive asks extraction to leave its destination directory."""
+
+
+class _ArchiveInputError(OSError):
+    """The archive path could not be opened before extraction began."""
+
+
+def _member_parts(name):
+    """Return a safe, portable relative path split into native components."""
+    if not isinstance(name, str) or not name:
+        raise _UnsafeArchive('条目路径为空')
+    if '\0' in name:
+        raise _UnsafeArchive(f'条目路径含 NUL：{name!r}')
+    if name.startswith(('/', '\\')) or '\\' in name:
+        raise _UnsafeArchive(f'条目路径不是安全的 POSIX 相对路径：{name!r}')
+    parts = name.split('/')
+    if any(part in ('', '.', '..') for part in parts):
+        raise _UnsafeArchive(f'条目路径含空、. 或 .. 组件：{name!r}')
+    if os.name == 'nt' and any(':' in part for part in parts):
+        raise _UnsafeArchive(f'条目路径含 Windows 驱动器语法：{name!r}')
+    return parts
+
+
+def _member_path(stage, parts):
+    path = os.path.join(stage, *parts)
+    stage_norm = os.path.normcase(os.path.abspath(stage))
+    path_norm = os.path.normcase(os.path.abspath(path))
+    if os.path.commonpath((stage_norm, path_norm)) != stage_norm:
+        raise _UnsafeArchive('条目路径越过了目标目录')
+    return path
+
+
+def _require_directory_parents(stage, parts):
+    current = stage
+    for part in parts[:-1]:
+        current = os.path.join(current, part)
+        if os.path.islink(current) or not os.path.isdir(current):
+            raise _UnsafeArchive(
+                f'条目父路径不是已创建的真实目录：{"/".join(parts)!r}')
+
+
+def _restore_metadata(path, member, follow_symlinks=True):
+    """Restore portable mode/mtime fields without requiring elevated rights."""
+    if follow_symlinks:
+        try:
+            os.chmod(path, member.mode)
+        except OSError as e:
+            sys.stderr.write(f'[WARN] 无法恢复 {member.name} 的权限位：{e}\n')
+    try:
+        os.utime(path, (member.mtime, member.mtime),
+                 follow_symlinks=follow_symlinks)
+    except (NotImplementedError, OSError) as e:
+        sys.stderr.write(f'[WARN] 无法恢复 {member.name} 的修改时间：{e}\n')
+
+
+def _copy_verified_member(tf, member, destination):
+    headers = getattr(member, 'pax_headers', None) or {}
+    expected = headers.get(PAX_KEY)
+    if not expected:
+        raise _UnsafeArchive(
+            f'{member.name}: 普通文件缺少 {PAX_KEY}，拒绝提取未校验内容')
+    source = tf.extractfile(member)
+    if source is None:
+        raise OSError(f'{member.name}: tar 无法提供文件内容')
+
+    digest = hashlib.sha256()
+    size = 0
+    with open(destination, 'xb') as target:
+        while True:
+            chunk = source.read(CHUNK)
+            if not chunk:
+                break
+            target.write(chunk)
+            digest.update(chunk)
+            size += len(chunk)
+    if size != member.size:
+        raise OSError(f'{member.name}: 读取长度 {size} 不等于 tar 记录的 {member.size}')
+    actual = digest.hexdigest()
+    if actual != expected:
+        raise _UnsafeArchive(
+            f'{member.name}: SHA-256 不符（记录 {expected[:16]}…，实际 {actual[:16]}…）')
+
+
+def _drain_archive_stream(stream):
+    """Force compressed-stream footer validation after tar's logical EOF."""
+    while stream.read(CHUNK):
+        pass
+    if hasattr(stream, 'finish'):
+        stream.finish()
+
+
+def _extract_to_stage(infile, stage):
+    """Extract one verified archive into a private, empty staging directory."""
+    src = None
+    stream = None
+    tf = None
+    total = 0
+    seen = set()
+    deferred_hardlinks = []
+    deferred_symlinks = []
+    directories = []
+    try:
+        if infile:
+            try:
+                src = open(infile, 'rb')
+            except OSError as e:
+                raise _ArchiveInputError(
+                    f'无法读取归档 {infile}：{e.strerror or e}') from e
+        else:
+            src = _bin_in()
+        stream = open_archive_stream(src)
+        tf = tarfile.open(fileobj=stream, mode='r|')
+
+        for member in tf:
+            total += 1
+            parts = _member_parts(member.name)
+            canonical = '/'.join(parts)
+            if canonical in seen:
+                raise _UnsafeArchive(f'归档含重复条目：{member.name!r}')
+            seen.add(canonical)
+            _require_directory_parents(stage, parts)
+            destination = _member_path(stage, parts)
+
+            if member.isdir():
+                os.mkdir(destination)
+                directories.append((destination, member))
+                continue
+
+            if member.isfile():
+                _copy_verified_member(tf, member, destination)
+                _restore_metadata(destination, member)
+                continue
+
+            if member.islnk():
+                target_parts = _member_parts(member.linkname)
+                deferred_hardlinks.append((destination, member, target_parts))
+                continue
+
+            if member.issym():
+                if '\0' in member.linkname:
+                    raise _UnsafeArchive(f'{member.name}: 符号链接目标含 NUL')
+                deferred_symlinks.append((destination, member, parts))
+                continue
+
+            raise _UnsafeArchive(
+                f'{member.name}: 不支持的 tar 条目类型 {member.type!r}')
+
+        if total == 0:
+            raise _UnsafeArchive('归档为空（0 个条目）')
+
+        # All regular files and directories exist before links. This prevents a
+        # symlink from becoming a parent used by a later extraction operation.
+        for destination, member, target_parts in deferred_hardlinks:
+            _require_directory_parents(stage, _member_parts(member.name))
+            target = _member_path(stage, target_parts)
+            if os.path.islink(target) or not os.path.isfile(target):
+                raise _UnsafeArchive(
+                    f'{member.name}: 硬链接目标不是已提取的普通文件：{member.linkname!r}')
+            os.link(target, destination)
+            _restore_metadata(destination, member)
+
+        for destination, member, parts in deferred_symlinks:
+            _require_directory_parents(stage, parts)
+            target_is_directory = os.path.isdir(
+                os.path.join(os.path.dirname(destination), member.linkname))
+            os.symlink(member.linkname, destination,
+                       target_is_directory=target_is_directory)
+            _restore_metadata(destination, member, follow_symlinks=False)
+
+        # Creating children changes directory timestamps, so restore them last.
+        for destination, member in reversed(directories):
+            _restore_metadata(destination, member)
+        _drain_archive_stream(stream)
+    finally:
+        if tf is not None:
+            try:
+                tf.close()
+            except Exception:
+                pass
+        if stream is not None and stream is not src:
+            try:
+                stream.close()
+            except Exception:
+                pass
+        if src is not None and src is not _bin_in():
+            try:
+                src.close()
+            except Exception:
+                pass
+
+
+def cmd_extract(infile, directory):
+    """Safely extract a PAXCK archive into a new directory, atomically."""
+    destination = os.path.abspath(directory)
+    parent = os.path.dirname(destination) or os.curdir
+    if os.path.lexists(destination):
+        sys.stderr.write(f'[FAIL] 目标目录已存在，拒绝覆盖：{destination}\n')
+        return 1
+    if not os.path.isdir(parent):
+        sys.stderr.write(f'[FAIL] 目标目录的父目录不存在：{parent}\n')
+        return 1
+
+    stage = None
+    try:
+        stage = tempfile.mkdtemp(
+            prefix=os.path.basename(destination) + '.partial.', dir=parent)
+        _extract_to_stage(infile, stage)
+        os.replace(stage, destination)
+        stage = None
+        print(f'[完成] 已验证并提取到 {directory}')
+        return 0
+    except _UnsafeArchive as e:
+        sys.stderr.write(f'[FAIL] 拒绝提取归档：{e}\n')
+        return 1
+    except _ArchiveInputError as e:
+        sys.stderr.write(f'[FAIL] {e}\n')
+        return 1
+    except (lzma.LZMAError, tarfile.TarError, EOFError) as e:
+        sys.stderr.write(f'[FAIL] 归档损坏或截断，未提取：{e}\n')
+        return 1
+    except OSError as e:
+        sys.stderr.write(f'[FAIL] 提取失败，未发布目标目录：{e}\n')
+        return 3
+    finally:
+        if stage is not None:
+            shutil.rmtree(stage, ignore_errors=True)
+
+
+def cmd_extract_direct(infile, directory):
+    """Delegate extraction to tarfile without PAXCK validation or staging.
+
+    This intentionally has tarfile's direct-write semantics: ``directory`` may
+    already exist and a failure may leave files behind.  It is for trusted
+    archives and interoperability only; the default ``extract`` path above is
+    the backup-recovery path.
+    """
+    destination = os.path.abspath(directory)
+    if os.path.lexists(destination) and not os.path.isdir(destination):
+        sys.stderr.write(f'[FAIL] tarfile 直接提取的目标不是目录：{destination}\n')
+        return 1
+
+    try:
+        os.makedirs(destination, exist_ok=True)
+    except OSError as e:
+        sys.stderr.write(f'[FAIL] 无法创建提取目标目录：{e}\n')
+        return 3
+
+    src = None
+    stream = None
+    tf = None
+    try:
+        if infile:
+            try:
+                src = open(infile, 'rb')
+            except OSError as e:
+                sys.stderr.write(f'[FAIL] 无法读取归档 {infile}：{e.strerror or e}\n')
+                return 1
+        else:
+            src = _bin_in()
+
+        try:
+            stream = open_archive_stream(src)
+            tf = tarfile.open(fileobj=stream, mode='r|')
+            # Python 3.12+ changed extraction-filter defaults.  Direct mode is
+            # explicitly requested for trusted archives, so preserve tarfile's
+            # traditional unrestricted extraction semantics on every version.
+            if hasattr(tarfile, 'fully_trusted_filter'):
+                tf.extractall(destination, filter='fully_trusted')
+            else:
+                tf.extractall(destination)
+            _drain_archive_stream(stream)
+        except (lzma.LZMAError, tarfile.TarError, EOFError) as e:
+            sys.stderr.write(f'[FAIL] tarfile 直接提取失败：归档损坏或截断：{e}\n')
+            return 1
+        except OSError as e:
+            sys.stderr.write(f'[FAIL] tarfile 直接提取失败：{e}\n')
+            return 3
+    finally:
+        if tf is not None:
+            try:
+                tf.close()
+            except Exception:
+                pass
+        if stream is not None and stream is not src:
+            try:
+                stream.close()
+            except Exception:
+                pass
+        if src is not None and src is not _bin_in():
+            try:
+                src.close()
+            except Exception:
+                pass
+
+    print(f'[完成] 已由 tarfile 直接提取到 {directory}（未校验 PAX SHA-256，非原子）')
+    return 0
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser(
         prog='paxck',
         description='创建/校验带 pax 内嵌 SHA-256 的 tar 归档（流式，仅用标准库）')
+    ap.add_argument('--version', action='version', version=f'%(prog)s {VERSION}')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     c = sub.add_parser('create', help='打包本机目录到 stdout')
@@ -676,12 +992,25 @@ def main():
     v.add_argument('-i', '--input', dest='infile', help='同位置参数，归档路径')
     v.add_argument('-q', '--quiet', action='store_true')
 
-    args = ap.parse_args()
+    x = sub.add_parser('extract', help='提取归档（默认校验 SHA-256 后原子发布）')
+    x.add_argument('path', nargs='?', help='归档路径；省略则从 stdin 读')
+    x.add_argument('-i', '--input', dest='infile', help='同位置参数，归档路径')
+    x.add_argument('-C', '--directory', required=True,
+                   help='默认模式的尚不存在目标目录；直接模式可为已有目录')
+    x.add_argument('--direct-tarfile', '--direct', dest='direct',
+                   action='store_true',
+                   help='直接调用 tarfile 写入目标；跳过校验和原子性，只用于可信归档')
+
+    args = ap.parse_args(argv)
     if args.cmd == 'create':
         return cmd_create(args.directory)
     if args.cmd == 'compress':
         return cmd_compress(args.kind)
-    return cmd_verify(args.quiet, args.infile or args.path)
+    if args.cmd == 'verify':
+        return cmd_verify(args.quiet, args.infile or args.path)
+    if args.direct:
+        return cmd_extract_direct(args.infile or args.path, args.directory)
+    return cmd_extract(args.infile or args.path, args.directory)
 
 
 if __name__ == '__main__':

@@ -1,14 +1,16 @@
 # AndBackup
 
+[English README](README.en.md) | [中文技术说明](docs/flow.md) | [中文测试说明](docs/testing.md)
+
 项目由两个可独立使用的组件组成：`paxck.py` 将**本机目录**写成带 PAX 内嵌 SHA-256 的
-`tar.xz`、`tar.gz`、`tar.zst` 或裸 `tar`；`adb_source.py` 则把已开启 ADB 调试（USB 有线或
+裸 `tar`，并可压缩、校验或提取；`adb_source.py` 则把已开启 ADB 调试（USB 有线或
 TCP 无线）的 Android 目录作为同一打包器的数据源。两者组合时，设备上不会生成 tar、压缩包
 或临时文件，归档落盘后还会逐文件校验 SHA-256。
 
 项目针对一个常见但受限的场景：Android 11+ 禁止普通应用读取其他应用的
 `Android/data`；因此不使用 Termux/SSH，而是让主机通过授权的 `adb exec-out` 以
-Android shell 用户读取源文件。实机已验证的路径为
-`/storage/emulated/0/Android/data/com.example.backup/测试.d`。
+Android shell 用户读取源文件。实机已验证 ADB shell 可读取
+`/storage/emulated/0` 下的目录。
 
 ```text
 Android 文件 -> adb exec-out -> adb_source.py -> paxck.py -> tar + 压缩
@@ -21,11 +23,21 @@ Android 文件 -> adb exec-out -> adb_source.py -> paxck.py -> tar + 压缩
 准备条件：
 
 - Android 设备开启 ADB 调试，并在设备上授权当前主机；可使用 USB 有线调试或无线调试。
-- 主机安装 Python 3.10+ 与 Android platform-tools 的 `adb`。
+- 主机安装 Python 3.12+ 与 Android platform-tools 的 `adb`。
 - Linux 运行 `src/backup-android.sh`；Windows 从 `cmd.exe` （而非 PowerShell ）运行 `src\backup-android.bat`。
 
-先编辑 `src/backup-android.yaml`，填写设备选择方式和备份目标。USB 与无线 ADB 使用同一个
-启动脚本，区别只在 `adb_serial`/`adb_connect`：
+先将跟踪的模板复制为本地配置，再编辑副本。`src/backup-android.yaml` 被 `.gitignore` 忽略，
+不会随提交包含设备 serial、无线端点或本机输出路径：
+
+```sh
+cp src/backup-android.example.yaml src/backup-android.yaml
+```
+
+```bat
+copy src\backup-android.example.yaml src\backup-android.yaml
+```
+
+USB 与无线 ADB 使用同一个启动脚本，区别只在 `adb_serial`/`adb_connect`：
 
 USB 有线 ADB（单设备时可留空 `adb_serial`）：
 
@@ -33,7 +45,7 @@ USB 有线 ADB（单设备时可留空 `adb_serial`）：
 adb: adb
 adb_serial: ""
 adb_connect: false
-source_dir: "/storage/emulated/0/Android/data/com.example.backup/测试.d"
+source_dir: "/storage/emulated/0/DCIM"
 out: android-backup.tar.xz
 compress: xz
 ```
@@ -89,7 +101,7 @@ src\backup-android.bat --config D:\backup-config\site-backup.yaml
 ```
 
 配置文件选择优先级为 `--config PATH`、`BACKUP_CONFIG_FILE`、脚本目录中默认的
-`src/backup-android.yaml`。显式传入但不存在的 `--config` 会报错；将
+`src/backup-android.yaml`（存在时）。显式传入但不存在的 `--config` 会报错；将
 `BACKUP_CONFIG_FILE` 设为空或设为不存在路径，则不加载默认 YAML，适合自动化测试或完全使用
 环境变量的场景。同名业务环境变量（如 `OUT`、`ADB_SERIAL`）始终优先于 YAML 内的值。
 
@@ -104,7 +116,7 @@ Linux 与 Windows 主控共用以下环境变量：
 | `PYTHON` | 自动查找 | Windows 上 Python 解释器的完整路径（可选） |
 | `ADB_SERIAL` | 未指定 | 要使用的设备 serial；USB 填 `adb devices` 的 serial，无线填 `host:port` |
 | `ADB_CONNECT` | 未指定 | 无线 TCP serial 设为 `1`/`true` 时先执行 `adb connect`；USB 应保持关闭 |
-| `BACKUP_CONFIG_FILE` | 未设置时为 `src\backup-android.yaml` | UTF-8 配置文件路径；空值/不存在路径不加载 YAML |
+| `BACKUP_CONFIG_FILE` | 未设置时尝试 `src\backup-android.yaml` | UTF-8 配置文件路径；空值/不存在路径不加载 YAML |
 
 `xz` 与 `gzip` 只用 Python 标准库。`zstd` 需要 Python 3.14+ 的
 `compression.zstd`，或主机 `PATH` 中的 `zstd`；缺少时会以退出码 2 失败。
@@ -120,15 +132,20 @@ YAML 配置只使用顶层键值（字符串可用单引号或双引号）；上
 
 Python 版本不必固定到某一个补丁版本，但发布时应声明并测试版本范围：
 
-- Python **3.10 或更高版本**：支持 `xz`、`gzip`、裸 `tar`、ADB 读取、PAX SHA-256 和
+- Python **3.12 或更高版本**：支持 `xz`、`gzip`、裸 `tar`、ADB 读取、PAX SHA-256 和
   YAML 配置。
 - Python **3.14 或更高版本**：可直接使用标准库 `compression.zstd` 生成和校验 zstd。
-- Python **3.10--3.13**：选择 zstd 时需要另外安装主机 `zstd` 命令并放入 `PATH`；否则使用
+- Python **3.12--3.13**：选择 zstd 时需要另外安装主机 `zstd` 命令并放入 `PATH`；否则使用
   `xz`（默认）或 `gzip`。
 
 因此，普通用户无需创建虚拟环境或锁定依赖；推荐发布包/CI 固定一个最低版本（当前为
-3.10）并覆盖 3.10、3.13、3.14 的测试矩阵。若需要可复现的 zstd 字节流，应同时固定
+3.12）并覆盖 3.12、3.13、3.14 的测试矩阵。若需要可复现的 zstd 字节流，应同时固定
 Python 版本和 zstd 外部命令版本，因为压缩器实现和参数会影响输出字节，但不影响归档内容。
+
+截至 `v0.1.0` 发布准备，完整离线套件已在 Windows CPython 3.13.15 上运行；WSL Ubuntu
+CPython 3.14.4 已运行跨平台选择用例。Python 3.12 是声明的最低版本，并由提交后的 CI
+矩阵覆盖，但本机未为此额外安装解释器。Ubuntu 24.04 的系统 Python 为 3.12；Debian 12
+的系统 Python 为 3.11，需另行安装或提供 3.12+ 解释器。
 
 `adb` 不是 Python 包，需按 Android 官方 Platform-Tools 的版本和目标系统单独分发或要求用户
 安装。设备端不需要 Python、tar、xz、gzip 或 zstd。
@@ -141,6 +158,7 @@ Python 版本和 zstd 外部命令版本，因为压缩器实现和参数会影�
 python3 src/paxck.py create /path/to/local-directory \
   | python3 src/paxck.py compress xz > local.tar.xz
 python3 src/paxck.py verify -i local.tar.xz
+python3 src/paxck.py extract -i local.tar.xz -C local-restored
 ```
 
 Windows 请从 `cmd.exe` 运行等价命令，避免 PowerShell 的文本管道影响二进制流：
@@ -149,6 +167,7 @@ Windows 请从 `cmd.exe` 运行等价命令，避免 PowerShell 的文本管道�
 py src\paxck.py create "C:\path\to\local-directory" ^
   | py src\paxck.py compress xz > local.tar.xz
 py src\paxck.py verify -i local.tar.xz
+py src\paxck.py extract -i local.tar.xz -C local-restored
 ```
 
 `adb_source.py` 是 Android 专用的数据源适配器：它通过 `adb exec-out` 写出裸 PAX tar，
@@ -156,7 +175,7 @@ py src\paxck.py verify -i local.tar.xz
 
 ```sh
 python3 src/adb_source.py --adb /path/to/adb \
-  /storage/emulated/0/Android/data/com.example.backup/测试.d \
+  /storage/emulated/0/DCIM \
   | python3 src/paxck.py compress xz > android.tar.xz
 python3 src/paxck.py verify -i android.tar.xz
 ```
@@ -185,6 +204,31 @@ ADB shell 只调用系统自带的 `find -print0`、`stat`、`readlink` 和 `cat
 3. 每个普通文件的 `PAXCK.checksum.sha256` 是否与内容匹配。
 
 没有这项 PAX 记录的普通 tar 会被拒绝，而不是显示“0 个失败”。
+
+## 公开接口
+
+以下是 `v0.1.0` 对外支持的命令行接口。所有归档字节都走二进制 stdin/stdout；在 Windows
+应从 `cmd.exe` 使用管道和重定向，避免 PowerShell 的文本管道改变数据。
+
+| 入口 | 用法 | 行为 |
+|---|---|---|
+| 本机打包 | `paxck.py create DIRECTORY` | 将 `DIRECTORY` 作为根目录写成裸 PAX tar 到 stdout；普通文件带 `PAXCK.checksum.sha256`。 |
+| 压缩 | `paxck.py compress {xz,gzip,zstd,none}` | 从 stdin 读原始字节并写到 stdout。`xz`、`gzip`、`none` 只需标准库。 |
+| 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别裸 tar、xz、gzip、zstd，验证每个普通文件的 PAX SHA-256。 |
+| 默认提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | `DEST` 必须尚不存在；在同级临时目录逐文件校验 SHA-256、拒绝不安全路径/未校验普通文件，成功后原子改名发布。 |
+| 直接提取 | `paxck.py extract --direct-tarfile [ARCHIVE] -C DEST`（`--direct` 为别名） | 直接调用 Python `tarfile`，允许已有 `DEST`，不验证 PAX SHA-256，也不具有原子性。仅用于可信归档或互操作；失败可留下部分文件。 |
+| Android 源适配器 | `adb_source.py [--adb ADB] DIRECTORY` | 经 `adb exec-out` 将 Android 绝对目录写为裸 PAX tar 到 stdout；不压缩、不落盘。 |
+| Android 主控 | `backup.py [--config PATH]` | 读取配置/环境，组合 ADB 适配器与压缩器，校验 `.partial` 后原子替换最终归档。 |
+| 平台包装 | `backup-android.sh [ARGS...]`；`backup-android.bat [ARGS...]` | 仅转发所有参数给同目录 `backup.py`；前者用于 POSIX shell，后者用于 Windows CMD。 |
+
+`paxck.py --version`、`adb_source.py --version` 和 `backup.py --version` 输出同一个发布版本。
+`backup.py` 的公开配置键为 `adb`、`adb_serial`、`adb_connect`、`source_dir`、`out`、`compress`；
+同名环境变量 `ADB`、`ADB_SERIAL`、`ADB_CONNECT`、`SOURCE_DIR`、`OUT`、`COMPRESS` 优先于 YAML。
+`PYTHON` 和 `BACKUP_CONFIG_FILE` 是包装/配置选择环境变量，含义见上表。
+上表以外的 Python 模块函数、类和常量都是实现细节，不构成稳定公开 API。
+
+提取命令成功信息只在 stdout 输出，失败诊断只在 stderr 输出。默认模式成功时显示“已验证并提取”，
+直接模式明确显示“未校验 PAX SHA-256，非原子”，不能把后者当作备份恢复验证。
 
 Android 归档会同时读取 `stat` 的 `%Y` 与 `%y`，并保留 `%y` 暴露的小数部分；当前实测设备的
 `/storage/emulated/0/Android/data/...` 文件和目录显示 9 位小数（纳秒格式）。这表示接口
@@ -222,15 +266,17 @@ SHA-256。
 
 ```text
 src/
-  paxck.py                 通用本机 PAX 归档、压缩和校验器
+  paxck.py                 通用本机 PAX 归档、压缩、校验和提取器
   adb_source.py            Android ADB 数据源适配器（写裸 PAX tar）
   backup.py                 跨平台 Android 主控（配置、组合、原子输出与校验）
   backup-android.sh        POSIX 启动包装（转发至 backup.py）
   backup-android.bat       Windows CMD 启动包装（转发至 backup.py）
-  backup-android.yaml       跨平台现场变量（USB serial、无线 ADB endpoint 等）
+  backup-android.example.yaml  无现场信息的配置模板
+  backup-android.yaml       本地现场配置（忽略，不随提交）
 docs/
   flow.md                  数据流、错误语义与边界
   testing.md               测试层次、覆盖范围和运行方式
+  release-0.1.0.md         首版发布说明草稿与检查表
 tests/                     单元、离线集成和真机集成测试
 ```
 
@@ -241,6 +287,8 @@ tests/                     单元、离线集成和真机集成测试
 - 本工具不读取受 Android 应用私有沙箱保护的 `/data/user/*`；它针对外部存储上的
   `Android/data/*` 与其他 ADB shell 可读目录。
 - 源文件在备份中持续变化时，工具会失败而非产生不完整的“成功”备份；暂停相关应用后重试。
+- `paxck.py extract` 默认只接受由本项目写出的、普通文件带 SHA-256 记录的安全归档，并且目标
+  目录不得已存在；使用 `--direct-tarfile` 即明确放弃这两项保护，不能对不可信输入使用。
 - Windows `.bat` 及其 `cmd.exe` 二进制重定向已有离线自动化覆盖；仍建议在首次使用的
   设备上运行真机集成测试确认 ROM 的 ADB shell 存储权限。
 
@@ -255,6 +303,7 @@ python3 -m pytest tests -q
 
 ```sh
 ANDROBACKUP_ADB=/path/to/adb \
+ANDROBACKUP_DEVICE_DIR=/storage/emulated/0/DCIM \
 python3 -m unittest -v tests.test_device_integration
 ```
 
@@ -264,8 +313,14 @@ Windows 无线调试设备可这样运行真机测试（USB 设备则省略这�
 ```bat
 set "ANDROBACKUP_ADB_SERIAL=192.0.2.1:5555"
 set "ANDROBACKUP_ADB_CONNECT=1"
+set "ANDROBACKUP_DEVICE_DIR=/storage/emulated/0/DCIM"
 py -m unittest -v tests.test_device_integration
 ```
 
 完整测试说明见 [docs/testing.md](docs/testing.md)，设计说明见
 [docs/flow.md](docs/flow.md)。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)；版本记录见 [CHANGELOG.md](CHANGELOG.md)，首版发布说明和
+发布前检查表见 [docs/release-0.1.0.md](docs/release-0.1.0.md)。

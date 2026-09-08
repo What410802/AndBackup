@@ -1,3 +1,9 @@
 __pycache__/
 *.py[cod]
 *.partial.*
+
+# Local Android target and ADB endpoint. Create it from the tracked template.
+/src/backup-android.yaml
+
+# Internal development transcripts can contain local paths and transient ADB data.
+/docs/agent-chat-history/

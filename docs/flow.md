@@ -1,5 +1,7 @@
 # Android 到主机的流式备份
 
+[English version](flow.en.md) | [中文 README](../README.md)
+
 本项目只使用 ADB 直读，不再包含 Termux、SSH、端口转发或设备端 Python。ADB 可以通过
 USB 有线链路或 TCP 无线链路承载，备份协议和主机处理流程完全相同。原因是
 Android 11+ 的 scoped storage 会阻止 Termux 等普通应用读取其他应用的
@@ -9,8 +11,8 @@ Android 11+ 的 scoped storage 会阻止 Termux 等普通应用读取其他应�
 
 归档写入与 Android 读取是两个独立层次：
 
-- `paxck.py create <本机目录>` 是通用本机目录打包器；`compress` 和 `verify` 可处理它产生的
-  裸 PAX tar。
+- `paxck.py create <本机目录>` 是通用本机目录打包器；`compress`、`verify` 和 `extract` 可处理
+  它产生的裸 PAX tar。
 - `adb_source.py --adb <ADB> <Android目录>` 只负责以 `adb exec-out` 枚举/读取设备目录，并把
   条目交给 `paxck.py` 的通用 PAX writer。它的 stdout 是裸 tar，不负责压缩或最终落盘。
 - `backup.py` 是 Android 组合入口：启动前两者、检查两个子进程的退出码，写入并校验
@@ -19,6 +21,36 @@ Android 11+ 的 scoped storage 会阻止 Termux 等普通应用读取其他应�
 因此 `paxck.py` 可以完全脱离 Android 使用；Android 手动组合为
 `adb_source.py ... | paxck.py compress xz`，但生产备份应使用 `backup.py` 以得到完整的失败清理
 和双端退出码检查。
+
+## 提取模式与公开 CLI
+
+`paxck.py extract` 默认是备份恢复模式：`-C DEST` 的 `DEST` 必须尚不存在；命令先在同级临时
+目录中写入，普通文件写入时立即验证 `PAXCK.checksum.sha256`，并拒绝空、重复、绝对、反斜杠、
+`.`/`..`、NUL、Windows 驱动器语法、未校验普通文件与不支持的条目。所有内容和压缩流尾部均
+成功后才原子改名为 `DEST`。失败时不会发布 `DEST`，也不覆盖已有目录。
+
+`paxck.py extract --direct-tarfile`（`--direct` 为别名）是刻意放宽的互操作模式：它直接调用
+Python `tarfile`，可写入已有目录，不校验 PAX SHA-256，不保证原子性，出错可能留下部分文件；
+仅可用于可信归档。两个模式的成功信息分别明确标识为“已验证并提取”和“未校验 PAX SHA-256，
+非原子”；诊断信息输出到 stderr。
+
+对外命令行接口如下：
+
+| 命令 | 语法 | 输出/语义 |
+|---|---|---|
+| 本机打包 | `paxck.py create DIRECTORY` | 裸 PAX tar 写到二进制 stdout。 |
+| 压缩 | `paxck.py compress {xz,gzip,zstd,none}` | 二进制 stdin 到二进制 stdout。 |
+| 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别压缩，校验普通文件的 PAX SHA-256。 |
+| 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | 默认已验证、暂存、原子发布；可加 `--direct-tarfile` 改为可信归档直接模式。 |
+| Android 数据源 | `adb_source.py [--adb ADB] DIRECTORY` | 设备目录写为 stdout 裸 PAX tar。 |
+| Android 主控 | `backup.py [--config PATH]` | 读取 YAML/环境，完成 ADB 管道、校验和原子输出。 |
+| 平台包装 | `backup-android.sh [ARGS...]` / `backup-android.bat [ARGS...]` | 将参数转发给同目录 `backup.py`。 |
+
+三个 Python 入口都支持 `--version`。`backup.py` 识别 YAML 键 `adb`、`adb_serial`、
+`adb_connect`、`source_dir`、`out`、`compress`，并由同名环境变量覆盖；配置选择顺序为
+`--config`、`BACKUP_CONFIG_FILE`、存在的同目录 `backup-android.yaml`。应从
+`backup-android.example.yaml` 复制并编辑本地 YAML；实际 YAML 已忽略，不能提交端点或本机路径。
+未列出的 Python 函数、类和常量均为实现细节，不是稳定公开 API。
 
 ## 数据流
 
@@ -187,11 +219,15 @@ flowchart TD
 PyYAML、`zstandard` 或其他第三方 Python 包，因此不需要 `requirements.txt` 或虚拟环境来
 安装运行依赖。
 
-Python 3.10+ 是当前最低支持版本，覆盖 tar/PAX、ADB、xz、gzip、裸 tar 和内置 YAML 子集
-解析。zstd 有两条路径：Python 3.14+ 使用标准库 `compression.zstd`；Python 3.10--3.13
-需要主机 `PATH` 中的 `zstd` 命令。发布时建议在 CI 测试 Python 3.10、3.13、3.14，而不是
+Python 3.12+ 是当前最低支持版本，覆盖 tar/PAX、ADB、xz、gzip、裸 tar 和内置 YAML 子集
+解析。zstd 有两条路径：Python 3.14+ 使用标准库 `compression.zstd`；Python 3.12--3.13
+需要主机 `PATH` 中的 `zstd` 命令。发布时建议在 CI 测试 Python 3.12、3.13、3.14，而不是
 强制所有用户使用同一个补丁版本。只有需要可复现的 zstd 压缩字节时，才需要同时固定 Python
 和 zstd 版本；归档逻辑和校验结果不依赖补丁版本。
+
+发布准备期间已完整运行 Windows CPython 3.13.15 离线套件，并在 WSL Ubuntu CPython 3.14.4
+运行跨平台选择用例。Python 3.12 未在本机额外安装，但会由 CI 覆盖。Ubuntu 24.04 的系统
+Python 为 3.12；Debian 12 的系统 Python 为 3.11，使用 Debian 12 时须自行提供 3.12+。
 
 `adb` 是外部的 Android 调试工具，不是 Python 依赖。设备端只使用 ROM 提供的
 `find`、`stat`、`readlink` 和 `cat`，不需要安装 Python、tar 或压缩程序。

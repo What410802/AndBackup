@@ -613,6 +613,147 @@ class TestVerifyInputHandling(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------
+# extract 层
+# --------------------------------------------------------------------------
+class TestExtract(T.BaseCase):
+    def _destination(self, name='restored'):
+        return os.path.join(self.tmp, name)
+
+    def test_healthy_archives_extract_to_new_directory(self):
+        for kind in ('none', 'gzip', 'xz'):
+            with self.subTest(kind=kind):
+                destination = self._destination('restored-' + kind)
+                blob = T.make_archive(self.root, kind)
+                rc, out, err = T.run_cli(
+                    ['extract', '-C', destination], stdin=blob)
+                self.assertEqual(rc, 0, err.decode('utf-8', 'replace'))
+                restored = os.path.join(destination, '测试.d')
+                self.assertEqual(T.read_bytes(os.path.join(restored, 'readme.txt')),
+                                 b'hello\n')
+                self.assertEqual(
+                    T.read_bytes(os.path.join(restored, 'binary.bin')),
+                    T.read_bytes(os.path.join(self.root, 'binary.bin')))
+
+    def test_file_argument_is_accepted(self):
+        archive = os.path.join(self.tmp, 'input.tar.xz')
+        with open(archive, 'wb') as fh:
+            fh.write(T.make_archive(self.root, 'xz'))
+        destination = self._destination()
+        rc, out, err = T.run_cli(['extract', '-i', archive, '-C', destination])
+        self.assertEqual(rc, 0, err.decode('utf-8', 'replace'))
+        self.assertTrue(os.path.isfile(
+            os.path.join(destination, '测试.d', 'readme.txt')))
+
+    def test_missing_archive_path_is_a_clean_failure(self):
+        destination = self._destination()
+        rc, out, err = T.run_cli([
+            'extract', '-i', os.path.join(self.tmp, 'missing.tar'),
+            '-C', destination])
+        self.assertEqual(rc, 1)
+        self.assertIn(b'[FAIL]', err)
+        self.assertNotIn(b'Traceback', err)
+        self.assertFalse(os.path.lexists(destination))
+
+    def test_bad_checksum_does_not_publish_destination(self):
+        raw = T.make_tar(self.root)
+        expected = T.sha256_of(b'hello\n').encode()
+        idx = raw.find(expected)
+        self.assertGreater(idx, 0)
+        damaged = raw[:idx] + (b'0' * len(expected)) + raw[idx + len(expected):]
+        destination = self._destination()
+        rc, out, err = T.run_cli(['extract', '-C', destination], stdin=damaged)
+        self.assertEqual(rc, 1, err.decode('utf-8', 'replace'))
+        self.assertFalse(os.path.lexists(destination))
+
+    def test_path_traversal_is_rejected_before_writing(self):
+        data = b'not outside the destination'
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode='w', format=tarfile.PAX_FORMAT) as tf:
+            member = tarfile.TarInfo('../outside.txt')
+            member.size = len(data)
+            member.pax_headers = {T.PAX_KEY: T.sha256_of(data)}
+            tf.addfile(member, io.BytesIO(data))
+        destination = self._destination()
+        outside = os.path.join(self.tmp, 'outside.txt')
+        rc, out, err = T.run_cli(['extract', '-C', destination], stdin=raw.getvalue())
+        self.assertEqual(rc, 1, err.decode('utf-8', 'replace'))
+        self.assertFalse(os.path.lexists(destination))
+        self.assertFalse(os.path.lexists(outside))
+
+    def test_existing_destination_is_never_overwritten(self):
+        destination = self._destination()
+        os.mkdir(destination)
+        sentinel = os.path.join(destination, 'keep.txt')
+        with open(sentinel, 'wb') as fh:
+            fh.write(b'keep')
+        rc, out, err = T.run_cli(
+            ['extract', '-C', destination], stdin=T.make_tar(self.root))
+        self.assertEqual(rc, 1, err.decode('utf-8', 'replace'))
+        self.assertEqual(T.read_bytes(sentinel), b'keep')
+
+    def test_hardlinks_and_symlinks_are_preserved_when_supported(self):
+        first = os.path.join(self.root, 'hard-first.bin')
+        second = os.path.join(self.root, 'hard-second.bin')
+        with open(first, 'wb') as fh:
+            fh.write(b'hard-linked payload')
+        try:
+            os.link(first, second)
+        except OSError as e:
+            self.skipTest(f'当前文件系统不能创建硬链接：{e}')
+        destination = self._destination()
+        rc, out, err = T.run_cli(
+            ['extract', '-C', destination], stdin=T.make_tar(self.root))
+        self.assertEqual(rc, 0, err.decode('utf-8', 'replace'))
+        restored = os.path.join(destination, '测试.d')
+        self.assertEqual(os.stat(os.path.join(restored, 'hard-first.bin')).st_ino,
+                         os.stat(os.path.join(restored, 'hard-second.bin')).st_ino)
+        source_link = os.path.join(self.root, 'link-to-file')
+        restored_link = os.path.join(restored, 'link-to-file')
+        if os.path.lexists(source_link):
+            self.assertTrue(os.path.islink(restored_link))
+            self.assertEqual(os.readlink(restored_link), os.readlink(source_link))
+
+
+class TestExtractDirectTarfile(T.BaseCase):
+    def test_extracts_unchecked_tar_into_an_existing_directory(self):
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode='w') as tf:
+            body = b'tarfile direct mode'
+            member = tarfile.TarInfo('plain.txt')
+            member.size = len(body)
+            tf.addfile(member, io.BytesIO(body))
+
+        destination = os.path.join(self.tmp, 'existing')
+        os.mkdir(destination)
+        sentinel = os.path.join(destination, 'keep.txt')
+        with open(sentinel, 'wb') as fh:
+            fh.write(b'keep')
+        rc, out, err = T.run_cli(
+            ['extract', '--direct-tarfile', '-C', destination],
+            stdin=raw.getvalue())
+        self.assertEqual(rc, 0, err.decode('utf-8', 'replace'))
+        self.assertIn('未校验 PAX SHA-256，非原子',
+                      out.decode('utf-8', 'replace'))
+        self.assertEqual(T.read_bytes(sentinel), b'keep')
+        self.assertEqual(T.read_bytes(os.path.join(destination, 'plain.txt')),
+                         b'tarfile direct mode')
+
+    def test_bad_direct_input_reports_tarfile_mode_and_nonzero_status(self):
+        destination = os.path.join(self.tmp, 'direct-bad')
+        rc, out, err = T.run_cli(
+            ['extract', '--direct', '-C', destination], stdin=b'not a tar')
+        self.assertEqual(rc, 1)
+        self.assertIn('tarfile 直接提取失败', err.decode('utf-8', 'replace'))
+
+
+class TestVersionCommands(unittest.TestCase):
+    def test_paxck_version_matches_release_file(self):
+        rc, out, err = T.run_cli(['--version'])
+        self.assertEqual(rc, 0, err.decode('utf-8', 'replace'))
+        self.assertEqual(out.decode('ascii').strip(), 'paxck 0.1.0')
+
+
+# --------------------------------------------------------------------------
 # compress 子命令
 # --------------------------------------------------------------------------
 class TestCompressCommand(unittest.TestCase):

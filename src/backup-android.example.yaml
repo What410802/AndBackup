@@ -1,0 +1,10 @@
+# AndBackup site/device settings (UTF-8, simple top-level YAML).
+# Copy this file to backup-android.yaml, then edit the copy. The copy is ignored
+# by Git so an Android wireless endpoint and local paths are not committed.
+adb: adb
+adb_serial: ""
+adb_connect: false
+source_dir: "/storage/emulated/0/DCIM"
+out: android-backup.tar.xz
+compress: xz
+# python: "C:/Path/To/python.exe"
