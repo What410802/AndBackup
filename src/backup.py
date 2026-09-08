@@ -12,14 +12,15 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 
 import paxck
 
 
 ENV_KEYS = ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'SOURCE_DIR', 'OUT', 'COMPRESS',
-            'LOG_LEVEL', 'PROGRESS_INTERVAL')
+            'LOG_LEVEL', 'PROGRESS_INTERVAL', 'SHOW_RATE')
 DEFAULTS = {'ADB': 'adb', 'SOURCE_DIR': '/sdcard/DCIM', 'COMPRESS': 'xz',
-            'LOG_LEVEL': 'info', 'PROGRESS_INTERVAL': '5'}
+            'LOG_LEVEL': 'info', 'PROGRESS_INTERVAL': '5', 'SHOW_RATE': '0'}
 
 
 def _script_dir():
@@ -36,6 +37,7 @@ def read_config(path):
         'log_level': 'LOG_LEVEL', 'log-level': 'LOG_LEVEL',
         'progress_interval': 'PROGRESS_INTERVAL',
         'progress-interval': 'PROGRESS_INTERVAL',
+        'show_rate': 'SHOW_RATE', 'show-rate': 'SHOW_RATE',
     }
     values = {}
     try:
@@ -112,22 +114,33 @@ def _display_error(prefix, result):
 
 
 def _stream_android_archive(source, adb, compress, output, env,
-                            log_level='info', progress_interval='5'):
+                            log_level='info', progress_interval='5', show_rate=False):
     """Compose the Android source adapter and generic compressor safely."""
-    # stderr must not remain an unread PIPE: a large number of source warnings
-    # could otherwise block the producer before the compressor reaches EOF.
-    with tempfile.TemporaryFile() as source_log, tempfile.TemporaryFile() as compressor_log:
-        source_process = subprocess.Popen(
-            [sys.executable, os.path.join(_script_dir(), 'adb_source.py'),
-             '--adb', adb, '--log-level', str(log_level),
-             '--progress-interval', str(progress_interval), source],
-            env=env, stdout=subprocess.PIPE, stderr=source_log)
+    source_process = subprocess.Popen(
+        [sys.executable, os.path.join(_script_dir(), 'adb_source.py'),
+         '--adb', adb, '--log-level', str(log_level),
+         '--progress-interval', str(progress_interval),
+         *(('--show-rate',) if show_rate else ()), source],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    source_log = []
+
+    def relay_source_log():
+        if source_process.stderr is None:
+            return
+        for line in iter(source_process.stderr.readline, b''):
+            source_log.append(line)
+            sys.stderr.buffer.write(line)
+            sys.stderr.buffer.flush()
+
+    log_thread = threading.Thread(target=relay_source_log, daemon=True)
+    log_thread.start()
+    try:
         try:
             compressor = subprocess.Popen(
                 [sys.executable, os.path.join(_script_dir(), 'paxck.py'),
                  'compress', compress],
                 env=env, stdin=source_process.stdout, stdout=output,
-                stderr=compressor_log)
+                stderr=subprocess.PIPE)
         except OSError:
             source_process.stdout.close()
             source_process.kill()
@@ -135,12 +148,15 @@ def _stream_android_archive(source, adb, compress, output, env,
             raise
 
         source_process.stdout.close()
-        compressor.wait()
+        compressor_stderr = compressor.communicate()[1]
         source_rc = source_process.wait()
-        source_log.seek(0)
-        compressor_log.seek(0)
-        source_stderr = source_log.read()
-        compressor_stderr = compressor_log.read()
+        log_thread.join()
+        source_stderr = b''.join(source_log)
+    finally:
+        if source_process.poll() is None:
+            source_process.kill()
+            source_process.wait()
+        log_thread.join()
     if source_rc or compressor.returncode:
         details = []
         if source_stderr:
@@ -163,6 +179,7 @@ def run(settings):
     out = settings.get('OUT', '').strip()
     log_level = str(settings.get('LOG_LEVEL', 'info')).lower()
     progress_interval = settings.get('PROGRESS_INTERVAL', '5')
+    show_rate = str(settings.get('SHOW_RATE', '')).lower() in ('1', 'true', 'yes', 'on')
 
     if compress not in ('xz', 'gzip', 'zstd', 'none'):
         raise RuntimeError(
@@ -208,7 +225,7 @@ def run(settings):
             print('[2/3] streaming Android source through PAX tar and compressor...')
         with open(partial, 'wb') as fh:
             _stream_android_archive(source, adb, compress, fh, env,
-                                    log_level, progress_interval)
+                                    log_level, progress_interval, show_rate)
 
         if log_level not in ('quiet', 'error'):
             print('[3/3] verifying archive...')
@@ -246,12 +263,16 @@ def main(argv=None):
                             help='日志级别，覆盖配置中的 log_level')
         parser.add_argument('--progress-interval', metavar='SECONDS',
                             help='进度输出最小间隔秒数，覆盖配置中的 progress_interval')
+        parser.add_argument('--show-rate', action='store_true',
+                            help='显示 ADB 有效载荷速率，覆盖配置中的 show_rate')
         args = parser.parse_args(argv)
         settings, _config = _settings(args.config)
         if args.log_level is not None:
             settings['LOG_LEVEL'] = args.log_level
         if args.progress_interval is not None:
             settings['PROGRESS_INTERVAL'] = args.progress_interval
+        if args.show_rate:
+            settings['SHOW_RATE'] = '1'
         return run(settings)
     except (RuntimeError, OSError) as e:
         print(f'[错误] {e}', file=sys.stderr)

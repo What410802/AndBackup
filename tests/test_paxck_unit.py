@@ -108,6 +108,14 @@ class TestConfig(unittest.TestCase):
 
 
 class TestAdbSourceMetadata(unittest.TestCase):
+    def test_progress_reporter_can_show_rate(self):
+        with mock.patch('sys.stderr', new_callable=io.StringIO) as err, \
+             mock.patch.object(adb_source.time, 'monotonic', side_effect=(1.0, 2.0)):
+            reporter = adb_source.ProgressReporter('info', 0.1, show_rate=True)
+            reporter.on_file_bytes(2048)
+        self.assertIn('速率', err.getvalue())
+        self.assertIn('2.0 KiB/s', err.getvalue())
+
     def test_adb_status_protocol_separates_payload_from_remote_status(self):
         payload, rc = adb_source._split_status(
             b'path\0\0__ANDBACKUP_RC__1\0', 'find /root -print0')
@@ -121,6 +129,23 @@ class TestAdbSourceMetadata(unittest.TestCase):
         self.assertEqual(reader.read(2), b'ab')
         self.assertEqual(reader.read(10), b'c')
         self.assertEqual(reader.read(1), b'')
+
+    def test_list_paths_reports_streaming_discovery(self):
+        root = '/storage/emulated/0/tree'
+        raw = (root.encode() + b'\0' + (root + '/file').encode() +
+               b'\0\0__ANDBACKUP_RC__0\0')
+        reporter = adb_source.ProgressReporter('quiet', 1)
+        proc = mock.Mock(stdout=io.BytesIO(raw), stderr=io.BytesIO(), poll=mock.Mock())
+        proc.wait.return_value = 0
+        with mock.patch.object(adb_source, '_adb_open_command', return_value=(
+                proc, adb_source._AdbPayloadReader(proc.stdout, 'find',
+                                                   reporter.on_listing_bytes,
+                                                   allow_remote_failure=True))):
+            paths, rc = adb_source._list_paths('adb', root, True, reporter)
+        self.assertEqual(paths, [root, root + '/file'])
+        self.assertEqual(rc, 0)
+        self.assertEqual(reporter.total, 2)
+        self.assertGreater(reporter.list_bytes, 0)
 
     def test_lstat_preserves_fractional_mtime_from_toybox(self):
         raw = (b'81b0|53|1788676937|2026-09-06 14:42:17.181008465 +0800|644\n')

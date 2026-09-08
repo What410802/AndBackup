@@ -54,6 +54,13 @@ archive, and exits `3` to report incompleteness. Missing roots, protocol
 corruption, compressor failures, and files changing between the two reads
 remain hard failures, matching common tar behavior.
 
+`log_level` accepts `quiet`, `error`, `warn`, `info`, `debug`, or `trace`.
+`progress_interval` sets the minimum status interval in seconds (at least
+`0.1`). Set `show_rate: true` or pass `--show-rate` to include the measured
+ADB payload rate. Enumeration progress reports discovered entries and listing
+bytes before archive writing starts, which makes a slow or blocked `find`
+visible.
+
 ## Consistency Model
 
 For each Android regular file, the adapter:

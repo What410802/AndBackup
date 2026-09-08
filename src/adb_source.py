@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tarfile
 import argparse
+import threading
 import time
 
 import paxck
@@ -42,17 +43,21 @@ def _split_status(raw, command):
 class ProgressReporter:
     """Human-readable progress on stderr; never touches the tar stdout."""
 
-    def __init__(self, level='info', interval=5.0, total=0):
+    def __init__(self, level='info', interval=5.0, total=None, show_rate=False):
         self.level_name = str(level or 'info').lower()
         if self.level_name not in _LOG_LEVELS:
             raise ValueError('无效日志级别：%s（可选 quiet/error/warn/info/debug/trace）' % level)
         self.level = _LOG_LEVELS[self.level_name]
         self.interval = max(0.1, float(interval))
         self.total = total
+        self.show_rate = bool(show_rate)
         self.done = 0
-        self.bytes_read = 0
+        self.list_bytes = 0
+        self.file_bytes = 0
         self.current = ''
         self._last = 0.0
+        self._rate_at = time.monotonic()
+        self._rate_bytes = 0
 
     def emit(self, level, message):
         if self.level >= _LOG_LEVELS[level]:
@@ -62,22 +67,57 @@ class ProgressReporter:
     def start(self):
         self.emit('info', f'[进度] 已发现 {self.total} 个条目')
 
+    def begin_listing(self):
+        self.current = '枚举目录'
+        self.emit('info', '[进度] 正在枚举 Android 目录...')
+
+    def discovered(self):
+        self.done += 1
+
+    def listing_status(self):
+        self.emit('info', '[进度] 仍在枚举目录：已发现 %d 个条目，收到 %s 清单数据' % (
+            self.done, self._format_bytes(self.list_bytes)))
+
+    def finish_listing(self, total):
+        self.total = total
+        self.done = 0
+        self.current = ''
+        self.emit('info', '[进度] 目录枚举完成：发现 %d 个条目，收到 %s 清单数据' % (
+            total, self._format_bytes(self.list_bytes)))
+
     def entry(self, name, size=0, skipped=False):
         self.done += 1
         suffix = '（跳过）' if skipped else ''
-        self.emit('info', f'[进度] 条目 {self.done}/{self.total}，累计读取 {self._format_bytes(self.bytes_read)}：{name}{suffix}')
+        self.emit('info', f'[进度] 条目 {self.done}/{self.total}，ADB 有效载荷 {self._format_bytes(self.total_bytes)}：{name}{suffix}')
 
     def set_current(self, name):
         self.current = name
         self.emit('debug', f'[调试] 开始处理：{name}')
 
-    def on_bytes(self, count):
-        self.bytes_read += count
+    @property
+    def total_bytes(self):
+        return self.list_bytes + self.file_bytes
+
+    def on_listing_bytes(self, count):
+        self.list_bytes += count
+        self._report_transfer()
+
+    def on_file_bytes(self, count):
+        self.file_bytes += count
+        self._report_transfer()
+
+    def _report_transfer(self):
         now = time.monotonic()
         if self.level >= _LOG_LEVELS['info'] and now - self._last >= self.interval:
+            elapsed = now - self._rate_at
+            delta = self.total_bytes - self._rate_bytes
+            rate = delta / elapsed if elapsed else 0
             self._last = now
+            self._rate_at = now
+            self._rate_bytes = self.total_bytes
             current = f'：{self.current}' if self.current else ''
-            self.emit('info', f'[进度] 传输中，累计读取 {self._format_bytes(self.bytes_read)}{current}')
+            rate_text = f'，速率 {self._format_bytes(rate)}/s' if self.show_rate else ''
+            self.emit('info', f'[进度] 传输中，ADB 有效载荷 {self._format_bytes(self.total_bytes)}{rate_text}{current}')
 
     @staticmethod
     def _format_bytes(value):
@@ -89,7 +129,9 @@ class ProgressReporter:
             amount /= 1024
 
     def finish(self):
-        self.emit('info', f'[进度] 完成：{self.done}/{self.total} 个条目，读取 {self._format_bytes(self.bytes_read)}')
+        self.emit('info', '[进度] 完成：%d/%d 个条目，ADB 有效载荷 %s（清单 %s，文件内容 %s）' % (
+            self.done, self.total, self._format_bytes(self.total_bytes),
+            self._format_bytes(self.list_bytes), self._format_bytes(self.file_bytes)))
 
 
 def _adb_error(command, result):
@@ -125,20 +167,25 @@ def _adb_exec(adb, command):
     return payload
 
 
-def _adb_open(adb, command, on_bytes=None):
+def _adb_open_command(adb, command, on_bytes=None, allow_remote_failure=False):
     try:
         proc = subprocess.Popen(
             [adb, 'exec-out', 'sh', '-c', _protocol_command(command)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError as e:
         raise OSError(f'无法启动 adb {adb!r}: {e}') from e
-    return proc, _AdbPayloadReader(proc.stdout, command, on_bytes)
+    return proc, _AdbPayloadReader(
+        proc.stdout, command, on_bytes, allow_remote_failure)
+
+
+def _adb_open(adb, command, on_bytes=None):
+    return _adb_open_command(adb, command, on_bytes)
 
 
 class _AdbPayloadReader:
     """Read stdout while withholding the trailing remote status marker."""
 
-    def __init__(self, stream, command, on_bytes=None):
+    def __init__(self, stream, command, on_bytes=None, allow_remote_failure=False):
         self._stream = stream
         self._command = command
         self._pending = b''
@@ -146,6 +193,7 @@ class _AdbPayloadReader:
         self._status_done = False
         self._remote_rc = 0
         self._on_bytes = on_bytes
+        self._allow_remote_failure = allow_remote_failure
 
     def read(self, size=-1):
         if size == 0:
@@ -165,7 +213,7 @@ class _AdbPayloadReader:
                     if self._on_bytes:
                         self._on_bytes(len(payload))
                     return payload
-                if self._remote_rc:
+                if self._remote_rc and not self._allow_remote_failure:
                     raise OSError(
                         f'adb exec-out {self._command!r} 远端退出码 {self._remote_rc}')
                 return b''
@@ -224,15 +272,47 @@ def _finish_adb_stream(proc, reader, command):
     return extra
 
 
-def _list_paths(adb, root, return_status=False):
+def _list_paths(adb, root, return_status=False, reporter=None):
     command = f'find {shlex.quote(root)} -print0'
-    raw, find_rc = _adb_exec_status(adb, command)
-    if not raw:
+    on_bytes = reporter.on_listing_bytes if reporter else None
+    proc, reader = _adb_open_command(
+        adb, command, on_bytes, allow_remote_failure=True)
+    paths = []
+    pending = b''
+    timer = None
+    stop_timer = threading.Event()
+    if reporter:
+        reporter.begin_listing()
+        def report_listing():
+            while not stop_timer.wait(reporter.interval):
+                reporter.listing_status()
+        timer = threading.Thread(target=report_listing, daemon=True)
+        timer.start()
+    try:
+        while True:
+            chunk = reader.read(paxck.CHUNK)
+            if not chunk:
+                break
+            pending += chunk
+            records = pending.split(b'\0')
+            pending = records.pop()
+            for part in records:
+                if part:
+                    paths.append(part.decode('utf-8', 'surrogateescape'))
+                    if reporter:
+                        reporter.discovered()
+        if pending:
+            raise OSError('adb exec-out find 输出没有 NUL 终止，拒绝解析不完整目录清单')
+    finally:
+        if timer:
+            stop_timer.set()
+            timer.join()
+        _finish_adb_stream(proc, reader, command)
+    if not paths:
         raise OSError(f'adb exec-out 未列出源目录 {root!r}')
-    if not raw.endswith(b'\0'):
-        raise OSError('adb exec-out find 输出没有 NUL 终止，拒绝解析不完整目录清单')
-    paths = [part.decode('utf-8', 'surrogateescape')
-             for part in raw[:-1].split(b'\0') if part]
+    find_rc = reader._remote_rc
+    if reporter:
+        reporter.finish_listing(len(paths))
     return (paths, find_rc) if return_status else paths
 
 
@@ -288,7 +368,8 @@ def _tar_name(path):
         'utf-8', 'surrogateescape')
 
 
-def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0):
+def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0,
+              show_rate=False):
     """Stream an Android directory into the generic PAX tar writer."""
     root = root.rstrip('/') or '/'
     if not root.startswith('/') or root == '/':
@@ -300,11 +381,14 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
         if not stat.S_ISDIR(root_st['mode']):
             sys.stderr.write(f'[错误] Android 源路径不是目录：{root}\n')
             return 1
-        listed = _list_paths(adb, root, return_status=True)
+        reporter = ProgressReporter(log_level, progress_interval, show_rate=show_rate)
+        listed = _list_paths(adb, root, return_status=True, reporter=reporter)
         if isinstance(listed, tuple):
             paths, find_rc = listed
         else:  # compatibility with callers/mocks implementing the old API
             paths, find_rc = listed, 0
+        if reporter.total is None:
+            reporter.finish_listing(len(paths))
     except OSError as e:
         sys.stderr.write(f'[错误] 无法枚举 Android 源目录：{e}\n')
         return 1
@@ -314,12 +398,6 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
     if out is None:
         out = paxck.binary_stdout()
     tf = paxck.open_pax_writer(out)
-    try:
-        reporter = ProgressReporter(log_level, progress_interval, len(paths))
-    except (TypeError, ValueError) as e:
-        sys.stderr.write(f'[错误] {e}\n')
-        tf.close()
-        return 1
     reporter.start()
 
     def warn(message):
@@ -377,8 +455,8 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
 
             rc, _written = paxck.write_regular(
                 tf, tar_info, source_stat['size'],
-                lambda path=full: _hash_file(adb, path, reporter.on_bytes),
-                lambda path=full: _open_stream(adb, path, reporter.on_bytes),
+                lambda path=full: _hash_file(adb, path, reporter.on_file_bytes),
+                lambda path=full: _open_stream(adb, path, reporter.on_file_bytes),
                 relative, False, entry_warn)
             if rc:
                 return rc
@@ -400,9 +478,12 @@ def main(argv=None):
                         choices=tuple(_LOG_LEVELS), help='日志级别')
     parser.add_argument('--progress-interval', default='5', metavar='SECONDS',
                         help='进度输出最小间隔秒数')
+    parser.add_argument('--show-rate', action='store_true',
+                        help='在定期进度行显示 ADB 有效载荷速率')
     args = parser.parse_args(argv)
     return write_tar(args.directory, args.adb, log_level=args.log_level,
-                     progress_interval=args.progress_interval)
+                     progress_interval=args.progress_interval,
+                     show_rate=args.show_rate)
 
 
 if __name__ == '__main__':

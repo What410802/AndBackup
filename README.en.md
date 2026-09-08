@@ -157,7 +157,7 @@ binary stdin/stdout; human-facing status and diagnostics are separate.
 | Verified extractor | `paxck.py extract [ARCHIVE] -C DEST`, or `-i ARCHIVE` | Default recovery mode. `DEST` must not exist. It checks each file while writing a sibling staging directory, rejects unsafe paths and unchecked regular files, and atomically publishes only after the entire archive succeeds. |
 | Direct extractor | `paxck.py extract --direct-tarfile [ARCHIVE] -C DEST` | `--direct` is an alias. Calls Python `tarfile` directly, permits an existing destination, skips PAX SHA-256 validation, and is not atomic. It is only for trusted archives or interoperability; a failure can leave partial output. |
 | Android source | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | Streams an Android absolute directory to stdout as raw PAX tar; progress/traffic status goes to stderr. |
-| Android controller | `backup.py [--config PATH] [--log-level LEVEL] [--progress-interval SECONDS]` | Reads configuration/environment, starts the Android source and compressor, verifies a unique `.partial` archive, then atomically replaces `OUT`. |
+| Android controller | `backup.py [--config PATH] [--log-level LEVEL] [--progress-interval SECONDS] [--show-rate]` | Reads configuration/environment, starts the Android source and compressor, verifies a unique `.partial` archive, then atomically replaces `OUT`. |
 | POSIX wrapper | `backup-android.sh [ARGS...]` | Forwards all arguments to its sibling `backup.py`. |
 | CMD wrapper | `backup-android.bat [ARGS...]` | Forwards all arguments to its sibling `backup.py`; run from CMD. |
 
@@ -170,8 +170,8 @@ No undocumented Python module functions, classes, or constants are a stable
 public API in v0.1.0; the table above is the supported interface.
 
 The Android controller also accepts `log_level` (`quiet`, `error`, `warn`,
-`info`, `debug`, `trace`) and `progress_interval` (seconds, minimum `0.1`) in
-YAML, or the corresponding command-line options. Progress and traffic counters
+`info`, `debug`, `trace`), `progress_interval` (seconds, minimum `0.1`), and
+`show_rate` in YAML, or the corresponding command-line options. Progress and traffic counters
 are status output only and never alter archive bytes.
 
 ## Archive Semantics and Security

@@ -55,7 +55,8 @@ Python `tarfile`，可写入已有目录，不校验 PAX SHA-256，不保证原�
 `log_level` 可设为 `quiet`、`error`、`warn`、`info`、`debug` 或 `trace`；`progress_interval`
 指定进度输出的最小间隔秒数（至少 `0.1`）。进度和累计 ADB 流量只写入 stderr/状态文本，
 不会进入 tar 数据流。`quiet` 仍保留错误信息，适合自动化；`info`（默认）显示条目计数、
-累计读取字节和定期传输状态，`debug`/`trace` 提供更详细的当前条目诊断。
+累计读取字节和定期传输状态，`debug`/`trace` 提供更详细的当前条目诊断。`show_rate: true`
+或 `--show-rate` 会在定期状态中增加每秒有效载荷速率；它默认关闭。
 
 ## 数据流
 

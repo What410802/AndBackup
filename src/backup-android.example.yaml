@@ -9,4 +9,5 @@ out: android-backup.tar.xz
 compress: xz
 log_level: info
 progress_interval: 5
+show_rate: false
 # python: "C:/Path/To/python.exe"
