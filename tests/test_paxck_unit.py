@@ -46,6 +46,17 @@ class TestSniff(unittest.TestCase):
 
 
 class TestConfig(unittest.TestCase):
+    def test_log_level_and_progress_settings(self):
+        path = os.path.join(tempfile.mkdtemp(prefix='paxck-config-'), 'backup.yaml')
+        try:
+            with open(path, 'w', encoding='utf-8') as fh:
+                fh.write('log_level: debug\nprogress_interval: 1.5\n')
+            values = backup.read_config(path)
+            self.assertEqual(values['LOG_LEVEL'], 'debug')
+            self.assertEqual(values['PROGRESS_INTERVAL'], '1.5')
+        finally:
+            shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+
     def test_yaml_subset_and_boolean_values(self):
         path = os.path.join(tempfile.mkdtemp(prefix='paxck-config-'), 'backup.yaml')
         try:

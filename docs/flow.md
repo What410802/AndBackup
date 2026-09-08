@@ -47,10 +47,15 @@ Python `tarfile`，可写入已有目录，不校验 PAX SHA-256，不保证原�
 | 平台包装 | `backup-android.sh [ARGS...]` / `backup-android.bat [ARGS...]` | 将参数转发给同目录 `backup.py`。 |
 
 三个 Python 入口都支持 `--version`。`backup.py` 识别 YAML 键 `adb`、`adb_serial`、
-`adb_connect`、`source_dir`、`out`、`compress`，并由同名环境变量覆盖；配置选择顺序为
+`adb_connect`、`source_dir`、`out`、`compress`、`log_level`、`progress_interval`，并由同名环境变量覆盖；配置选择顺序为
 `--config`、`BACKUP_CONFIG_FILE`、存在的同目录 `backup-android.yaml`。应从
 `backup-android.example.yaml` 复制并编辑本地 YAML；实际 YAML 已忽略，不能提交端点或本机路径。
 未列出的 Python 函数、类和常量均为实现细节，不是稳定公开 API。
+
+`log_level` 可设为 `quiet`、`error`、`warn`、`info`、`debug` 或 `trace`；`progress_interval`
+指定进度输出的最小间隔秒数（至少 `0.1`）。进度和累计 ADB 流量只写入 stderr/状态文本，
+不会进入 tar 数据流。`quiet` 仍保留错误信息，适合自动化；`info`（默认）显示条目计数、
+累计读取字节和定期传输状态，`debug`/`trace` 提供更详细的当前条目诊断。
 
 ## 数据流
 

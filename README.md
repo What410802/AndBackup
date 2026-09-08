@@ -48,6 +48,8 @@ adb_connect: false
 source_dir: "/storage/emulated/0/DCIM"
 out: android-backup.tar.xz
 compress: xz
+log_level: info
+progress_interval: 5
 ```
 
 示例 1：Linux
@@ -117,6 +119,8 @@ Linux 与 Windows 主控共用以下环境变量：
 | `ADB_SERIAL` | 未指定 | 要使用的设备 serial；USB 填 `adb devices` 的 serial，无线填 `host:port` |
 | `ADB_CONNECT` | 未指定 | 无线 TCP serial 设为 `1`/`true` 时先执行 `adb connect`；USB 应保持关闭 |
 | `BACKUP_CONFIG_FILE` | 未设置时尝试 `src\backup-android.yaml` | UTF-8 配置文件路径；空值/不存在路径不加载 YAML |
+| `LOG_LEVEL` | `info` | `quiet`、`error`、`warn`、`info`、`debug`、`trace` |
+| `PROGRESS_INTERVAL` | `5` | 进度输出间隔（秒），最小 `0.1` |
 
 `xz` 与 `gzip` 只用 Python 标准库。`zstd` 需要 Python 3.14+ 的
 `compression.zstd`，或主机 `PATH` 中的 `zstd`；缺少时会以退出码 2 失败。
@@ -219,12 +223,13 @@ ADB shell 只调用系统自带的 `find -print0`、`stat`、`readlink` 和 `cat
 | 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别裸 tar、xz、gzip、zstd，验证每个普通文件的 PAX SHA-256。 |
 | 默认提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | `DEST` 必须尚不存在；在同级临时目录逐文件校验 SHA-256、拒绝不安全路径/未校验普通文件，成功后原子改名发布。 |
 | 直接提取 | `paxck.py extract --direct-tarfile [ARCHIVE] -C DEST`（`--direct` 为别名） | 直接调用 Python `tarfile`，允许已有 `DEST`，不验证 PAX SHA-256，也不具有原子性。仅用于可信归档或互操作；失败可留下部分文件。 |
-| Android 源适配器 | `adb_source.py [--adb ADB] DIRECTORY` | 经 `adb exec-out` 将 Android 绝对目录写为裸 PAX tar 到 stdout；不压缩、不落盘。 |
-| Android 主控 | `backup.py [--config PATH]` | 读取配置/环境，组合 ADB 适配器与压缩器，校验 `.partial` 后原子替换最终归档。 |
+| Android 源适配器 | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | 经 `adb exec-out` 将 Android 绝对目录写为裸 PAX tar 到 stdout；进度/流量统计写 stderr。 |
+| Android 主控 | `backup.py [--config PATH] [--log-level LEVEL] [--progress-interval SECONDS]` | 读取配置/环境，组合 ADB 适配器与压缩器，校验 `.partial` 后原子替换最终归档。 |
 | 平台包装 | `backup-android.sh [ARGS...]`；`backup-android.bat [ARGS...]` | 仅转发所有参数给同目录 `backup.py`；前者用于 POSIX shell，后者用于 Windows CMD。 |
 
 `paxck.py --version`、`adb_source.py --version` 和 `backup.py --version` 输出同一个发布版本。
-`backup.py` 的公开配置键为 `adb`、`adb_serial`、`adb_connect`、`source_dir`、`out`、`compress`；
+`backup.py` 的公开配置键为 `adb`、`adb_serial`、`adb_connect`、`source_dir`、`out`、`compress`、
+`log_level`、`progress_interval`；命令行也可用 `--log-level` 和 `--progress-interval` 覆盖。
 同名环境变量 `ADB`、`ADB_SERIAL`、`ADB_CONNECT`、`SOURCE_DIR`、`OUT`、`COMPRESS` 优先于 YAML。
 `PYTHON` 和 `BACKUP_CONFIG_FILE` 是包装/配置选择环境变量，含义见上表。
 上表以外的 Python 模块函数、类和常量都是实现细节，不构成稳定公开 API。

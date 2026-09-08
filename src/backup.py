@@ -16,8 +16,10 @@ import tempfile
 import paxck
 
 
-ENV_KEYS = ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'SOURCE_DIR', 'OUT', 'COMPRESS')
-DEFAULTS = {'ADB': 'adb', 'SOURCE_DIR': '/sdcard/DCIM', 'COMPRESS': 'xz'}
+ENV_KEYS = ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'SOURCE_DIR', 'OUT', 'COMPRESS',
+            'LOG_LEVEL', 'PROGRESS_INTERVAL')
+DEFAULTS = {'ADB': 'adb', 'SOURCE_DIR': '/sdcard/DCIM', 'COMPRESS': 'xz',
+            'LOG_LEVEL': 'info', 'PROGRESS_INTERVAL': '5'}
 
 
 def _script_dir():
@@ -31,6 +33,9 @@ def read_config(path):
         'adb_connect': 'ADB_CONNECT', 'connect': 'ADB_CONNECT',
         'source_dir': 'SOURCE_DIR', 'source': 'SOURCE_DIR',
         'out': 'OUT', 'compress': 'COMPRESS',
+        'log_level': 'LOG_LEVEL', 'log-level': 'LOG_LEVEL',
+        'progress_interval': 'PROGRESS_INTERVAL',
+        'progress-interval': 'PROGRESS_INTERVAL',
     }
     values = {}
     try:
@@ -106,14 +111,16 @@ def _display_error(prefix, result):
     return f'{prefix}: {detail or "exit " + str(result.returncode)}'
 
 
-def _stream_android_archive(source, adb, compress, output, env):
+def _stream_android_archive(source, adb, compress, output, env,
+                            log_level='info', progress_interval='5'):
     """Compose the Android source adapter and generic compressor safely."""
     # stderr must not remain an unread PIPE: a large number of source warnings
     # could otherwise block the producer before the compressor reaches EOF.
     with tempfile.TemporaryFile() as source_log, tempfile.TemporaryFile() as compressor_log:
         source_process = subprocess.Popen(
             [sys.executable, os.path.join(_script_dir(), 'adb_source.py'),
-             '--adb', adb, source],
+             '--adb', adb, '--log-level', str(log_level),
+             '--progress-interval', str(progress_interval), source],
             env=env, stdout=subprocess.PIPE, stderr=source_log)
         try:
             compressor = subprocess.Popen(
@@ -154,12 +161,22 @@ def run(settings):
     serial = settings.get('ADB_SERIAL', '').strip()
     connect = str(settings.get('ADB_CONNECT', '')).lower() in ('1', 'true', 'yes', 'on')
     out = settings.get('OUT', '').strip()
+    log_level = str(settings.get('LOG_LEVEL', 'info')).lower()
+    progress_interval = settings.get('PROGRESS_INTERVAL', '5')
 
     if compress not in ('xz', 'gzip', 'zstd', 'none'):
         raise RuntimeError(
             f'未知压缩类型：{compress}（可选 xz / gzip / zstd / none）')
     if not source:
         raise RuntimeError('SOURCE_DIR 不能为空')
+    if log_level not in ('quiet', 'error', 'warn', 'info', 'debug', 'trace'):
+        raise RuntimeError(
+            f'无效日志级别：{log_level}（可选 quiet/error/warn/info/debug/trace）')
+    try:
+        if float(progress_interval) < 0.1:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise RuntimeError('PROGRESS_INTERVAL 必须是不小于 0.1 的秒数')
     if not out:
         extension = {'gzip': 'gz', 'zstd': 'zst', 'xz': 'xz'}.get(compress)
         out = 'backup.tar' if compress == 'none' else f'backup.tar.{extension}'
@@ -186,12 +203,15 @@ def run(settings):
         prefix=os.path.basename(output_path) + '.partial.', dir=parent)
     os.close(fd)
     try:
-        print('[1/3] checking ADB and source directory...')
-        print('[2/3] streaming Android source through PAX tar and compressor...')
+        if log_level not in ('quiet', 'error'):
+            print('[1/3] checking ADB and source directory...')
+            print('[2/3] streaming Android source through PAX tar and compressor...')
         with open(partial, 'wb') as fh:
-            _stream_android_archive(source, adb, compress, fh, env)
+            _stream_android_archive(source, adb, compress, fh, env,
+                                    log_level, progress_interval)
 
-        print('[3/3] verifying archive...')
+        if log_level not in ('quiet', 'error'):
+            print('[3/3] verifying archive...')
         verify = subprocess.run(
             [sys.executable, os.path.join(_script_dir(), 'paxck.py'),
              'verify', partial], env=env, stdout=subprocess.PIPE,
@@ -201,8 +221,9 @@ def run(settings):
             raise RuntimeError('归档校验未通过' + (f'：{detail}' if detail else ''))
         os.replace(partial, output_path)
         partial = None
-        print(f'[完成] {out}')
-        print(f'       大小: {os.path.getsize(output_path)} 字节')
+        if log_level not in ('quiet', 'error'):
+            print(f'[完成] {out}')
+            print(f'       大小: {os.path.getsize(output_path)} 字节')
         return 0
     finally:
         if partial:
@@ -221,8 +242,16 @@ def main(argv=None):
         parser.add_argument(
             '--config', metavar='PATH',
             help='配置文件路径（默认脚本目录中的 backup-android.yaml；覆盖 BACKUP_CONFIG_FILE）')
+        parser.add_argument('--log-level', choices=('quiet', 'error', 'warn', 'info', 'debug', 'trace'),
+                            help='日志级别，覆盖配置中的 log_level')
+        parser.add_argument('--progress-interval', metavar='SECONDS',
+                            help='进度输出最小间隔秒数，覆盖配置中的 progress_interval')
         args = parser.parse_args(argv)
         settings, _config = _settings(args.config)
+        if args.log_level is not None:
+            settings['LOG_LEVEL'] = args.log_level
+        if args.progress_interval is not None:
+            settings['PROGRESS_INTERVAL'] = args.progress_interval
         return run(settings)
     except (RuntimeError, OSError) as e:
         print(f'[错误] {e}', file=sys.stderr)

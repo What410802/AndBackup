@@ -7,4 +7,6 @@ adb_connect: false
 source_dir: "/storage/emulated/0/DCIM"
 out: android-backup.tar.xz
 compress: xz
+log_level: info
+progress_interval: 5
 # python: "C:/Path/To/python.exe"
