@@ -647,6 +647,36 @@ def _stream_device_python_archive(source, adb, compress, output, env,
     progress.finish()
 
 
+_OUT_SUFFIX = {'none': '.tar', 'gzip': '.tar.gz', 'xz': '.tar.xz',
+               'zstd': '.tar.zst'}
+
+
+def _plan_out(out, source, compress):
+    """Classify the configured OUT into a concrete output file path.
+
+    Returns ``(path, needs_confirm)`` where ``path`` is absolute and
+    ``needs_confirm`` is True only when OUT is a *file* whose name does not end
+    with the compressor's theoretical suffix (an interactive run may then ask
+    to append it):
+
+    * empty ``out`` -> ``backup<theoretical suffix>`` in the current directory;
+    * a directory (an existing one, or any path ending in a separator) -> that
+      directory, named ``<tail of source_dir><theoretical suffix>``;
+    * a file already ending with the theoretical suffix -> unchanged;
+    * any other file -> used verbatim (with ``needs_confirm=True``).
+    """
+    suffix = _OUT_SUFFIX[compress]
+    if not out:
+        return os.path.abspath('backup' + suffix), False
+    if out.endswith(('/', '\\')) or os.path.isdir(os.path.abspath(out)):
+        directory = out.rstrip('/\\') or os.curdir
+        name = os.path.basename(source.rstrip('/\\')) or 'backup'
+        return os.path.abspath(os.path.join(directory, name + suffix)), False
+    if out.lower().endswith(suffix):
+        return os.path.abspath(out), False
+    return os.path.abspath(out), True
+
+
 def run(settings):
     adb = settings['ADB']
     source = settings['SOURCE_DIR']
@@ -686,9 +716,25 @@ def run(settings):
         device_python = android_python.resolve(
             device_python, download_device_python, device_python_url,
             quiet=log_level in ('quiet', 'error'))
-    if not out:
-        extension = {'gzip': 'gz', 'zstd': 'zst', 'xz': 'xz'}.get(compress)
-        out = 'backup.tar' if compress == 'none' else f'backup.tar.{extension}'
+
+    output_path, needs_confirm = _plan_out(out, source, compress)
+    if needs_confirm:
+        # A file whose extension differs from the compressor's theoretical
+        # suffix. Non-interactive runs write it verbatim; interactive runs ask
+        # once whether to append the suffix. An EOF (closed/no console stdin,
+        # which Windows also reports for DEVNULL) defaults to verbatim, i.e.
+        # the safe choice when nobody can answer.
+        if sys.stdin.isatty() and log_level not in ('quiet', 'error'):
+            suffix = _OUT_SUFFIX[compress]
+            try:
+                answer = input(
+                    f'OUT “{out}” 与 compress={compress} 的理论后缀'
+                    f'“{suffix}” 不符。自动追加后缀写为'
+                    f'“{output_path}{suffix}”？[Y/n] ')
+            except EOFError:
+                answer = 'n'
+            if (answer or 'y').strip().lower() not in ('n', 'no'):
+                output_path += suffix
 
     env = dict(os.environ)
     if serial:
@@ -705,7 +751,6 @@ def run(settings):
         raise RuntimeError(_display_error(
             'adb 不可用，请检查调试授权和 ADB 路径', result))
 
-    output_path = os.path.abspath(out)
     parent = os.path.dirname(output_path) or os.curdir
     os.makedirs(parent, exist_ok=True)
     fd, partial = tempfile.mkstemp(
@@ -741,7 +786,7 @@ def run(settings):
         partial = None
         published = True
         if log_level not in ('quiet', 'error'):
-            print(f'[完成] {out}')
+            print(f'[完成] {output_path}')
             print(f'       大小: {os.path.getsize(output_path)} 字节')
         # After a successful, verified run, ask whether to keep the env (or
         # honour keep_android_env / the non-interactive default).

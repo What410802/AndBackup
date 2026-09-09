@@ -96,7 +96,7 @@ class TestBackupBatch(unittest.TestCase):
         return subprocess.run(
             [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', T.BACKUP_BAT, *args],
             cwd=self.case, env=self.env(**overrides), stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, timeout=120)
+            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=120)
 
     def log_text(self):
         with open(self.log, encoding='utf-8') as fh:
@@ -146,6 +146,40 @@ class TestBackupBatch(unittest.TestCase):
             self.assertEqual(result.returncode, 0,
                              result.stdout.decode('utf-8', 'replace'))
             self.assertEqual(T.run_cli(['verify', target])[0], 0)
+
+    def test_out_directory_derives_filename_from_source_tail(self):
+        target_dir = os.path.join(self.case, 'outdir')
+        os.makedirs(target_dir)
+        result = self.run_script(OUT=target_dir)
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        expected = os.path.join(target_dir,
+                                posix_basename(self.source) + '.tar.xz')
+        self.assertTrue(os.path.isfile(expected),
+                        result.stdout.decode('utf-8', 'replace'))
+        self.assertEqual(T.run_cli(['verify', expected])[0], 0)
+
+    def test_out_trailing_separator_creates_directory(self):
+        target_dir = os.path.join(self.case, 'made', 'dir') + os.sep
+        result = self.run_script(OUT=target_dir)
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        expected = os.path.join(target_dir,
+                                posix_basename(self.source) + '.tar.xz')
+        self.assertTrue(os.path.isfile(expected),
+                        result.stdout.decode('utf-8', 'replace'))
+        self.assertEqual(T.run_cli(['verify', expected])[0], 0)
+
+    def test_out_mismatched_suffix_written_verbatim_non_interactive(self):
+        # Non-interactive (stdin is DEVNULL): a file whose extension differs
+        # from the compressor's suffix is written as-is, no auto-append.
+        target = os.path.join(self.case, 'custom.raw')
+        result = self.run_script(COMPRESS='xz', OUT=target)
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        self.assertTrue(os.path.isfile(target))
+        self.assertFalse(os.path.isfile(target + '.tar.xz'))
+        self.assertEqual(T.run_cli(['verify', target])[0], 0)
 
     def test_tcp_serial_is_forwarded_to_adb_children(self):
         serial = '192.0.2.1:5555'
