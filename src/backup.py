@@ -9,18 +9,26 @@ live here so Windows and POSIX follow exactly the same code path.
 import ast
 import argparse
 import os
+import shlex
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
+import time
+import uuid
 
 import paxck
+import android_python
 
 
 ENV_KEYS = ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'SOURCE_DIR', 'OUT', 'COMPRESS',
+            'SOURCE_MODE', 'DEVICE_PYTHON', 'DOWNLOAD_DEVICE_PYTHON',
+            'DEVICE_PYTHON_URL',
             'LOG_LEVEL', 'PROGRESS_INTERVAL', 'SHOW_RATE')
 DEFAULTS = {'ADB': 'adb', 'SOURCE_DIR': '/sdcard/DCIM', 'COMPRESS': 'xz',
-            'LOG_LEVEL': 'info', 'PROGRESS_INTERVAL': '5', 'SHOW_RATE': '0'}
+            'SOURCE_MODE': 'host-adb', 'LOG_LEVEL': 'info',
+            'PROGRESS_INTERVAL': '5', 'SHOW_RATE': '0'}
 
 
 def _script_dir():
@@ -34,6 +42,12 @@ def read_config(path):
         'adb_connect': 'ADB_CONNECT', 'connect': 'ADB_CONNECT',
         'source_dir': 'SOURCE_DIR', 'source': 'SOURCE_DIR',
         'out': 'OUT', 'compress': 'COMPRESS',
+        'source_mode': 'SOURCE_MODE', 'source-mode': 'SOURCE_MODE',
+        'device_python': 'DEVICE_PYTHON', 'device-python': 'DEVICE_PYTHON',
+        'download_device_python': 'DOWNLOAD_DEVICE_PYTHON',
+        'download-device-python': 'DOWNLOAD_DEVICE_PYTHON',
+        'device_python_url': 'DEVICE_PYTHON_URL',
+        'device-python-url': 'DEVICE_PYTHON_URL',
         'log_level': 'LOG_LEVEL', 'log-level': 'LOG_LEVEL',
         'progress_interval': 'PROGRESS_INTERVAL',
         'progress-interval': 'PROGRESS_INTERVAL',
@@ -170,10 +184,317 @@ def _stream_android_archive(source, adb, compress, output, env,
                 f'：{detail}' if detail else ''))
 
 
+def _adb_run_checked(adb, args, env, label):
+    result = _run_adb(adb, args, env)
+    if result.returncode:
+        raise RuntimeError(_display_error(label, result))
+    return result
+
+
+_DEVICE_LOG_LEVELS = {'quiet': 0, 'error': 1, 'warn': 2, 'info': 3,
+                      'debug': 4, 'trace': 5}
+
+
+def _format_size(value):
+    units = ('B', 'KiB', 'MiB', 'GiB', 'TiB')
+    amount = float(value)
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            return f'{int(amount)} B' if unit == 'B' else f'{amount:.1f} {unit}'
+        amount /= 1024
+
+
+class _DeviceProgress:
+    """Host-side byte/rate progress for the device-python tar stream."""
+
+    def __init__(self, log_level='info', interval=5.0, show_rate=False):
+        name = str(log_level or 'info').lower()
+        self.level = _DEVICE_LOG_LEVELS.get(name, _DEVICE_LOG_LEVELS['info'])
+        self.interval = max(0.1, float(interval))
+        self.show_rate = bool(show_rate)
+        self.received = 0
+        self._last = 0.0
+        self._rate_at = time.monotonic()
+        self._rate_bytes = 0
+
+    def emit(self, level, message):
+        if self.level >= _DEVICE_LOG_LEVELS[level]:
+            sys.stderr.write(message + '\n')
+            sys.stderr.flush()
+
+    def on_bytes(self, count):
+        self.received += count
+        now = time.monotonic()
+        if (self.level >= _DEVICE_LOG_LEVELS['info']
+                and now - self._last >= self.interval):
+            elapsed = now - self._rate_at
+            delta = self.received - self._rate_bytes
+            rate = delta / elapsed if elapsed else 0.0
+            self._last = now
+            self._rate_at = now
+            self._rate_bytes = self.received
+            rate_text = f'，速率 {_format_size(rate)}/s' if self.show_rate else ''
+            self.emit(
+                'info',
+                f'[进度] 设备端打包中，已接收 {_format_size(self.received)}'
+                f'{rate_text}')
+
+    def finish(self):
+        self.emit(
+            'info',
+            f'[进度] 设备端打包完成，共接收 {_format_size(self.received)}')
+
+
+def _pump_source_to_compressor(source_stdout, compressor_stdin, progress):
+    """Bridge the ADB tar stream to the compressor while counting bytes.
+
+    If the compressor dies first, keep draining the ADB stream (discarding the
+    bytes) so the remote source can finish instead of blocking on a full pipe.
+    """
+    sink = compressor_stdin
+    try:
+        while True:
+            chunk = source_stdout.read(paxck.CHUNK)
+            if not chunk:
+                break
+            if sink is not None:
+                try:
+                    sink.write(chunk)
+                    progress.on_bytes(len(chunk))
+                except (OSError, ValueError):
+                    try:
+                        sink.close()
+                    except OSError:
+                        pass
+                    sink = None
+    except (OSError, ValueError):
+        pass
+    finally:
+        if sink is not None:
+            try:
+                sink.close()
+            except OSError:
+                pass
+
+
+def _find_prefix_interpreter(prefix):
+    """Locate a real interpreter file inside a python install prefix directory."""
+    bin_dir = os.path.join(prefix, 'bin')
+    if not os.path.isdir(bin_dir):
+        raise RuntimeError(
+            f'DEVICE_PYTHON 目录不是有效的 Python prefix（缺少 bin/）：{prefix}')
+    try:
+        names = os.listdir(bin_dir)
+    except OSError as e:
+        raise RuntimeError(f'无法读取 DEVICE_PYTHON 的 bin/：{e}') from e
+    candidates = []
+    for name in names:
+        full = os.path.join(bin_dir, name)
+        if (os.path.isfile(full) and not os.path.islink(full)
+                and (name.startswith('python3') or name == 'python')):
+            candidates.append(name)
+    for name in ('python3', 'python', 'python3.14', 'python3.13', 'python3.12'):
+        if name in candidates:
+            return 'bin/' + name
+    if candidates:
+        return 'bin/' + sorted(candidates)[-1]
+    raise RuntimeError(
+        f'DEVICE_PYTHON 目录的 bin/ 下未找到 python 解释器：{prefix}')
+
+
+def _tar_prefix(prefix):
+    """Create a plain tar of a python prefix.
+
+    Entries live at the tar root (``bin/...``, ``lib/...``), so extracting into
+    a device directory D yields ``D/bin/...`` and ``D/lib/...``; the interpreter
+    then resolves its stdlib relative to D.
+    """
+    fd, path = tempfile.mkstemp(prefix='andbackup-pyenv-', suffix='.tar')
+    os.close(fd)
+    try:
+        with tarfile.open(path, 'w', format=tarfile.PAX_FORMAT) as tf:
+            for child in sorted(os.listdir(prefix)):
+                tf.add(os.path.join(prefix, child), arcname=child,
+                       recursive=True)
+    except Exception:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def _stream_device_python_archive(source, adb, compress, output, env,
+                                  device_python, log_level='info',
+                                  progress_interval='5', show_rate=False):
+    """Run the generic paxck writer on Android using an uploaded Python binary.
+
+    This is an explicit alternative to ``host-adb``.  No automatic fallback is
+    attempted: a missing/incompatible binary is a hard error.  The device
+    produces a raw PAX tar on stdout, the host compresses and verifies it, and
+    the host relays received-byte progress/rate to stderr while streaming.
+
+    ``DEVICE_PYTHON`` may be either a single self-contained interpreter binary
+    or a python install prefix directory that contains ``bin/<interpreter>``
+    and its ``lib/python3.x`` stdlib.  In the directory case the prefix is
+    packed into one tar, uploaded, and extracted on the device so the
+    interpreter can resolve its standard library.
+    """
+    if not device_python:
+        raise RuntimeError(
+            'SOURCE_MODE=device-python 需要 DEVICE_PYTHON 指向本机 Android ARM64 '
+            'Python 二进制（单文件）或 Python prefix 目录（bin/ + lib/）')
+    local_python = os.path.abspath(os.path.expanduser(device_python))
+    if not os.path.exists(local_python):
+        raise RuntimeError(f'设备 Python 不存在：{local_python}')
+
+    prefix_mode = os.path.isdir(local_python)
+    remote_dir = '/data/local/tmp/andbackup-' + uuid.uuid4().hex
+    remote_paxck = remote_dir + '/paxck.py'
+    remote_status = remote_dir + '/status'
+    remote_error = remote_dir + '/stderr'
+    local_tar = None
+    if prefix_mode:
+        interp_rel = _find_prefix_interpreter(local_python)
+        remote_python = remote_dir + '/' + interp_rel
+    else:
+        remote_python = remote_dir + '/python'
+    source_process = None
+    compressor = None
+    log_thread = None
+    pump_thread = None
+    source_log = []
+    source_stderr = b''
+    compressor_stderr = b''
+    remote_stderr = b''
+    remote_rc = None
+    source_rc = 1
+    progress = _DeviceProgress(log_level, progress_interval, show_rate)
+    try:
+        _adb_run_checked(adb, ('shell', 'mkdir', '-p', remote_dir), env,
+                         '无法创建设备临时目录')
+        if prefix_mode:
+            local_tar = _tar_prefix(local_python)
+            remote_tar = remote_dir + '/python.tar'
+            _adb_run_checked(adb, ('push', local_tar, remote_tar), env,
+                             '上传设备 Python 环境失败')
+            _adb_run_checked(
+                adb, ('shell', 'tar', '-xf', remote_tar, '-C', remote_dir),
+                env, '解压设备 Python 环境失败')
+        else:
+            _adb_run_checked(adb, ('push', local_python, remote_python), env,
+                             '上传设备 Python 失败')
+        _adb_run_checked(adb, ('push', os.path.join(_script_dir(), 'paxck.py'),
+                               remote_paxck), env,
+                         '上传设备 paxck.py 失败')
+        _adb_run_checked(adb, ('shell', 'chmod', '700', remote_python), env,
+                         '设置设备 Python 执行权限失败')
+
+        command = (
+            f'{shlex.quote(remote_python)} {shlex.quote(remote_paxck)} create '
+            f'{shlex.quote(source)} 2>{shlex.quote(remote_error)}; '
+            f'__andbackup_rc=$?; printf "%s" "$__andbackup_rc" '
+            f'>{shlex.quote(remote_status)}; exit "$__andbackup_rc"')
+        progress.emit('info', '[进度] 设备端 Python 开始打包...')
+        source_process = subprocess.Popen(
+            [adb, 'exec-out', 'sh', '-c', command], env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        def relay_source_log():
+            if source_process.stderr is None:
+                return
+            for line in iter(source_process.stderr.readline, b''):
+                source_log.append(line)
+                sys.stderr.buffer.write(line)
+                sys.stderr.buffer.flush()
+
+        log_thread = threading.Thread(target=relay_source_log, daemon=True)
+        log_thread.start()
+        try:
+            compressor = subprocess.Popen(
+                [sys.executable, os.path.join(_script_dir(), 'paxck.py'),
+                 'compress', compress],
+                env=env, stdin=subprocess.PIPE, stdout=output,
+                stderr=subprocess.PIPE)
+        except OSError:
+            source_process.stdout.close()
+            raise
+        pump_thread = threading.Thread(
+            target=_pump_source_to_compressor,
+            args=(source_process.stdout, compressor.stdin, progress),
+            daemon=True)
+        pump_thread.start()
+
+        compressor_stderr = compressor.stderr.read()
+        compressor_rc = compressor.wait()
+        source_rc = source_process.wait()
+        pump_thread.join()
+        log_thread.join()
+        log_thread = None
+        source_stderr = b''.join(source_log)
+
+        status_result = _run_adb(adb, ('exec-out', 'cat', remote_status), env)
+        if status_result.returncode == 0:
+            try:
+                remote_rc = int(status_result.stdout.decode('ascii').strip())
+            except (UnicodeDecodeError, ValueError):
+                remote_rc = None
+        error_result = _run_adb(adb, ('exec-out', 'cat', remote_error), env)
+        if error_result.returncode == 0:
+            remote_stderr = error_result.stdout
+    finally:
+        if compressor is not None and compressor.poll() is None:
+            compressor.kill()
+            compressor.wait()
+        if source_process is not None and source_process.poll() is None:
+            source_process.kill()
+            source_process.wait()
+        if pump_thread is not None:
+            pump_thread.join(timeout=2)
+        if log_thread is not None:
+            log_thread.join(timeout=2)
+        try:
+            _run_adb(adb, ('shell', 'rm', '-rf', remote_dir), env)
+        except (RuntimeError, OSError):
+            pass
+        if local_tar is not None:
+            try:
+                os.unlink(local_tar)
+            except OSError:
+                pass
+
+    compressor_rc = compressor.returncode if compressor is not None else 1
+    if remote_rc != 0 or source_rc or compressor_rc:
+        details = [part.decode('utf-8', 'replace').strip() for part in
+                   (source_stderr, remote_stderr, compressor_stderr) if part]
+        detail = '\n'.join(details)
+        raise RuntimeError(
+            '传输失败：设备 Python 源退出码 %s，压缩器退出码 %s%s' % (
+                remote_rc if remote_rc is not None else source_rc,
+                compressor_rc,
+                f'：{detail}' if detail else ''))
+
+    # Success: surface device-side warnings (e.g. skipped unreadable entries)
+    # that paxck wrote to the remote stderr file, so they are not dropped.
+    if remote_stderr:
+        text = remote_stderr.decode('utf-8', 'replace').strip()
+        if text:
+            sys.stderr.write(text + '\n')
+            sys.stderr.flush()
+    progress.finish()
+
+
 def run(settings):
     adb = settings['ADB']
     source = settings['SOURCE_DIR']
     compress = settings['COMPRESS'].lower()
+    source_mode = str(settings.get('SOURCE_MODE', 'host-adb')).lower()
+    device_python = settings.get('DEVICE_PYTHON', '').strip()
+    download_device_python = str(
+        settings.get('DOWNLOAD_DEVICE_PYTHON', '')).lower() in (
+            '1', 'true', 'yes', 'on')
+    device_python_url = settings.get('DEVICE_PYTHON_URL', '').strip()
     serial = settings.get('ADB_SERIAL', '').strip()
     connect = str(settings.get('ADB_CONNECT', '')).lower() in ('1', 'true', 'yes', 'on')
     out = settings.get('OUT', '').strip()
@@ -186,6 +507,9 @@ def run(settings):
             f'未知压缩类型：{compress}（可选 xz / gzip / zstd / none）')
     if not source:
         raise RuntimeError('SOURCE_DIR 不能为空')
+    if source_mode not in ('host-adb', 'device-python'):
+        raise RuntimeError(
+            f'未知 SOURCE_MODE：{source_mode}（可选 host-adb / device-python）')
     if log_level not in ('quiet', 'error', 'warn', 'info', 'debug', 'trace'):
         raise RuntimeError(
             f'无效日志级别：{log_level}（可选 quiet/error/warn/info/debug/trace）')
@@ -194,6 +518,12 @@ def run(settings):
             raise ValueError
     except (TypeError, ValueError):
         raise RuntimeError('PROGRESS_INTERVAL 必须是不小于 0.1 的秒数')
+    if source_mode == 'device-python':
+        # Resolve (or download+unpack) the Android interpreter up front so
+        # configuration/network errors surface before ADB/archive work starts.
+        device_python = android_python.resolve(
+            device_python, download_device_python, device_python_url,
+            quiet=log_level in ('quiet', 'error'))
     if not out:
         extension = {'gzip': 'gz', 'zstd': 'zst', 'xz': 'xz'}.get(compress)
         out = 'backup.tar' if compress == 'none' else f'backup.tar.{extension}'
@@ -224,8 +554,13 @@ def run(settings):
             print('[1/3] checking ADB and source directory...')
             print('[2/3] streaming Android source through PAX tar and compressor...')
         with open(partial, 'wb') as fh:
-            _stream_android_archive(source, adb, compress, fh, env,
-                                    log_level, progress_interval, show_rate)
+            if source_mode == 'host-adb':
+                _stream_android_archive(source, adb, compress, fh, env,
+                                        log_level, progress_interval, show_rate)
+            else:
+                _stream_device_python_archive(
+                    source, adb, compress, fh, env, device_python,
+                    log_level, progress_interval, show_rate)
 
         if log_level not in ('quiet', 'error'):
             print('[3/3] verifying archive...')

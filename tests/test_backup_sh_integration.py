@@ -127,6 +127,13 @@ class HarnessMixin:
         base.pop('ANDROID_SERIAL', None)
         base.pop('FAKE_ADB_FAIL', None)
         base.pop('FAKE_ADB_TRUNCATE', None)
+        base.pop('SOURCE_MODE', None)
+        base.pop('DEVICE_PYTHON', None)
+        base.pop('DOWNLOAD_DEVICE_PYTHON', None)
+        base.pop('DEVICE_PYTHON_URL', None)
+        base.pop('LOG_LEVEL', None)
+        base.pop('PROGRESS_INTERVAL', None)
+        base.pop('SHOW_RATE', None)
         base.update(over)
         return base
 

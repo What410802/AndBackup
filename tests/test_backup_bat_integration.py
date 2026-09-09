@@ -25,6 +25,11 @@ class TestBackupBatch(unittest.TestCase):
         self.source = "/storage/emulated/0/测试 'quoted' dir — v2"
         self.out = os.path.join(self.case, 'out.tar.xz')
         self.log = os.path.join(self.case, 'adb.log')
+        self.remote_root = os.path.join(self.case, 'remote')
+        os.makedirs(self.remote_root)
+        self.device_python = os.path.join(self.case, 'android-python')
+        with open(self.device_python, 'wb') as fh:
+            fh.write(b'fake standalone python')
         self.adb = os.path.join(self.case, 'fake-adb.cmd')
         self._write_adb_wrapper()
         self.config = os.path.join(self.case, 'backup.yaml')
@@ -64,6 +69,7 @@ class TestBackupBatch(unittest.TestCase):
             'TEST_FAKE_ADB': self.helper,
             'FAKE_ADB_ROOT': self.device_root,
             'FAKE_ADB_SOURCE': self.source,
+            'FAKE_ADB_REMOTE_ROOT': self.remote_root,
             'FAKE_ADB_LOG': self.log,
             'BACKUP_CONFIG_FILE': os.path.join(self.case, 'no-config.yaml'),
         })
@@ -72,6 +78,15 @@ class TestBackupBatch(unittest.TestCase):
         env.pop('ANDROID_SERIAL', None)
         env.pop('FAKE_ADB_FAIL', None)
         env.pop('FAKE_ADB_TRUNCATE', None)
+        # Operational keys a developer may have exported in their shell must not
+        # leak into tests that do not set them explicitly (e.g. SOURCE_MODE).
+        env.pop('SOURCE_MODE', None)
+        env.pop('DEVICE_PYTHON', None)
+        env.pop('DOWNLOAD_DEVICE_PYTHON', None)
+        env.pop('DEVICE_PYTHON_URL', None)
+        env.pop('LOG_LEVEL', None)
+        env.pop('PROGRESS_INTERVAL', None)
+        env.pop('SHOW_RATE', None)
         env.update(overrides)
         return env
 
@@ -169,6 +184,78 @@ class TestBackupBatch(unittest.TestCase):
         result = self.run_script(COMPRESS='bad-compressor')
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(os.path.exists(self.out))
+
+    def test_unknown_source_mode_is_rejected(self):
+        result = self.run_script(SOURCE_MODE='bad-source-mode')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_device_python_requires_device_python_path(self):
+        result = self.run_script(SOURCE_MODE='device-python')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(os.path.exists(self.out))
+        leftovers = [name for name in os.listdir(self.case)
+                     if name.startswith('out.tar.xz.partial.')]
+        self.assertEqual(leftovers, [])
+
+    def test_device_python_mode_uploads_and_round_trips(self):
+        result = self.run_script(SOURCE_MODE='device-python',
+                                 DEVICE_PYTHON=self.device_python)
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
+        members = T.list_members(T.read_bytes(self.out))
+        root = posix_basename(self.source)
+        self.assertEqual(members[root + '/readme.txt'][2], b'hello\n')
+        self.assertFalse(any('andbackup-' in name for _, dirs, files in os.walk(self.remote_root)
+                             for name in dirs + files))
+        log = self.log_text()
+        self.assertIn('push', log)
+        self.assertIn('shell mkdir -p', log)
+
+    def test_device_python_failure_does_not_fallback_and_cleans_remote(self):
+        original = b'previous verified backup'
+        with open(self.out, 'wb') as fh:
+            fh.write(original)
+        result = self.run_script(SOURCE_MODE='device-python',
+                                 DEVICE_PYTHON=self.device_python,
+                                 FAKE_ADB_DEVICE_PYTHON_FAIL='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(T.read_bytes(self.out), original)
+        self.assertFalse(any('andbackup-' in name for _, dirs, files in os.walk(self.remote_root)
+                             for name in dirs + files))
+        # Device-python mode must not invoke adb_source.py's find/stat path.
+        log = self.log_text()
+        self.assertNotIn('find ', log)
+
+    def test_device_python_prefix_directory_uploads_and_round_trips(self):
+        """DEVICE_PYTHON may point at a python prefix dir (bin/ + lib/)."""
+        prefix = os.path.join(self.case, 'android-pyenv')
+        bin_dir = os.path.join(prefix, 'bin')
+        lib_dir = os.path.join(prefix, 'lib', 'python3.14')
+        os.makedirs(bin_dir)
+        os.makedirs(lib_dir)
+        interp = os.path.join(bin_dir, 'python3.14')
+        with open(interp, 'wb') as fh:
+            fh.write(b'fake static python (not executed by fake adb)')
+        with open(os.path.join(lib_dir, 'os.py'), 'wb') as fh:
+            fh.write(b'# fake stdlib marker\n')
+
+        result = self.run_script(SOURCE_MODE='device-python',
+                                 DEVICE_PYTHON=prefix)
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
+        members = T.list_members(T.read_bytes(self.out))
+        root = posix_basename(self.source)
+        self.assertEqual(members[root + '/readme.txt'][2], b'hello\n')
+        # No leftover andbackup-* temporary directory on the "device".
+        self.assertFalse(any('andbackup-' in name for _, dirs, files in os.walk(self.remote_root)
+                             for name in dirs + files))
+        log = self.log_text()
+        self.assertIn('push', log)
+        self.assertIn('python.tar', log)
+        self.assertIn('shell tar -xf', log)
 
 
 def posix_basename(path):
