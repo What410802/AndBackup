@@ -822,7 +822,8 @@ class TestVersionCommands(unittest.TestCase):
     def test_paxck_version_matches_release_file(self):
         rc, out, err = T.run_cli(['--version'])
         self.assertEqual(rc, 0, err.decode('utf-8', 'replace'))
-        self.assertEqual(out.decode('ascii').strip(), 'paxck 0.1.0')
+        expected = f'paxck {paxck.VERSION}'
+        self.assertEqual(out.decode('ascii').strip(), expected)
 
 
 # --------------------------------------------------------------------------

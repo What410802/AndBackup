@@ -184,8 +184,9 @@ Python 版本不必固定到某一个补丁版本，但发布时应声明并测�
 3.12）并覆盖 3.12、3.13、3.14 的测试矩阵。若需要可复现的 zstd 字节流，应同时固定
 Python 版本和 zstd 外部命令版本，因为压缩器实现和参数会影响输出字节，但不影响归档内容。
 
-截至 `v0.1.0` 发布准备，完整离线套件已在 Windows CPython 3.13.15 上运行；WSL Ubuntu
-CPython 3.14.4 已运行跨平台选择用例。Python 3.12 是声明的最低版本，并由提交后的 CI
+截至 `v0.2.0` 发布准备，Windows 上的完整离线套件已在 CPython 3.13.15 通过（153 项、0
+失败）；跨平台选择用例（3.14 标准库 `compression.zstd` 与旧版系统 `tar` 两条解压路径）在
+WSL Ubuntu CPython 3.14.4 上运行过。Python 3.12 是声明的最低版本，并由提交后的 CI
 矩阵覆盖，但本机未为此额外安装解释器。Ubuntu 24.04 的系统 Python 为 3.12；Debian 12
 的系统 Python 为 3.11，需另行安装或提供 3.12+ 解释器。
 
@@ -296,7 +297,8 @@ docs/
   testing.md               测试层次、覆盖范围和运行方式
   configuration.md         配置、命令行与缓存清理参考（中文）
   configuration.en.md      配置、命令行与缓存清理参考（English）
-  release-0.1.0.md         首版发布说明草稿与检查表
+  release-0.2.0.md         当前发布说明与发布前检查表
+  release-0.1.0.md         首版发布说明（历史）
 tests/                     单元、离线集成和真机集成测试
 ```
 
@@ -342,5 +344,6 @@ py -m unittest -v tests.test_device_integration
 
 ## 许可证
 
-本项目采用 [MIT License](LICENSE)；版本记录见 [CHANGELOG.md](CHANGELOG.md)，首版发布说明和
-发布前检查表见 [docs/release-0.1.0.md](docs/release-0.1.0.md)。
+本项目采用 [MIT License](LICENSE)；版本记录见 [CHANGELOG.md](CHANGELOG.md)，发布说明与
+发布前检查表见 [docs/release-0.2.0.md](docs/release-0.2.0.md)（首版见
+[docs/release-0.1.0.md](docs/release-0.1.0.md)）。

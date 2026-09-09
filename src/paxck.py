@@ -62,9 +62,9 @@ def _read_version():
     path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'VERSION')
     try:
         with open(path, encoding='ascii') as fh:
-            return fh.read().strip() or '0.1.0'
+            return fh.read().strip() or '0.2.0'
     except OSError:
-        return '0.1.0'
+        return '0.2.0'
 
 
 VERSION = _read_version()
