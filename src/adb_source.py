@@ -468,6 +468,7 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
 
 
 def main(argv=None):
+    paxck.configure_stdio_utf8()
     parser = argparse.ArgumentParser(
         description='经 adb exec-out 把 Android 目录写为 stdout 上的裸 PAX tar')
     parser.add_argument(

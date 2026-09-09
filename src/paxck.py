@@ -76,6 +76,21 @@ def binary_stdout():
     return buf if buf is not None else sys.stdout
 
 
+def configure_stdio_utf8():
+    """Force human-facing text I/O to UTF-8.
+
+    Archive bytes already go through ``sys.stdout.buffer`` (binary), so this
+    only affects status messages. On Windows, piped stdout/stderr otherwise
+    fall back to a legacy ANSI codepage (e.g. cp1252 on CI runners), which
+    crashes with UnicodeEncodeError as soon as a Chinese message is written.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='backslashreplace')
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def _bin_in():
     buf = getattr(sys.stdin, 'buffer', None)
     return buf if buf is not None else sys.stdin
@@ -975,6 +990,7 @@ def cmd_extract_direct(infile, directory):
 
 
 def main(argv=None):
+    configure_stdio_utf8()
     ap = argparse.ArgumentParser(
         prog='paxck',
         description='创建/校验带 pax 内嵌 SHA-256 的 tar 归档（流式，仅用标准库）')

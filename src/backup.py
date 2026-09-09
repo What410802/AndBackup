@@ -842,6 +842,7 @@ def cmd_clean(settings, clean_device, clean_host):
 
 
 def main(argv=None):
+    paxck.configure_stdio_utf8()
     try:
         parser = argparse.ArgumentParser(
             description='AndBackup 主控：读取 YAML 并执行 ADB 流式归档')
