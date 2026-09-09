@@ -29,7 +29,7 @@ is a tiny top-level `key: value` subset (single/double-quoted strings,
 | `adb_serial` | empty | USB serial or wireless `host:port`; empty lets ADB choose |
 | `adb_connect` | `false` | `true` only to run `adb connect` first for a TCP serial |
 | `source_dir` | `/sdcard/DCIM` | absolute device directory to back up |
-| `out` | derived | host archive path |
+| `out` | empty → `backup.tar.<suffix>` in cwd | output target: a directory (auto-named from the source_dir tail) or a file; see “OUT semantics” |
 | `compress` | `xz` | `xz`, `gzip`, `zstd`, or `none` |
 | `source_mode` | `host-adb` | `host-adb` (host reads) or `device-python` (device packs) |
 | `device_python` | unset | `device-python`: local Android ARM64 Python, a single file or a prefix dir (`bin/`+`lib/`) |
@@ -39,6 +39,17 @@ is a tiny top-level `key: value` subset (single/double-quoted strings,
 | `log_level` | `info` | `quiet`, `error`, `warn`, `info`, `debug`, `trace` |
 | `progress_interval` | `5` | minimum progress interval in seconds |
 | `show_rate` | `false` | include payload rate in periodic progress |
+
+**OUT semantics**: empty → `backup.tar.<suffix>` in the current directory
+(suffix `.tar.xz`/`.tar.gz`/`.tar.zst`/`.tar` per `compress`). Pointing `out` at
+an **existing directory**, or at a path ending in `/` (or `\`), treats it as a
+directory and writes `<that directory>/<tail of source_dir><suffix>` (e.g.
+`source_dir` `/storage/emulated/0/DCIM` with `out: ./backups/` →
+`./backups/DCIM.tar.xz`). Otherwise it is a **file** path: used as-is when it
+already ends with the theoretical suffix, else treated as a suffix mismatch that
+non-interactive runs (no TTY, or `log_level` `quiet`/`error`) write verbatim,
+while an interactive terminal is asked once whether to append the suffix
+(Enter = append, `n`/`no` = keep the name).
 
 ## Environment Variables
 

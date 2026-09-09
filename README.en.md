@@ -29,6 +29,33 @@ mode is never auto-switched to the other:
 Files travel as binary data over `adb exec-out`; the host builds, compresses,
 and verifies the archive in both modes.
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as backup-android.sh/.bat
+    participant B as backup.py (host)
+    participant A as adb (exec-out / shell)
+    participant D as Android device
+    participant P as paxck.py (host)
+    W->>B: read YAML / env (source_dir, out, compress...)
+    B->>A: get-state (authorized?)
+    alt host-adb (default: host reads entries)
+        B->>A: find / stat / readlink / cat (two passes)
+        A->>D: enumerate + read only, nothing staged
+        D-->>A: metadata and file bytes
+        A-->>P: raw byte stream
+    else device-python (device packs)
+        B->>A: upload / reuse device Python cache
+        A->>D: /data/local/tmp/andbackup-pyenv
+        D->>P: paxck.py create streams raw PAX tar
+        D-->>A: tar bytes
+        A-->>P: raw byte stream
+    end
+    P->>P: write PAX tar (embedded SHA-256) + compress
+    P->>P: verify every regular file's SHA-256 in .partial
+    P-->>W: atomic replace on success
+```
+
 ## Requirements
 
 - Python 3.12 or later. There are no third-party Python dependencies.
@@ -77,6 +104,7 @@ Edit the copied file. Its supported top-level YAML keys are:
 | `device_python` | Used by `device-python`: a local path to an Android ARM64 Python — a standalone interpreter file or a python install prefix directory (`bin/` + `lib/`). |
 | `download_device_python` | `true` lets `device-python` fetch the pinned upstream interpreter when `device_python` is empty or points to a missing path. |
 | `device_python_url` | Overrides the pinned `device_python_url` download URL; may be a local `.tar.zst` path for offline reuse. |
+| `keep_android_env` | `device-python`: `true` keeps the device interpreter cache after the run, `false` removes it, unset asks (remove when non-interactive). |
 
 USB configuration normally has an empty `adb_serial` for one connected device,
 or its USB serial for a multi-device host:
@@ -130,8 +158,15 @@ Configuration precedence is `--config PATH`, `BACKUP_CONFIG_FILE`, then an
 existing sibling `src/backup-android.yaml`. The operational environment
 variables `ADB`, `ADB_SERIAL`, `ADB_CONNECT`, `SOURCE_DIR`, `OUT`, `COMPRESS`,
 `SOURCE_MODE`, `DEVICE_PYTHON`, `DOWNLOAD_DEVICE_PYTHON`, `DEVICE_PYTHON_URL`,
-`LOG_LEVEL`, `PROGRESS_INTERVAL`, and `SHOW_RATE` override YAML values.
-`PYTHON` selects the interpreter for the wrappers.
+`KEEP_ANDROID_ENV`, `LOG_LEVEL`, `PROGRESS_INTERVAL`, and `SHOW_RATE` override
+YAML values. `PYTHON` selects the interpreter for the wrappers.
+
+`out` interpretation: empty writes `backup.tar.<suffix>` in the current
+directory; pointing it at a directory (existing, or ending in `/` or `\`) writes
+`<tail of source_dir><suffix>` into that directory; pointing it at a file whose
+extension differs from the compressor's theoretical suffix
+(`.tar.xz`/`.tar.gz`/`.tar.zst`/`.tar`) is written verbatim in non-interactive
+runs, while an interactive terminal is asked whether to append the suffix.
 
 ## Local Archive Workflow
 

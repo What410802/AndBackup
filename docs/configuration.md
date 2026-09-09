@@ -26,7 +26,7 @@
 | `adb_serial` | 空 | USB serial 或无线 `host:port`；空则由 ADB 自动选择 |
 | `adb_connect` | `false` | 仅当需要先执行 `adb connect`（TCP serial）时为 `true`；USB 应关闭 |
 | `source_dir` | `/sdcard/DCIM` | 设备上要备份的绝对目录 |
-| `out` | 随压缩类型 | 主机端归档路径 |
+| `out` | 空 → 当前目录 `backup.tar.<后缀>` | 输出目标：目录（自动按 source_dir 尾部命名）或文件名，见下方“OUT 语义” |
 | `compress` | `xz` | `xz`、`gzip`、`zstd` 或 `none` |
 | `source_mode` | `host-adb` | `host-adb`（主机逐条读）或 `device-python`（设备端打包） |
 | `device_python` | 未设置 | `device-python` 用：本机 Android ARM64 Python——单文件解释器，或含 `bin/`+`lib/` 的 prefix 目录 |
@@ -36,6 +36,14 @@
 | `log_level` | `info` | `quiet`、`error`、`warn`、`info`、`debug`、`trace` |
 | `progress_interval` | `5` | 进度输出最小间隔（秒），最小 `0.1` |
 | `show_rate` | `false` | 在定期进度行显示有效载荷速率 |
+
+**OUT 语义**：留空 → 当前目录的 `backup.tar.<后缀>`（后缀依 `compress` 为
+`.tar.xz`/`.tar.gz`/`.tar.zst`/`.tar`）。`out` 指向**已存在的目录**、或以 `/`（或 `\`）
+结尾时视为目录，写入 `<该目录>/<source_dir 尾部名><后缀>`（例如 `source_dir` 为
+`/storage/emulated/0/DCIM` 且 `out: ./backups/` → `./backups/DCIM.tar.xz`）。其余按
+**文件名**处理：名字已以理论后缀结尾则原样使用；否则视为“后缀不符”——非交互（无
+TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互终端询问一次是否自动
+追加该后缀（回车 = 追加，输入 `n`/`no` 则按原名写入）。
 
 ## 环境变量
 

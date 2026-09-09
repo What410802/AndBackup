@@ -1,38 +1,16 @@
-# AndBackup site/device settings (UTF-8, simple top-level YAML).
-# Copy this file to backup-android.yaml, then edit the copy. The copy is ignored
-# by Git so an Android wireless endpoint and local paths are not committed.
+# AndBackup 配置示例：复制为 backup-android.yaml 后使用（该副本被 .gitignore 忽略，
+# 不会随仓库包含设备 serial、无线端点或本机输出路径）。
+# 开箱即可试用：只需把 source_dir 改成要备份的设备目录；out 指向一个目录时会自动
+# 以“<source_dir 尾部名>.<压缩后缀>”命名（此处为 ./backups/DCIM.tar.xz），留空则写
+# 当前目录的 backup.tar.xz，直接写文件名亦可（后缀与 compress 不符时交互询问是否补全）。
+# 键值完整说明见 README.md 与 docs/configuration.md（English: docs/configuration.en.md）。
 adb: adb
 adb_serial: ""
 adb_connect: false
 source_dir: "/storage/emulated/0/DCIM"
-out: android-backup.tar.xz
+out: "./backups/"
 compress: xz
 source_mode: host-adb
-# Required only for source_mode: device-python. This is a local path to an
-# Android arm64 Python, either a single standalone interpreter binary or a
-# python install prefix directory containing bin/<python> and lib/python3.x
-# (a prefix directory is packed into one tar and uploaded/extracted into the
-# device cache on first placement; later runs reuse the cache).
-# device_python: "C:/tools/python-android-arm64/python"
-# Optional for source_mode: device-python. When device_python is empty (or a
-# path that does not exist yet) and this is true, backup.py downloads the
-# pinned python-build-standalone arm64 interpreter from device_python_url and
-# unpacks it: into device_python when set, else into the per-user cache
-# (e.g. %LOCALAPPDATA%/andbackup). Reuses the cache on later runs. False by
-# default, so a missing interpreter is an error unless this is enabled.
-# download_device_python: true
-# Optional: override the upstream download URL. Defaults to the pinned
-# astral-sh/python-build-standalone release. May be a local .tar.zst file path
-# for offline use (e.g. a file you already downloaded).
-# device_python_url: "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.14.7+20260901-aarch64-unknown-linux-musl-lto+static-full.tar.zst"
-# For source_mode: device-python, controls whether the Android-side interpreter
-# cache (/data/local/tmp/andbackup-pyenv) is kept after this run:
-#   true  -> always keep (reused by later runs, no re-upload)
-#   false -> always remove
-#   unset -> ask interactively when run from a terminal; otherwise remove.
-# A valid cached env (stamp matches) is always reused without re-upload.
-# keep_android_env: true
 log_level: info
 progress_interval: 5
 show_rate: false
-# python: "C:/Path/To/python.exe"

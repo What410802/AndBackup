@@ -19,10 +19,31 @@ Android 数据源可显式选择两种模式，且不会自动互相切换：
 Android shell 用户读取源文件。实机已验证 ADB shell 可读取
 `/storage/emulated/0` 下的目录。
 
-```text
-Android 文件 -> adb exec-out -> adb_source.py -> paxck.py -> tar + 压缩
-                    USB 或 TCP                              |
-                                                        SHA-256 校验
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as backup-android.sh/.bat
+    participant B as backup.py（主机主控）
+    participant A as adb（exec-out / shell）
+    participant D as Android 设备
+    participant P as paxck.py（主机）
+    W->>B: 读取 YAML/环境变量（source_dir、out、compress…）
+    B->>A: get-state，确认已授权
+    alt host-adb（默认：主机逐条读取）
+        B->>A: find / stat / readlink / cat（两遍）
+        A->>D: 设备端仅枚举与读取，不落盘
+        D-->>A: 元数据与文件字节
+        A-->>P: 裸字节流
+    else device-python（设备端打包）
+        B->>A: 上传 / 复用 Android 端 Python 缓存
+        A->>D: /data/local/tmp/andbackup-pyenv
+        D->>P: paxck.py create 流式生成裸 PAX tar
+        D-->>A: tar 字节
+        A-->>P: 裸字节流
+    end
+    P->>P: 写 PAX tar（内嵌 SHA-256）+ 压缩
+    P->>P: 校验 .partial 中每个普通文件的 SHA-256
+    P-->>W: 校验通过才原子替换最终归档
 ```
 
 ## 快速开始
@@ -43,6 +64,27 @@ cp src/backup-android.example.yaml src/backup-android.yaml
 ```bat
 copy src\backup-android.example.yaml src\backup-android.yaml
 ```
+
+复制的 `backup-android.yaml` 常用键如下（均有默认值，需要改动才写）：
+
+| 键 | 默认 | 作用 |
+|---|---|---|
+| `source_dir` | `/sdcard/DCIM` | 设备上要备份的绝对目录 |
+| `out` | 空 → 当前目录 `backup.tar.<后缀>` | 输出目标，见下方 `out` 语义 |
+| `compress` | `xz` | `xz`/`gzip`/`zstd`/`none` |
+| `source_mode` | `host-adb` | `device-python` 时需一并提供设备端 Python |
+| `device_python` | 未设置 | `device-python` 用：本机 Android ARM64 Python（单文件或含 `bin/`+`lib/` 的 prefix 目录） |
+| `download_device_python` | `false` | 无可用解释器时自动下载到主机缓存 |
+| `device_python_url` | 固定上游 | 覆盖下载地址；也可填本地 `.tar.zst` 离线复用 |
+| `keep_android_env` | 未设置→交互询问 | `device-python` 打包后是否保留设备端缓存（非交互默认删除） |
+| `adb_serial` / `adb_connect` | 空 / `false` | 无线 TCP 调试用（见下文） |
+| `log_level` / `progress_interval` / `show_rate` | `info` / `5` / `false` | 输出控制 |
+
+`out` 语义：留空写当前目录的 `backup.tar.<后缀>`；**指向目录**（已存在，或以 `/`、`\`
+结尾）时，自动写为该目录下的 `<source_dir 尾部名><压缩后缀>`（例如 `./backups/DCIM.tar.xz`）；
+写具体**文件名**时，若后缀与 `compress` 的理论后缀
+（`.tar.xz`/`.tar.gz`/`.tar.zst`/`.tar`）不一致，交互终端会询问是否自动追加后缀，
+非交互环境按原文件名直接写入。完整键表见 [docs/configuration.md](docs/configuration.md)。
 
 USB 与无线 ADB 使用同一个启动脚本，区别只在 `adb_serial`/`adb_connect`：
 
