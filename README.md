@@ -5,14 +5,15 @@
 项目由两个可独立使用的组件组成：`paxck.py` 将**本机目录**写成带 PAX 内嵌 SHA-256 的
 裸 `tar`，并可压缩、校验或提取；`adb_source.py` 则把已开启 ADB 调试（USB 有线或
 TCP 无线）的 Android 目录作为同一打包器的数据源。归档落盘后还会逐文件校验 SHA-256。
-Android 数据源可显式选择两种模式，且不会自动互相切换：
+Android 数据源可显式选择两种模式，且任一模式失败都不会自动切换到另一种（`device-python`
+失败只会明确报错，绝不悄悄退回慢速的 `host-adb`）：
 
-- `host-adb`（默认）：主机通过 `adb exec-out` 逐条读取，设备端只运行
-  `find`/`stat`/`readlink`/`cat`，不生成 tar、压缩包或临时文件。
-- `device-python`：把本机提供的 Android ARM64 Python 与 `paxck.py` 上传到设备固定目录
-  `/data/local/tmp/andbackup-pyenv`，在设备端流式生成 tar 再回传主机压缩；设备端不生成
-  tar 文件或压缩包，解释器会按缓存规则复用/清理（见
-  [docs/configuration.md](docs/configuration.md)）。
+- `device-python`（推荐，示例配置默认）：`download_device_python: true` 会在首跑自动下载
+  与设备 ABI 匹配的 Python 并缓存到设备固定目录 `/data/local/tmp/andbackup-pyenv`，在
+  设备端流式生成 tar 再回传主机压缩；设备端不生成 tar 文件或压缩包，缓存按规则复用/清理
+  （见 [docs/configuration.md](docs/configuration.md)）。
+- `host-adb`：主机通过 `adb exec-out` 逐条读取，设备端只运行 `find`/`stat`/`readlink`/`cat`，
+  不生成 tar、压缩包或临时文件；适合完全离线或不希望设备端写入解释器的场景。
 
 项目针对一个常见但受限的场景：Android 11+ 禁止普通应用读取其他应用的
 `Android/data`；因此不使用 Termux/SSH，而是让主机通过授权的 `adb exec-out` 以
@@ -29,16 +30,16 @@ sequenceDiagram
     participant P as paxck.py（主机）
     W->>B: 读取 YAML/环境变量（source_dir、out、compress…）
     B->>A: get-state，确认已授权
-    alt host-adb（默认：主机逐条读取）
-        B->>A: find / stat / readlink / cat（两遍）
-        A->>D: 设备端仅枚举与读取，不落盘
-        D-->>A: 元数据与文件字节
-        A-->>P: 裸字节流
-    else device-python（设备端打包）
+    alt device-python（推荐，设备端打包）
         B->>A: 上传 / 复用 Android 端 Python 缓存
         A->>D: /data/local/tmp/andbackup-pyenv
         D->>P: paxck.py create 流式生成裸 PAX tar
         D-->>A: tar 字节
+        A-->>P: 裸字节流
+    else host-adb（主机逐条读取）
+        B->>A: find / stat / readlink / cat（两遍）
+        A->>D: 设备端仅枚举与读取，不落盘
+        D-->>A: 元数据与文件字节
         A-->>P: 裸字节流
     end
     P->>P: 写 PAX tar（内嵌 SHA-256）+ 压缩
@@ -65,20 +66,22 @@ cp src/backup-android.example.yaml src/backup-android.yaml
 copy src\backup-android.example.yaml src\backup-android.yaml
 ```
 
-复制的 `backup-android.yaml` 常用键如下（均有默认值，需要改动才写）：
+随仓库模板（`backup-android.example.yaml`）默认采用 `device-python` + `download_device_python: true`
+（推荐：首跑联网下载并缓存解释器）。下表“内置默认”指该键未出现在配置中时的保守值；模板的
+示例值已按推荐覆盖 `source_mode` 与 `download_device_python` 两项。
 
-| 键 | 默认 | 作用 |
-|---|---|---|
-| `source_dir` | `/sdcard/DCIM` | 设备上要备份的绝对目录 |
-| `out` | 空 → 当前目录 `backup.tar.<后缀>` | 输出目标，见下方 `out` 语义 |
-| `compress` | `xz` | `xz`/`gzip`/`zstd`/`none` |
-| `source_mode` | `host-adb` | `device-python` 时需一并提供设备端 Python |
-| `device_python` | 未设置 | `device-python` 用：本机 Android ARM64 Python（单文件或含 `bin/`+`lib/` 的 prefix 目录） |
-| `download_device_python` | `false` | 无可用解释器时自动下载到主机缓存 |
-| `device_python_url` | 固定上游 | 覆盖下载地址；也可填本地 `.tar.zst` 离线复用 |
-| `keep_android_env` | 未设置→交互询问 | `device-python` 打包后是否保留设备端缓存（非交互默认删除） |
-| `adb_serial` / `adb_connect` | 空 / `false` | 无线 TCP 调试用（见下文） |
-| `log_level` / `progress_interval` / `show_rate` | `info` / `5` / `false` | 输出控制 |
+| 键 | 内置默认 | 模板 | 作用 |
+|---|---|---|---|
+| `source_dir` | `/sdcard/DCIM` | `/storage/emulated/0/DCIM` | 设备上要备份的绝对目录 |
+| `out` | 空 → 当前目录 `backup.tar.<后缀>` | `./backups/`（目录） | 输出目标，见下方 `out` 语义 |
+| `compress` | `xz` | `xz` | `xz`/`gzip`/`zstd`/`none` |
+| `source_mode` | `host-adb` | `device-python` | 主机逐条读，或设备端打包（见上） |
+| `device_python` | 未设置 | 未设置 | `device-python` 用：本机 Android ARM64 Python（单文件或含 `bin/`+`lib/` 的 prefix 目录）；模板留空以便自动下载 |
+| `download_device_python` | `false` | `true` | 无可用解释器时自动下载到主机缓存 |
+| `device_python_url` | 固定上游 | 同内置 | 覆盖下载地址；也可填本地 `.tar.zst` 离线复用 |
+| `keep_android_env` | 未设置→交互询问 | 同内置 | `device-python` 打包后是否保留设备端缓存（非交互默认删除） |
+| `adb_serial` / `adb_connect` | 空 / `false` | 空 / `false` | 无线 TCP 调试用（见下文） |
+| `log_level` / `progress_interval` / `show_rate` | `info` / `5` / `false` | 同内置 | 输出控制 |
 
 `out` 语义：留空写当前目录的 `backup.tar.<后缀>`；**指向目录**（已存在，或以 `/`、`\`
 结尾）时，自动写为该目录下的 `<source_dir 尾部名><压缩后缀>`（例如 `./backups/DCIM.tar.xz`）；
@@ -97,6 +100,8 @@ adb_connect: false
 source_dir: "/storage/emulated/0/DCIM"
 out: android-backup.tar.xz
 compress: xz
+source_mode: device-python
+download_device_python: true
 log_level: info
 progress_interval: 5
 show_rate: false
@@ -227,7 +232,7 @@ python3 src/paxck.py verify -i android.tar.xz
 两种模式都由同一个 `backup.py` 主控驱动，都会在主机端压缩、校验 `.partial` 并原子替换
 最终归档，归档格式与逐文件 PAX SHA-256 语义一致；所选模式失败时不会自动切换到另一种。
 
-`host-adb`（默认）设备端不使用 `tar`、`xz`、`gzip` 或 Python。为了在不落盘的情况下
+`host-adb` 设备端不使用 `tar`、`xz`、`gzip` 或 Python。为了在不落盘的情况下
 枚举并读取文件，ADB shell 只调用系统自带的 `find -print0`、`stat`、`readlink` 和
 `cat`；这部分无法由主机替代。主机端的 `adb_source.py` 传递条目和数据，`paxck.py` 用
 Python 标准库流式写 tar 和 xz/gzip，内存不会随归档总大小增长。

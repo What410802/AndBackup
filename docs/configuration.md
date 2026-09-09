@@ -20,6 +20,11 @@
 
 ## YAML 键
 
+> 随仓库模板 `backup-android.example.yaml` 的推荐/示例默认是 `source_mode: device-python` +
+> `download_device_python: true`（首跑联网下载并缓存解释器）。下表“默认”是键未配置时的内置
+> 保守值（内置 `source_mode` 为 `host-adb`、`download_device_python` 为 `false`，不自动联网）；
+> 模板仅对这两项给出推荐覆盖，其余键模板与内置默认一致。
+
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `adb` | `adb` | `adb` 可执行文件或绝对路径 |
@@ -69,9 +74,32 @@ TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互
 | Android 主控 | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [--clean-env] [--clean-host-cache]` | 读取配置、组合源与压缩器、校验 `.partial` 后原子替换；`--clean-*` 只清理缓存后退出 |
 | 平台包装 | `backup-android.sh [ARGS...]`；`backup-android.bat [ARGS...]` | 把所有参数转发给同目录 `backup.py` |
 
-提取成功信息只在 stdout，失败诊断只在 stderr；默认提取成功显示“已验证并提取”，直接模式明确
-显示“未校验 PAX SHA-256，非原子”。`paxck.py` 校验失败以非零退出，普通文件无 SHA-256 记录的
-第三方 tar 会被拒绝。
+### stdout / stderr 职责
+
+凡承载**数据**（归档字节）的命令，其 stdout 只写二进制数据、绝不混入文本；人类可读的
+状态与诊断一律走 stderr，结果以退出码表达。纯管理类命令则用 stdout 输出状态文本。
+
+| 命令 | stdout | stderr |
+|---|---|---|
+| `paxck.py create` | 仅二进制裸 tar（经 `sys.stdout.buffer`） | `[WARN]`、`[错误]` |
+| `paxck.py compress` | 仅二进制压缩流 | `[错误]`（如缺少 zstd 支持） |
+| `paxck.py verify` | 空（刻意不留任何文本） | 全部诊断与汇总——“共 N 个条目：…”，即使通过也写 stderr |
+| `paxck.py extract`（默认） | 成功时 `[完成] 已验证并提取到 …` | `[FAIL] …`、`[WARN] …` |
+| `paxck.py extract --direct-tarfile` | 成功时 `[完成] …（未校验 PAX SHA-256，非原子）` | `[FAIL] …` |
+| `adb_source.py` | 仅二进制裸 tar | 进度、`[WARN]`、`[错误]` |
+| `backup.py` | 文本状态（`[1/3]`…`[完成]`、`[缓存]`、`[清理]`） | 源侧进度、设备端诊断/警告、`[错误]` |
+| `backup-android.sh/.bat` | 透传 `backup.py` 的 stdout | 透传 `backup.py` 的 stderr |
+
+约定细则：
+
+- 结果以退出码为准，不要靠解析 stdout。`paxck.py verify` 校验失败以非零退出；普通文件全部
+  缺少 SHA-256 记录的第三方 tar 会被拒绝（并说明原因）。
+- 把 `create`/`compress`/`verify` 当作管道阶段时，stdout 只有数据（`verify` 为空）；人类
+  信息全部从 stderr 取，避免污染数据流。
+- `extract` 没有二进制输出，成功文本因此放 stdout，可直接当普通命令看；失败诊断仍只在
+  stderr。默认提取成功显示“已验证并提取”，直接模式明确显示“未校验 PAX SHA-256，非原子”。
+- `backup.py` 的 stdout 是给人看的进度文本；备份字节写入 `out` 文件，不经 stdout。
+- Windows 下用 `cmd.exe` 的二进制管道/重定向，避免 PowerShell 文本管道改写字节。
 
 ## 缓存与清理
 

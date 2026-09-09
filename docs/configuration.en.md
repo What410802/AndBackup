@@ -23,6 +23,14 @@ is a tiny top-level `key: value` subset (single/double-quoted strings,
 
 ## YAML Keys
 
+> The shipped template `backup-android.example.yaml` defaults (recommended) to
+> `source_mode: device-python` with `download_device_python: true` (first run
+> downloads and caches the interpreter). “Default” below is the conservative
+> built-in value used when a key is absent (built-in `source_mode` is
+> `host-adb`, built-in `download_device_python` is `false`, no auto-download);
+> the template overrides only those two, and no mode ever auto-switches to the
+> other.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `adb` | `adb` | ADB executable or absolute path |
@@ -76,9 +84,40 @@ All three Python entry points support `--version`.
 | Android controller | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [--clean-env] [--clean-host-cache]` | run + verify + atomic replace; `--clean-*` clean caches and exit |
 | Wrappers | `backup-android.sh [ARGS…]` / `backup-android.bat [ARGS…]` | forward all args to `backup.py` |
 
-Success status goes to stdout, failure diagnostics to stderr. The default extract
-says “verified and extracted”; direct mode explicitly says “not SHA-256-verified,
-non-atomic”.
+### stdout/stderr responsibilities
+
+Commands that carry **data** (archive bytes) keep stdout strictly binary — no
+text is ever mixed in; human-readable status and diagnostics go to stderr and
+results are expressed via the exit code. Pure management commands instead use
+stdout for status text.
+
+| Command | stdout | stderr |
+|---|---|---|
+| `paxck.py create` | binary raw tar only (via `sys.stdout.buffer`) | `[WARN]`, `[error]` |
+| `paxck.py compress` | binary compressed stream only | `[error]` (e.g. missing zstd support) |
+| `paxck.py verify` | empty (deliberately no text) | all diagnostics and the summary — “N entries: …”, even on success |
+| `paxck.py extract` (default) | on success: `[done] verified and extracted to …` | `[FAIL] …`, `[WARN] …` |
+| `paxck.py extract --direct-tarfile` | on success: `[done] … (not SHA-256-verified, non-atomic)` | `[FAIL] …` |
+| `adb_source.py` | binary raw tar only | progress, `[WARN]`, `[error]` |
+| `backup.py` | text status (`[1/3]`…`[done]`, `[cache]`, `[clean]`) | source progress, device diagnostics/warnings, `[error]` |
+| `backup-android.sh/.bat` | forwards `backup.py` stdout | forwards `backup.py` stderr |
+
+Rules:
+
+- Trust the exit code, not stdout parsing. `paxck.py verify` exits non-zero on
+  failure and rejects third-party tars whose regular files have no SHA-256
+  record (with an explanation).
+- When composing `create`/`compress`/`verify` in a pipeline, stdout carries data
+  only (`verify` none); read human information from stderr so it never pollutes
+  the stream.
+- `extract` has no binary output, so its success text goes to stdout and can be
+  read like an ordinary command; failure diagnostics still go to stderr only.
+  The default extract prints “verified and extracted”; direct mode explicitly
+  says “not SHA-256-verified, non-atomic”.
+- `backup.py` stdout is human-facing progress text; backup bytes go to the `out`
+  file, never to stdout.
+- On Windows use binary pipelines/redirection from `cmd.exe`; avoid PowerShell
+  text pipelines that could rewrite bytes.
 
 ## Caching and Cleanup
 

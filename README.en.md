@@ -12,19 +12,20 @@ AndBackup has two independent pieces:
   verification, and atomic replacement of the final host archive.
 
 Android directories are read in one of two explicitly selected modes; a failed
-mode is never auto-switched to the other:
+mode is never auto-switched to the other (`device-python` never falls back to
+the slower `host-adb`):
 
-- `host-adb` (default): the host reads entries one by one over `adb exec-out`;
-  the device only runs `find`/`stat`/`readlink`/`cat` and never receives an
-  archive, compression binary, Python runtime, or temporary file.
-- `device-python`: the host uploads a user-provided Android ARM64 Python and
-  `paxck.py` to the fixed device directory `/data/local/tmp/andbackup-pyenv`,
-  where the device streams a raw PAX tar to stdout for host-side compression.
-  No archive or compressed file is created on the device; the interpreter is
-  validated and reused from the cache, or removed per the caching rules (see
-  [docs/configuration.en.md](docs/configuration.en.md)). A python install
-  prefix directory (`bin/` + `lib/`) is packed into one tar, uploaded, and
-  extracted on the device so it can resolve its standard library.
+- `device-python` (recommended; the shipped example-config default): with
+  `download_device_python: true` the first run fetches an interpreter matched to
+the device ABI and caches it at the fixed directory
+  `/data/local/tmp/andbackup-pyenv`, then the device streams a raw PAX tar to
+  stdout for host-side compression. No archive or compressed file is created on
+the device; the interpreter is validated and reused from the cache, or removed
+  per the caching rules (see [docs/configuration.en.md](docs/configuration.en.md)).
+- `host-adb`: the host reads entries one by one over `adb exec-out`; the device
+  only runs `find`/`stat`/`readlink`/`cat` and never receives an archive,
+  compression binary, Python runtime, or temporary file. Use it when fully
+  offline or when you do not want an interpreter written to the device.
 
 Files travel as binary data over `adb exec-out`; the host builds, compresses,
 and verifies the archive in both modes.
@@ -39,16 +40,16 @@ sequenceDiagram
     participant P as paxck.py (host)
     W->>B: read YAML / env (source_dir, out, compress...)
     B->>A: get-state (authorized?)
-    alt host-adb (default: host reads entries)
-        B->>A: find / stat / readlink / cat (two passes)
-        A->>D: enumerate + read only, nothing staged
-        D-->>A: metadata and file bytes
-        A-->>P: raw byte stream
-    else device-python (device packs)
+    alt device-python (recommended, device packs)
         B->>A: upload / reuse device Python cache
         A->>D: /data/local/tmp/andbackup-pyenv
         D->>P: paxck.py create streams raw PAX tar
         D-->>A: tar bytes
+        A-->>P: raw byte stream
+    else host-adb (host reads entries)
+        B->>A: find / stat / readlink / cat (two passes)
+        A->>D: enumerate + read only, nothing staged
+        D-->>A: metadata and file bytes
         A-->>P: raw byte stream
     end
     P->>P: write PAX tar (embedded SHA-256) + compress
@@ -92,6 +93,12 @@ copy src\backup-android.example.yaml src\backup-android.yaml
 
 Edit the copied file. Its supported top-level YAML keys are:
 
+The shipped template (`backup-android.example.yaml`) defaults to
+`source_mode: device-python` with `download_device_python: true` (recommended;
+the first run downloads and caches the interpreter). Where a key is absent the
+conservative built-in applies (built-in `source_mode` is `host-adb`, built-in
+`download_device_python` is `false`; no mode ever auto-switches to the other).
+
 | Key | Meaning |
 |---|---|
 | `adb` | ADB executable, default `adb`. |
@@ -100,9 +107,9 @@ Edit the copied file. Its supported top-level YAML keys are:
 | `source_dir` | Android absolute directory to back up. |
 | `out` | Host output archive path. |
 | `compress` | `xz`, `gzip`, `zstd`, or `none`. |
-| `source_mode` | `host-adb` (host reads entries) or `device-python` (device packs via an uploaded Python). |
+| `source_mode` | `host-adb` (host reads entries) or `device-python` (device packs via an uploaded Python). The shipped template sets `device-python`. |
 | `device_python` | Used by `device-python`: a local path to an Android ARM64 Python — a standalone interpreter file or a python install prefix directory (`bin/` + `lib/`). |
-| `download_device_python` | `true` lets `device-python` fetch the pinned upstream interpreter when `device_python` is empty or points to a missing path. |
+| `download_device_python` | `true` lets `device-python` fetch the pinned upstream interpreter when `device_python` is empty or points to a missing path. The shipped template sets `true`. |
 | `device_python_url` | Overrides the pinned `device_python_url` download URL; may be a local `.tar.zst` path for offline reuse. |
 | `keep_android_env` | `device-python`: `true` keeps the device interpreter cache after the run, `false` removes it, unset asks (remove when non-interactive). |
 
@@ -116,6 +123,8 @@ adb_connect: false
 source_dir: "/storage/emulated/0/DCIM"
 out: android-backup.tar.xz
 compress: xz
+source_mode: device-python
+download_device_python: true
 log_level: info
 progress_interval: 5
 ```
