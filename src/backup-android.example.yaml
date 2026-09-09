@@ -11,7 +11,8 @@ source_mode: host-adb
 # Required only for source_mode: device-python. This is a local path to an
 # Android arm64 Python, either a single standalone interpreter binary or a
 # python install prefix directory containing bin/<python> and lib/python3.x
-# (the directory is packed and uploaded per run).
+# (a prefix directory is packed into one tar and uploaded/extracted into the
+# device cache on first placement; later runs reuse the cache).
 # device_python: "C:/tools/python-android-arm64/python"
 # Optional for source_mode: device-python. When device_python is empty (or a
 # path that does not exist yet) and this is true, backup.py downloads the
@@ -24,6 +25,13 @@ source_mode: host-adb
 # astral-sh/python-build-standalone release. May be a local .tar.zst file path
 # for offline use (e.g. a file you already downloaded).
 # device_python_url: "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.14.7+20260901-aarch64-unknown-linux-musl-lto+static-full.tar.zst"
+# For source_mode: device-python, controls whether the Android-side interpreter
+# cache (/data/local/tmp/andbackup-pyenv) is kept after this run:
+#   true  -> always keep (reused by later runs, no re-upload)
+#   false -> always remove
+#   unset -> ask interactively when run from a terminal; otherwise remove.
+# A valid cached env (stamp matches) is always reused without re-upload.
+# keep_android_env: true
 log_level: info
 progress_interval: 5
 show_rate: false

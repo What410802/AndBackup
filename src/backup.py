@@ -8,8 +8,10 @@ live here so Windows and POSIX follow exactly the same code path.
 """
 import ast
 import argparse
+import hashlib
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -24,11 +26,14 @@ import android_python
 
 ENV_KEYS = ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'SOURCE_DIR', 'OUT', 'COMPRESS',
             'SOURCE_MODE', 'DEVICE_PYTHON', 'DOWNLOAD_DEVICE_PYTHON',
-            'DEVICE_PYTHON_URL',
+            'DEVICE_PYTHON_URL', 'KEEP_ANDROID_ENV',
             'LOG_LEVEL', 'PROGRESS_INTERVAL', 'SHOW_RATE')
 DEFAULTS = {'ADB': 'adb', 'SOURCE_DIR': '/sdcard/DCIM', 'COMPRESS': 'xz',
             'SOURCE_MODE': 'host-adb', 'LOG_LEVEL': 'info',
             'PROGRESS_INTERVAL': '5', 'SHOW_RATE': '0'}
+
+# Fixed device-side cache location for the device-python interpreter tree.
+ANDROID_ENV_DIR = '/data/local/tmp/andbackup-pyenv'
 
 
 def _script_dir():
@@ -48,6 +53,8 @@ def read_config(path):
         'download-device-python': 'DOWNLOAD_DEVICE_PYTHON',
         'device_python_url': 'DEVICE_PYTHON_URL',
         'device-python-url': 'DEVICE_PYTHON_URL',
+        'keep_android_env': 'KEEP_ANDROID_ENV',
+        'keep-android-env': 'KEEP_ANDROID_ENV',
         'log_level': 'LOG_LEVEL', 'log-level': 'LOG_LEVEL',
         'progress_interval': 'PROGRESS_INTERVAL',
         'progress-interval': 'PROGRESS_INTERVAL',
@@ -325,41 +332,217 @@ def _tar_prefix(prefix):
     return path
 
 
-def _stream_device_python_archive(source, adb, compress, output, env,
-                                  device_python, log_level='info',
-                                  progress_interval='5', show_rate=False):
-    """Run the generic paxck writer on Android using an uploaded Python binary.
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        while True:
+            chunk = fh.read(1 << 20)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
 
-    This is an explicit alternative to ``host-adb``.  No automatic fallback is
-    attempted: a missing/incompatible binary is a hard error.  The device
-    produces a raw PAX tar on stdout, the host compresses and verifies it, and
-    the host relays received-byte progress/rate to stderr while streaming.
 
-    ``DEVICE_PYTHON`` may be either a single self-contained interpreter binary
-    or a python install prefix directory that contains ``bin/<interpreter>``
-    and its ``lib/python3.x`` stdlib.  In the directory case the prefix is
-    packed into one tar, uploaded, and extracted on the device so the
-    interpreter can resolve its standard library.
+def _local_paxck():
+    return os.path.join(_script_dir(), 'paxck.py')
+
+
+def _device_python_plan(local_python):
+    """Describe how ``local_python`` maps onto the device cache directory."""
+    local_python = os.path.abspath(os.path.expanduser(local_python))
+    if os.path.isdir(local_python):
+        interp_rel = _find_prefix_interpreter(local_python)
+        return {'prefix_mode': True,
+                'interp_rel': interp_rel,
+                'interp_file': os.path.join(local_python, *interp_rel.split('/'))}
+    return {'prefix_mode': False, 'interp_rel': 'python',
+            'interp_file': local_python}
+
+
+def _env_stamp_text(local_python, plan):
+    """Identity token of the interpreter + the local paxck.py SHA-256."""
+    default_prefix = os.path.abspath(android_python.default_prefix_dir())
+    if plan['prefix_mode'] and os.path.abspath(local_python) == default_prefix:
+        token = android_python.VARIANT        # auto-downloaded build (no hash)
+    else:
+        token = _sha256_file(plan['interp_file'])[:16]
+    paxck_sha = _sha256_file(_local_paxck())
+    return (token + '\n' + paxck_sha + '\n').encode('ascii')
+
+
+def _remote_python_version_ok(adb, env, python_path):
+    """True when the interpreter on the device actually runs."""
+    command = f'{shlex.quote(python_path)} --version'
+    result = _run_adb(adb, ('exec-out', 'sh', '-c', command), env)
+    return (result.returncode == 0
+            and result.stdout.startswith(b'Python '))
+
+
+def _device_env_valid(adb, env, env_dir, interp_rel, expected_stamp):
+    """True when a cached device env matches what we would deploy."""
+    stamp_result = _run_adb(adb, ('exec-out', 'cat', env_dir + '/stamp'), env)
+    if stamp_result.returncode != 0 or stamp_result.stdout != expected_stamp:
+        return False
+    return _remote_python_version_ok(
+        adb, env, env_dir + '/' + interp_rel)
+
+
+def _place_device_env(adb, env, local_python, plan, env_dir):
+    """Upload interpreter + paxck.py into a fresh device cache directory."""
+    interp_rel = plan['interp_rel']
+    _adb_run_checked(adb, ('shell', 'mkdir', '-p', env_dir), env,
+                     '无法创建设备缓存目录')
+    if plan['prefix_mode']:
+        local_tar = _tar_prefix(local_python)
+        try:
+            remote_tar = env_dir + '/python.tar'
+            _adb_run_checked(adb, ('push', local_tar, remote_tar), env,
+                             '上传设备 Python 环境失败')
+            _adb_run_checked(
+                adb, ('shell', 'tar', '-xf', remote_tar, '-C', env_dir),
+                env, '解压设备 Python 环境失败')
+            _run_adb(adb, ('shell', 'rm', '-f', remote_tar), env)
+        finally:
+            try:
+                os.unlink(local_tar)
+            except OSError:
+                pass
+    else:
+        _adb_run_checked(adb, ('push', local_python, env_dir + '/python'), env,
+                         '上传设备 Python 失败')
+    _adb_run_checked(adb, ('push', _local_paxck(), env_dir + '/paxck.py'), env,
+                     '上传设备 paxck.py 失败')
+    _adb_run_checked(adb, ('shell', 'chmod', '700',
+                           env_dir + '/' + interp_rel), env,
+                     '设置设备 Python 执行权限失败')
+
+
+def _write_env_stamp(adb, env, env_dir, stamp):
+    fd, path = tempfile.mkstemp(prefix='andbackup-stamp-')
+    os.close(fd)
+    try:
+        with open(path, 'wb') as fh:
+            fh.write(stamp)
+        _adb_run_checked(adb, ('push', path, env_dir + '/stamp'), env,
+                         '写入设备缓存标识失败')
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _provision_device_python_env(adb, env, local_python, log_level):
+    """Ensure the interpreter env exists and is valid on the device.
+
+    Returns ``{'env_dir', 'interp', 'uploaded'}``.  Reuses a valid cached env;
+    otherwise places it (retrying once when the interpreter itself fails to
+    run, which is usually a corrupt/incompatible upload).
     """
-    if not device_python:
-        raise RuntimeError(
-            'SOURCE_MODE=device-python 需要 DEVICE_PYTHON 指向本机 Android ARM64 '
-            'Python 二进制（单文件）或 Python prefix 目录（bin/ + lib/）')
-    local_python = os.path.abspath(os.path.expanduser(device_python))
+    local_python = os.path.abspath(os.path.expanduser(local_python))
     if not os.path.exists(local_python):
         raise RuntimeError(f'设备 Python 不存在：{local_python}')
+    plan = _device_python_plan(local_python)
+    interp_rel = plan['interp_rel']
+    stamp = _env_stamp_text(local_python, plan)
+    env_dir = ANDROID_ENV_DIR
 
-    prefix_mode = os.path.isdir(local_python)
-    remote_dir = '/data/local/tmp/andbackup-' + uuid.uuid4().hex
-    remote_paxck = remote_dir + '/paxck.py'
-    remote_status = remote_dir + '/status'
-    remote_error = remote_dir + '/stderr'
-    local_tar = None
-    if prefix_mode:
-        interp_rel = _find_prefix_interpreter(local_python)
-        remote_python = remote_dir + '/' + interp_rel
-    else:
-        remote_python = remote_dir + '/python'
+    if _device_env_valid(adb, env, env_dir, interp_rel, stamp):
+        if log_level not in ('quiet', 'error'):
+            print(f'[缓存] 复用 Android 端 Python 环境：{env_dir}')
+        return {'env_dir': env_dir, 'interp': interp_rel, 'uploaded': False}
+
+    python_path = env_dir + '/' + interp_rel
+    for attempt in (1, 2):
+        try:
+            _run_adb(adb, ('shell', 'rm', '-rf', env_dir), env)
+        except (RuntimeError, OSError):
+            pass
+        _place_device_env(adb, env, local_python, plan, env_dir)
+        if _remote_python_version_ok(adb, env, python_path):
+            _write_env_stamp(adb, env, env_dir, stamp)
+            if log_level not in ('quiet', 'error'):
+                print(f'[缓存] 已上传 Android 端 Python 环境：{env_dir}')
+            return {'env_dir': env_dir, 'interp': interp_rel, 'uploaded': True}
+        if log_level not in ('quiet', 'error'):
+            print('[缓存] 设备端 Python 自检失败，重新上传一次...')
+    try:
+        _run_adb(adb, ('shell', 'rm', '-rf', env_dir), env)
+    except (RuntimeError, OSError):
+        pass
+    raise RuntimeError(
+        '设备端 Python 无法执行（上传或兼容性问题）。已删除设备缓存环境，'
+        '请检查 DEVICE_PYTHON 与设备 ABI，或重新下载解释器后重试。')
+
+
+def _clean_device_python_env(adb, env):
+    try:
+        return _run_adb(adb, ('shell', 'rm', '-rf', ANDROID_ENV_DIR), env)
+    except (RuntimeError, OSError) as e:
+        raise RuntimeError(f'清理设备端 Python 环境失败：{e}') from e
+
+
+def _keep_env_explicit(value):
+    text = (value or '').strip().lower()
+    if text in ('1', 'true', 'yes', 'on'):
+        return True
+    if text in ('0', 'false', 'no', 'off'):
+        return False
+    return None
+
+
+def _decide_keep_device_env(settings, log_level):
+    """Resolve whether to keep a freshly uploaded device env.
+
+    ``KEEP_ANDROID_ENV`` true/false wins.  Otherwise prompt when interactive
+    (default keep); non-interactive or quiet/error defaults to removing the
+    env so automation does not silently leave ~230 MiB on the device.
+    """
+    explicit = _keep_env_explicit(settings.get('KEEP_ANDROID_ENV', ''))
+    if explicit is not None:
+        return explicit
+    if log_level in ('quiet', 'error') or not sys.stdin.isatty():
+        return False
+    try:
+        answer = input('保留 Android 端 Python 环境以便下次直接复用？[Y/n] ')
+    except EOFError:
+        return False
+    return (answer or 'y').strip().lower() not in ('n', 'no')
+
+
+def _finish_device_env(adb, env, settings, device_env, log_level):
+    """Keep or remove a freshly uploaded env after a run; print outcome."""
+    if device_env is None or not device_env.get('uploaded'):
+        return
+    if _decide_keep_device_env(settings, log_level):
+        if log_level not in ('quiet', 'error'):
+            print(f'[缓存] 已保留 Android 端 Python 环境：{ANDROID_ENV_DIR}')
+        return
+    _clean_device_python_env(adb, env)
+    if log_level not in ('quiet', 'error'):
+        print('[缓存] 已删除 Android 端 Python 环境')
+
+
+def _stream_device_python_archive(source, adb, compress, output, env,
+                                  device_env, log_level='info',
+                                  progress_interval='5', show_rate=False):
+    """Stream one pack using an already-provisioned device-python environment.
+
+    ``device_env`` is the dict produced by ``_provision_device_python_env``:
+      env_dir : /data/local/tmp/andbackup-pyenv
+      interp  : interpreter path relative to env_dir (e.g. bin/python3.14)
+    The interpreter and paxck.py already exist on the device.  This function
+    only runs the pack; its per-run status/error files live under
+    ``<env_dir>/run/<uuid>`` and are always removed.  Keeping or deleting the
+    cached env itself is the caller's responsibility.
+    """
+    env_dir = device_env['env_dir']
+    interp_rel = device_env['interp']
+    run_dir = env_dir + '/run/' + uuid.uuid4().hex
+    remote_paxck = env_dir + '/paxck.py'
+    remote_python = env_dir + '/' + interp_rel
+    remote_status = run_dir + '/status'
+    remote_error = run_dir + '/stderr'
     source_process = None
     compressor = None
     log_thread = None
@@ -372,24 +555,8 @@ def _stream_device_python_archive(source, adb, compress, output, env,
     source_rc = 1
     progress = _DeviceProgress(log_level, progress_interval, show_rate)
     try:
-        _adb_run_checked(adb, ('shell', 'mkdir', '-p', remote_dir), env,
-                         '无法创建设备临时目录')
-        if prefix_mode:
-            local_tar = _tar_prefix(local_python)
-            remote_tar = remote_dir + '/python.tar'
-            _adb_run_checked(adb, ('push', local_tar, remote_tar), env,
-                             '上传设备 Python 环境失败')
-            _adb_run_checked(
-                adb, ('shell', 'tar', '-xf', remote_tar, '-C', remote_dir),
-                env, '解压设备 Python 环境失败')
-        else:
-            _adb_run_checked(adb, ('push', local_python, remote_python), env,
-                             '上传设备 Python 失败')
-        _adb_run_checked(adb, ('push', os.path.join(_script_dir(), 'paxck.py'),
-                               remote_paxck), env,
-                         '上传设备 paxck.py 失败')
-        _adb_run_checked(adb, ('shell', 'chmod', '700', remote_python), env,
-                         '设置设备 Python 执行权限失败')
+        _adb_run_checked(adb, ('shell', 'mkdir', '-p', run_dir), env,
+                         '无法创建设备运行目录')
 
         command = (
             f'{shlex.quote(remote_python)} {shlex.quote(remote_paxck)} create '
@@ -455,14 +622,9 @@ def _stream_device_python_archive(source, adb, compress, output, env,
         if log_thread is not None:
             log_thread.join(timeout=2)
         try:
-            _run_adb(adb, ('shell', 'rm', '-rf', remote_dir), env)
+            _run_adb(adb, ('shell', 'rm', '-rf', run_dir), env)
         except (RuntimeError, OSError):
             pass
-        if local_tar is not None:
-            try:
-                os.unlink(local_tar)
-            except OSError:
-                pass
 
     compressor_rc = compressor.returncode if compressor is not None else 1
     if remote_rc != 0 or source_rc or compressor_rc:
@@ -549,6 +711,8 @@ def run(settings):
     fd, partial = tempfile.mkstemp(
         prefix=os.path.basename(output_path) + '.partial.', dir=parent)
     os.close(fd)
+    device_env = None
+    published = False
     try:
         if log_level not in ('quiet', 'error'):
             print('[1/3] checking ADB and source directory...')
@@ -558,8 +722,10 @@ def run(settings):
                 _stream_android_archive(source, adb, compress, fh, env,
                                         log_level, progress_interval, show_rate)
             else:
+                device_env = _provision_device_python_env(
+                    adb, env, device_python, log_level)
                 _stream_device_python_archive(
-                    source, adb, compress, fh, env, device_python,
+                    source, adb, compress, fh, env, device_env,
                     log_level, progress_interval, show_rate)
 
         if log_level not in ('quiet', 'error'):
@@ -573,9 +739,13 @@ def run(settings):
             raise RuntimeError('归档校验未通过' + (f'：{detail}' if detail else ''))
         os.replace(partial, output_path)
         partial = None
+        published = True
         if log_level not in ('quiet', 'error'):
             print(f'[完成] {out}')
             print(f'       大小: {os.path.getsize(output_path)} 字节')
+        # After a successful, verified run, ask whether to keep the env (or
+        # honour keep_android_env / the non-interactive default).
+        _finish_device_env(adb, env, settings, device_env, log_level)
         return 0
     finally:
         if partial:
@@ -583,6 +753,47 @@ def run(settings):
                 os.unlink(partial)
             except OSError:
                 pass
+        if (device_env is not None and device_env.get('uploaded')
+                and not published):
+            # Run failed or was interrupted: keep only if explicitly requested.
+            if _keep_env_explicit(settings.get('KEEP_ANDROID_ENV', '')) is not True:
+                try:
+                    _clean_device_python_env(adb, env)
+                except RuntimeError:
+                    pass
+
+
+def cmd_clean(settings, clean_device, clean_host):
+    """Remove cached device-python environments (independent targets)."""
+    log_level = str(settings.get('LOG_LEVEL', 'info')).lower()
+    if clean_host:
+        root = android_python.cache_root()
+        shutil.rmtree(root, ignore_errors=True)
+        if log_level not in ('quiet', 'error'):
+            print(f'[清理] 已删除主机下载缓存：{root}')
+    if clean_device:
+        adb = settings['ADB']
+        serial = settings.get('ADB_SERIAL', '').strip()
+        connect = str(settings.get('ADB_CONNECT', '')).lower() in (
+            '1', 'true', 'yes', 'on')
+        env = dict(os.environ)
+        if serial:
+            env['ANDROID_SERIAL'] = serial
+        if connect:
+            if not serial:
+                raise RuntimeError('ADB_CONNECT 需要同时设置 ADB_SERIAL=host:port')
+            result = _run_adb(adb, ('connect', serial), env)
+            if result.returncode:
+                raise RuntimeError(_display_error(
+                    f'无法连接无线 ADB {serial}', result))
+        result = _run_adb(adb, ('get-state',), env)
+        if result.returncode:
+            raise RuntimeError(_display_error(
+                'adb 不可用，请检查调试授权和 ADB 路径', result))
+        _clean_device_python_env(adb, env)
+        if log_level not in ('quiet', 'error'):
+            print(f'[清理] 已删除设备端 Python 环境：{ANDROID_ENV_DIR}')
+    return 0
 
 
 def main(argv=None):
@@ -600,6 +811,10 @@ def main(argv=None):
                             help='进度输出最小间隔秒数，覆盖配置中的 progress_interval')
         parser.add_argument('--show-rate', action='store_true',
                             help='显示 ADB 有效载荷速率，覆盖配置中的 show_rate')
+        parser.add_argument('--clean-env', action='store_true',
+                            help='删除设备端缓存的 Android Python 环境后退出（不执行备份）')
+        parser.add_argument('--clean-host-cache', action='store_true',
+                            help='删除主机端 Android Python 下载/解压缓存后退出（不执行备份）')
         args = parser.parse_args(argv)
         settings, _config = _settings(args.config)
         if args.log_level is not None:
@@ -608,6 +823,8 @@ def main(argv=None):
             settings['PROGRESS_INTERVAL'] = args.progress_interval
         if args.show_rate:
             settings['SHOW_RATE'] = '1'
+        if args.clean_env or args.clean_host_cache:
+            return cmd_clean(settings, args.clean_env, args.clean_host_cache)
         return run(settings)
     except (RuntimeError, OSError) as e:
         print(f'[错误] {e}', file=sys.stderr)

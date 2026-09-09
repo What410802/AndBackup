@@ -84,6 +84,7 @@ class TestBackupBatch(unittest.TestCase):
         env.pop('DEVICE_PYTHON', None)
         env.pop('DOWNLOAD_DEVICE_PYTHON', None)
         env.pop('DEVICE_PYTHON_URL', None)
+        env.pop('KEEP_ANDROID_ENV', None)
         env.pop('LOG_LEVEL', None)
         env.pop('PROGRESS_INTERVAL', None)
         env.pop('SHOW_RATE', None)
@@ -200,7 +201,8 @@ class TestBackupBatch(unittest.TestCase):
 
     def test_device_python_mode_uploads_and_round_trips(self):
         result = self.run_script(SOURCE_MODE='device-python',
-                                 DEVICE_PYTHON=self.device_python)
+                                 DEVICE_PYTHON=self.device_python,
+                                 KEEP_ANDROID_ENV='0')
         self.assertEqual(result.returncode, 0,
                          result.stdout.decode('utf-8', 'replace'))
         self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
@@ -219,7 +221,8 @@ class TestBackupBatch(unittest.TestCase):
             fh.write(original)
         result = self.run_script(SOURCE_MODE='device-python',
                                  DEVICE_PYTHON=self.device_python,
-                                 FAKE_ADB_DEVICE_PYTHON_FAIL='1')
+                                 FAKE_ADB_DEVICE_PYTHON_FAIL='1',
+                                 KEEP_ANDROID_ENV='0')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(T.read_bytes(self.out), original)
         self.assertFalse(any('andbackup-' in name for _, dirs, files in os.walk(self.remote_root)
@@ -242,7 +245,8 @@ class TestBackupBatch(unittest.TestCase):
             fh.write(b'# fake stdlib marker\n')
 
         result = self.run_script(SOURCE_MODE='device-python',
-                                 DEVICE_PYTHON=prefix)
+                                 DEVICE_PYTHON=prefix,
+                                 KEEP_ANDROID_ENV='0')
         self.assertEqual(result.returncode, 0,
                          result.stdout.decode('utf-8', 'replace'))
         self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
@@ -260,6 +264,151 @@ class TestBackupBatch(unittest.TestCase):
 
 def posix_basename(path):
     return path.rstrip('/').rsplit('/', 1)[-1]
+
+
+@unittest.skipUnless(os.name == 'nt', '需要 Windows cmd.exe')
+class TestDeviceEnvCaching(unittest.TestCase):
+    """Offline coverage for the cached Android device-python environment."""
+
+    def _make_case(self):
+        case = tempfile.mkdtemp(prefix='paxck-cache-')
+        device_root = os.path.join(case, "测试 'quoted' dir — v2")
+        os.makedirs(os.path.join(device_root, 'sub'))
+        with open(os.path.join(device_root, 'readme.txt'), 'wb') as fh:
+            fh.write(b'hello\n')
+        remote_root = os.path.join(case, 'remote')
+        os.makedirs(remote_root)
+        prefix = os.path.join(case, 'android-pyenv')
+        os.makedirs(os.path.join(prefix, 'bin'))
+        os.makedirs(os.path.join(prefix, 'lib', 'python3.14'))
+        with open(os.path.join(prefix, 'bin', 'python3.14'), 'wb') as fh:
+            fh.write(b'# fake static python\n')
+        with open(os.path.join(prefix, 'lib', 'python3.14', 'os.py'),
+                  'wb') as fh:
+            fh.write(b'# mock\n')
+        return case, device_root, remote_root, prefix
+
+    def _run(self, case, device_root, remote_root, prefix, *extra_args,
+             **env_over):
+        helper = os.path.join(os.path.dirname(__file__), 'fake_adb_windows.py')
+        adb = os.path.join(case, 'fake-adb.cmd')
+        with open(adb, 'w', encoding='ascii', newline='\r\n') as fh:
+            fh.write('@echo off\r\n')
+            fh.write('"%TEST_PYTHON%" "%TEST_FAKE_ADB%" %*\r\n')
+        log = os.path.join(case, 'adb.log')
+        source = "/storage/emulated/0/测试 'quoted' dir — v2"
+        env = dict(os.environ)
+        env.update({
+            'ADB': adb,
+            'SOURCE_DIR': source,
+            'OUT': os.path.join(case, 'out.tar.xz'),
+            'COMPRESS': 'xz',
+            'SOURCE_MODE': 'device-python',
+            'DEVICE_PYTHON': prefix,
+            'PYTHON': sys.executable,
+            'TEST_PYTHON': sys.executable,
+            'TEST_FAKE_ADB': helper,
+            'FAKE_ADB_ROOT': device_root,
+            'FAKE_ADB_SOURCE': source,
+            'FAKE_ADB_REMOTE_ROOT': remote_root,
+            'FAKE_ADB_LOG': log,
+            'BACKUP_CONFIG_FILE': os.path.join(case, 'no-config.yaml'),
+        })
+        for key in ('ADB_SERIAL', 'ADB_CONNECT', 'ANDROID_SERIAL',
+                    'FAKE_ADB_FAIL', 'FAKE_ADB_TRUNCATE',
+                    'DOWNLOAD_DEVICE_PYTHON', 'DEVICE_PYTHON_URL',
+                    'KEEP_ANDROID_ENV', 'LOG_LEVEL', 'PROGRESS_INTERVAL',
+                    'SHOW_RATE'):
+            env.pop(key, None)
+        env.update(env_over)
+        return subprocess.run(
+            [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', T.BACKUP_BAT,
+             *extra_args], cwd=case, env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=120), log
+
+    @staticmethod
+    def _env_dir(remote_root):
+        # fake adb maps device /data/local/tmp/... under FAKE_ADB_REMOTE_ROOT.
+        return os.path.join(remote_root, 'data', 'local', 'tmp',
+                            'andbackup-pyenv')
+
+    def _log_tail(self, log, head_len):
+        with open(log, encoding='utf-8') as fh:
+            text = fh.read()
+        return text[head_len:]
+
+    def test_env_kept_then_reused_without_reupload(self):
+        case, device_root, remote_root, prefix = self._make_case()
+        try:
+            r1, log = self._run(case, device_root, remote_root, prefix,
+                                KEEP_ANDROID_ENV='1')
+            self.assertEqual(r1.returncode, 0, r1.stdout.decode('utf-8', 'replace'))
+            self.assertTrue(os.path.isdir(self._env_dir(remote_root)))
+            head = len(open(log, encoding='utf-8').read())
+            r2, _ = self._run(case, device_root, remote_root, prefix,
+                              KEEP_ANDROID_ENV='1')
+            self.assertEqual(r2.returncode, 0, r2.stdout.decode('utf-8', 'replace'))
+            log2 = self._log_tail(log, head)
+            self.assertNotIn('tar -xf', log2)
+            self.assertNotIn(' python.tar', log2)
+        finally:
+            shutil.rmtree(case, ignore_errors=True)
+
+    def test_env_removed_by_default_in_non_interactive(self):
+        case, device_root, remote_root, prefix = self._make_case()
+        try:
+            r, _ = self._run(case, device_root, remote_root, prefix)
+            self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
+            # stdin is not a TTY under subprocess: env removed by default.
+            self.assertFalse(os.path.exists(self._env_dir(remote_root)))
+        finally:
+            shutil.rmtree(case, ignore_errors=True)
+
+    def test_stale_env_is_replaced(self):
+        case, device_root, remote_root, prefix = self._make_case()
+        try:
+            r1, log = self._run(case, device_root, remote_root, prefix,
+                                KEEP_ANDROID_ENV='1')
+            self.assertEqual(r1.returncode, 0, r1.stdout.decode('utf-8', 'replace'))
+            head = len(open(log, encoding='utf-8').read())
+            # Simulate a broken cached env (e.g. interpreter removed).
+            shutil.rmtree(self._env_dir(remote_root))
+            r2, _ = self._run(case, device_root, remote_root, prefix,
+                              KEEP_ANDROID_ENV='1')
+            self.assertEqual(r2.returncode, 0, r2.stdout.decode('utf-8', 'replace'))
+            self.assertTrue(os.path.isdir(self._env_dir(remote_root)))
+            log2 = self._log_tail(log, head)
+            self.assertIn('tar -xf', log2)
+        finally:
+            shutil.rmtree(case, ignore_errors=True)
+
+    def test_clean_env_command_removes_device_cache(self):
+        case, device_root, remote_root, prefix = self._make_case()
+        try:
+            env_dir = self._env_dir(remote_root)
+            os.makedirs(env_dir)
+            with open(os.path.join(env_dir, 'stamp'), 'w') as fh:
+                fh.write('stale\n')
+            r, log = self._run(case, device_root, remote_root, prefix,
+                               '--clean-env')
+            self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
+            self.assertFalse(os.path.exists(env_dir))
+            self.assertIn('rm -rf /data/local/tmp/andbackup-pyenv',
+                          self._log_tail(log, 0))
+        finally:
+            shutil.rmtree(case, ignore_errors=True)
+
+    def test_clean_host_cache_command_removes_cache_dir(self):
+        case, device_root, remote_root, prefix = self._make_case()
+        try:
+            cache = os.path.join(case, 'host-cache')
+            os.makedirs(os.path.join(cache, 'andbackup', 'downloads'))
+            r, _ = self._run(case, device_root, remote_root, prefix,
+                             '--clean-host-cache', LOCALAPPDATA=cache)
+            self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
+            self.assertFalse(os.path.exists(os.path.join(cache, 'andbackup')))
+        finally:
+            shutil.rmtree(case, ignore_errors=True)
 
 
 if __name__ == '__main__':

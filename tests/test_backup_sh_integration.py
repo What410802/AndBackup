@@ -131,6 +131,7 @@ class HarnessMixin:
         base.pop('DEVICE_PYTHON', None)
         base.pop('DOWNLOAD_DEVICE_PYTHON', None)
         base.pop('DEVICE_PYTHON_URL', None)
+        base.pop('KEEP_ANDROID_ENV', None)
         base.pop('LOG_LEVEL', None)
         base.pop('PROGRESS_INTERVAL', None)
         base.pop('SHOW_RATE', None)

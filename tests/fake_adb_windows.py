@@ -187,6 +187,10 @@ def main(args):
                 'utf-8', 'surrogateescape'))
         elif words[:1] == ['cat'] and len(words) == 3 and words[1] == '--':
             _cat(words[2])
+        elif words[1:] == ['--version'] and words[0].startswith(
+                '/data/local/tmp/andbackup-pyenv'):
+            # Device-python self-test: the cached interpreter reports a version.
+            sys.stdout.write('Python 3.14.7\n')
         else:
             raise ValueError('unsupported shell command: %r' % (command,))
     except (OSError, ValueError, IndexError) as exc:
