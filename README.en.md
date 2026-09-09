@@ -11,51 +11,10 @@ AndBackup has two independent pieces:
   the same archive writer. `backup.py` combines that source with compression,
   verification, and atomic replacement of the final host archive.
 
-Android directories are read in one of two explicitly selected modes; a failed
-mode is never auto-switched to the other (`device-python` never falls back to
-the slower `host-adb`):
-
-- `device-python` (recommended; the shipped example-config default): with
-  `download_device_python: true` the first run fetches an interpreter matched to
-the device ABI and caches it at the fixed directory
-  `/data/local/tmp/andbackup-pyenv`, then the device streams a raw PAX tar to
-  stdout for host-side compression. No archive or compressed file is created on
-the device; the interpreter is validated and reused from the cache, or removed
-  per the caching rules (see [docs/configuration.en.md](docs/configuration.en.md)).
-- `host-adb`: the host reads entries one by one over `adb exec-out`; the device
-  only runs `find`/`stat`/`readlink`/`cat` and never receives an archive,
-  compression binary, Python runtime, or temporary file. Use it when fully
-  offline or when you do not want an interpreter written to the device.
-
-Files travel as binary data over `adb exec-out`; the host builds, compresses,
-and verifies the archive in both modes.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant W as backup-android.sh/.bat
-    participant B as backup.py (host)
-    participant A as adb (exec-out / shell)
-    participant D as Android device
-    participant P as paxck.py (host)
-    W->>B: read YAML / env (source_dir, out, compress...)
-    B->>A: get-state (authorized?)
-    alt device-python (recommended, device packs)
-        B->>A: upload / reuse device Python cache
-        A->>D: /data/local/tmp/andbackup-pyenv
-        D->>P: paxck.py create streams raw PAX tar
-        D-->>A: tar bytes
-        A-->>P: raw byte stream
-    else host-adb (host reads entries)
-        B->>A: find / stat / readlink / cat (two passes)
-        A->>D: enumerate + read only, nothing staged
-        D-->>A: metadata and file bytes
-        A-->>P: raw byte stream
-    end
-    P->>P: write PAX tar (embedded SHA-256) + compress
-    P->>P: verify every regular file's SHA-256 in .partial
-    P-->>W: atomic replace on success
-```
+Android backup reads the device directory through one of two source modes:
+`device-python` (recommended, the shipped example-config default) and `host-adb`
+(the low-dependency alternative). A failed mode is never auto-switched to the
+other; see “Modes and Architecture” below.
 
 ## Requirements
 
@@ -177,6 +136,54 @@ directory; pointing it at a directory (existing, or ending in `/` or `\`) writes
 extension differs from the compressor's theoretical suffix
 (`.tar.xz`/`.tar.gz`/`.tar.zst`/`.tar`) is written verbatim in non-interactive
 runs, while an interactive terminal is asked whether to append the suffix.
+
+## Modes and Architecture
+
+Android directories are read in one of two explicitly selected modes; a failed
+mode is never auto-switched to the other (`device-python` never falls back to
+the slower `host-adb`):
+
+- `device-python` (recommended; the shipped example-config default): with
+  `download_device_python: true` the first run fetches an interpreter matched to
+the device ABI and caches it at the fixed directory
+  `/data/local/tmp/andbackup-pyenv`, then the device streams a raw PAX tar to
+  stdout for host-side compression. No archive or compressed file is created on
+the device; the interpreter is validated and reused from the cache, or removed
+  per the caching rules (see [docs/configuration.en.md](docs/configuration.en.md)).
+- `host-adb`: the host reads entries one by one over `adb exec-out`; the device
+  only runs `find`/`stat`/`readlink`/`cat` and never receives an archive,
+  compression binary, Python runtime, or temporary file. Use it when fully
+  offline or when you do not want an interpreter written to the device.
+
+In both modes files travel as binary data over `adb exec-out`; the host builds,
+compresses, and verifies the archive:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as backup-android.sh/.bat
+    participant B as backup.py (host)
+    participant A as adb (exec-out / shell)
+    participant D as Android device
+    participant P as paxck.py (host)
+    W->>B: read YAML / env (source_dir, out, compress...)
+    B->>A: get-state (authorized?)
+    alt device-python (recommended, device packs)
+        B->>A: upload / reuse device Python cache
+        A->>D: /data/local/tmp/andbackup-pyenv
+        D->>P: paxck.py create streams raw PAX tar
+        D-->>A: tar bytes
+        A-->>P: raw byte stream
+    else host-adb (host reads entries)
+        B->>A: find / stat / readlink / cat (two passes)
+        A->>D: enumerate + read only, nothing staged
+        D-->>A: metadata and file bytes
+        A-->>P: raw byte stream
+    end
+    P->>P: write PAX tar (embedded SHA-256) + compress
+    P->>P: verify every regular file's SHA-256 in .partial
+    P-->>W: atomic replace on success
+```
 
 ## Local Archive Workflow
 

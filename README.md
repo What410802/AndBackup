@@ -5,47 +5,8 @@
 项目由两个可独立使用的组件组成：`paxck.py` 将**本机目录**写成带 PAX 内嵌 SHA-256 的
 裸 `tar`，并可压缩、校验或提取；`adb_source.py` 则把已开启 ADB 调试（USB 有线或
 TCP 无线）的 Android 目录作为同一打包器的数据源。归档落盘后还会逐文件校验 SHA-256。
-Android 数据源可显式选择两种模式，且任一模式失败都不会自动切换到另一种（`device-python`
-失败只会明确报错，绝不悄悄退回慢速的 `host-adb`）：
-
-- `device-python`（推荐，示例配置默认）：`download_device_python: true` 会在首跑自动下载
-  与设备 ABI 匹配的 Python 并缓存到设备固定目录 `/data/local/tmp/andbackup-pyenv`，在
-  设备端流式生成 tar 再回传主机压缩；设备端不生成 tar 文件或压缩包，缓存按规则复用/清理
-  （见 [docs/configuration.md](docs/configuration.md)）。
-- `host-adb`：主机通过 `adb exec-out` 逐条读取，设备端只运行 `find`/`stat`/`readlink`/`cat`，
-  不生成 tar、压缩包或临时文件；适合完全离线或不希望设备端写入解释器的场景。
-
-项目针对一个常见但受限的场景：Android 11+ 禁止普通应用读取其他应用的
-`Android/data`；因此不使用 Termux/SSH，而是让主机通过授权的 `adb exec-out` 以
-Android shell 用户读取源文件。实机已验证 ADB shell 可读取
-`/storage/emulated/0` 下的目录。
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant W as backup-android.sh/.bat
-    participant B as backup.py（主机主控）
-    participant A as adb（exec-out / shell）
-    participant D as Android 设备
-    participant P as paxck.py（主机）
-    W->>B: 读取 YAML/环境变量（source_dir、out、compress…）
-    B->>A: get-state，确认已授权
-    alt device-python（推荐，设备端打包）
-        B->>A: 上传 / 复用 Android 端 Python 缓存
-        A->>D: /data/local/tmp/andbackup-pyenv
-        D->>P: paxck.py create 流式生成裸 PAX tar
-        D-->>A: tar 字节
-        A-->>P: 裸字节流
-    else host-adb（主机逐条读取）
-        B->>A: find / stat / readlink / cat（两遍）
-        A->>D: 设备端仅枚举与读取，不落盘
-        D-->>A: 元数据与文件字节
-        A-->>P: 裸字节流
-    end
-    P->>P: 写 PAX tar（内嵌 SHA-256）+ 压缩
-    P->>P: 校验 .partial 中每个普通文件的 SHA-256
-    P-->>W: 校验通过才原子替换最终归档
-```
+Android 目录支持两种源模式——`device-python`（推荐，示例配置默认）与 `host-adb`（低依赖
+备选）；任一模式失败都不会自动切换到另一种。模式介绍与架构图见下文“模式说明与架构”。
 
 ## 快速开始
 
@@ -165,6 +126,52 @@ src\backup-android.bat --config D:\backup-config\site-backup.yaml
 完整的 YAML 键、环境变量、命令行（含 `--clean-env`/`--clean-host-cache`）、缓存与清理、
 压缩/zstd 说明见 **[docs/configuration.md](docs/configuration.md)**；数据流与元数据边界见
 [docs/flow.md](docs/flow.md)，测试说明见 [docs/testing.md](docs/testing.md)。
+
+## 模式说明与架构
+
+项目针对一个常见但受限的场景：Android 11+ 禁止普通应用读取其他应用的
+`Android/data`；因此不使用 Termux/SSH，而是让主机通过授权的 `adb exec-out` 以
+Android shell 用户读取源文件。实机已验证 ADB shell 可读取
+`/storage/emulated/0` 下的目录。
+
+Android 数据源可显式选择两种模式，且任一模式失败都不会自动切换到另一种（`device-python`
+失败只会明确报错，绝不悄悄退回慢速的 `host-adb`）：
+
+- `device-python`（推荐，示例配置默认）：`download_device_python: true` 会在首跑自动下载
+  与设备 ABI 匹配的 Python 并缓存到设备固定目录 `/data/local/tmp/andbackup-pyenv`，在
+  设备端流式生成 tar 再回传主机压缩；设备端不生成 tar 文件或压缩包，缓存按规则复用/清理
+  （见 [docs/configuration.md](docs/configuration.md)）。
+- `host-adb`：主机通过 `adb exec-out` 逐条读取，设备端只运行 `find`/`stat`/`readlink`/`cat`，
+  不生成 tar、压缩包或临时文件；适合完全离线或不希望设备端写入解释器的场景。
+
+两种模式下，文件都以二进制经 `adb exec-out` 传输，最终压缩与校验都在主机完成：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as backup-android.sh/.bat
+    participant B as backup.py（主机主控）
+    participant A as adb（exec-out / shell）
+    participant D as Android 设备
+    participant P as paxck.py（主机）
+    W->>B: 读取 YAML/环境变量（source_dir、out、compress…）
+    B->>A: get-state，确认已授权
+    alt device-python（推荐，设备端打包）
+        B->>A: 上传 / 复用 Android 端 Python 缓存
+        A->>D: /data/local/tmp/andbackup-pyenv
+        D->>P: paxck.py create 流式生成裸 PAX tar
+        D-->>A: tar 字节
+        A-->>P: 裸字节流
+    else host-adb（主机逐条读取）
+        B->>A: find / stat / readlink / cat（两遍）
+        A->>D: 设备端仅枚举与读取，不落盘
+        D-->>A: 元数据与文件字节
+        A-->>P: 裸字节流
+    end
+    P->>P: 写 PAX tar（内嵌 SHA-256）+ 压缩
+    P->>P: 校验 .partial 中每个普通文件的 SHA-256
+    P-->>W: 校验通过才原子替换最终归档
+```
 
 ## 发布与 Python 依赖
 
