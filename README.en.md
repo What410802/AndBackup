@@ -11,9 +11,21 @@ AndBackup has two independent pieces:
   the same archive writer. `backup.py` combines that source with compression,
   verification, and atomic replacement of the final host archive.
 
-The Android device never receives an archive, compression binary, Python
-runtime, or temporary file. Files travel as binary data over `adb exec-out`;
-the host builds and verifies the archive.
+Android directories are read in one of two explicitly selected modes; a failed
+mode is never auto-switched to the other:
+
+- `host-adb` (default): the host reads entries one by one over `adb exec-out`;
+  the device only runs `find`/`stat`/`readlink`/`cat` and never receives an
+  archive, compression binary, Python runtime, or temporary file.
+- `device-python`: the host uploads a user-provided Android ARM64 Python and
+  `paxck.py` to `/data/local/tmp`, where the device streams a raw PAX tar to
+  stdout for host-side compression. No archive or compressed file is created on
+  the device, but the Python and script are written there temporarily. A python
+  install prefix directory (`bin/` + `lib/`) is packed into one tar, uploaded,
+  and extracted on the device so it can resolve its standard library.
+
+Files travel as binary data over `adb exec-out`; the host builds, compresses,
+and verifies the archive in both modes.
 
 ## Requirements
 
@@ -59,6 +71,10 @@ Edit the copied file. Its supported top-level YAML keys are:
 | `source_dir` | Android absolute directory to back up. |
 | `out` | Host output archive path. |
 | `compress` | `xz`, `gzip`, `zstd`, or `none`. |
+| `source_mode` | `host-adb` (host reads entries) or `device-python` (device packs via an uploaded Python). |
+| `device_python` | Used by `device-python`: a local path to an Android ARM64 Python — a standalone interpreter file or a python install prefix directory (`bin/` + `lib/`). |
+| `download_device_python` | `true` lets `device-python` fetch the pinned upstream interpreter when `device_python` is empty or points to a missing path. |
+| `device_python_url` | Overrides the pinned `device_python_url` download URL; may be a local `.tar.zst` path for offline reuse. |
 
 USB configuration normally has an empty `adb_serial` for one connected device,
 or its USB serial for a multi-device host:
@@ -110,9 +126,10 @@ src\backup-android.bat --config D:\backup-config\site-backup.yaml
 
 Configuration precedence is `--config PATH`, `BACKUP_CONFIG_FILE`, then an
 existing sibling `src/backup-android.yaml`. The operational environment
-variables `ADB`, `ADB_SERIAL`, `ADB_CONNECT`, `SOURCE_DIR`, `OUT`, and
-`COMPRESS` override YAML values. `PYTHON` selects the interpreter for the
-wrappers.
+variables `ADB`, `ADB_SERIAL`, `ADB_CONNECT`, `SOURCE_DIR`, `OUT`, `COMPRESS`,
+`SOURCE_MODE`, `DEVICE_PYTHON`, `DOWNLOAD_DEVICE_PYTHON`, `DEVICE_PYTHON_URL`,
+`LOG_LEVEL`, `PROGRESS_INTERVAL`, and `SHOW_RATE` override YAML values.
+`PYTHON` selects the interpreter for the wrappers.
 
 ## Local Archive Workflow
 
@@ -135,6 +152,29 @@ python3 src/adb_source.py --adb adb /storage/emulated/0/DCIM \
 python3 src/paxck.py verify -i android.tar.xz
 ```
 
+For `device-python`, set `source_mode: device-python` and `device_python` in
+YAML (or the `SOURCE_MODE`/`DEVICE_PYTHON` environment variables), then run the
+same wrapper. `DEVICE_PYTHON` may be a single self-contained interpreter file or
+a python install prefix directory (`bin/` + `lib/`); a directory is packed into
+one tar, uploaded, and extracted on the device. The Python must be compatible
+with the device ABI/linker (static musl aarch64 builds work well). The host
+removes the uploaded Python and `paxck.py` after the run. If `device-python`
+cannot run, the controller fails instead of silently falling back to
+`host-adb`.
+
+The interpreter is not bundled with the repository. To have the controller
+fetch it on demand, set `download_device_python: true`; when `device_python` is
+empty or points to a path that does not exist yet, `backup.py` downloads the
+pinned
+[python-build-standalone](https://github.com/astral-sh/python-build-standalone)
+release (override the URL with `device_python_url`, or point it at a local
+`.tar.zst` for offline reuse) and unpacks it into `device_python` or the
+per-user cache (`%LOCALAPPDATA%\andbackup` on Windows, `~/.cache/andbackup`
+elsewhere). Later runs reuse the cache without network access. Decompression
+needs no third-party Python package: Python 3.14+'s standard-library
+`compression.zstd`, an external `zstd`, or the OS `tar` (Windows `bsdtar`
+handles zstd).
+
 On Windows, run equivalent binary pipelines from `cmd.exe`:
 
 ```bat
@@ -156,7 +196,7 @@ binary stdin/stdout; human-facing status and diagnostics are separate.
 | Verifier | `paxck.py verify [ARCHIVE]` or `-i ARCHIVE`, optional `-q` | Detects raw tar, xz, gzip, and zstd; verifies every regular-file PAX SHA-256. |
 | Verified extractor | `paxck.py extract [ARCHIVE] -C DEST`, or `-i ARCHIVE` | Default recovery mode. `DEST` must not exist. It checks each file while writing a sibling staging directory, rejects unsafe paths and unchecked regular files, and atomically publishes only after the entire archive succeeds. |
 | Direct extractor | `paxck.py extract --direct-tarfile [ARCHIVE] -C DEST` | `--direct` is an alias. Calls Python `tarfile` directly, permits an existing destination, skips PAX SHA-256 validation, and is not atomic. It is only for trusted archives or interoperability; a failure can leave partial output. |
-| Android source | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | Streams an Android absolute directory to stdout as raw PAX tar; progress/traffic status goes to stderr. |
+| Android source | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | The `host-adb` adapter: streams an Android absolute directory to stdout as raw PAX tar; progress/traffic status goes to stderr. |
 | Android controller | `backup.py [--config PATH] [--log-level LEVEL] [--progress-interval SECONDS] [--show-rate]` | Reads configuration/environment, starts the Android source and compressor, verifies a unique `.partial` archive, then atomically replaces `OUT`. |
 | POSIX wrapper | `backup-android.sh [ARGS...]` | Forwards all arguments to its sibling `backup.py`. |
 | CMD wrapper | `backup-android.bat [ARGS...]` | Forwards all arguments to its sibling `backup.py`; run from CMD. |

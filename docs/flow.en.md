@@ -10,11 +10,13 @@ The project separates source acquisition from archive handling:
   extractor. It has no ADB dependency.
 - `adb_source.py` adapts an Android directory to that writer. It lists paths,
   reads metadata, reads symlink targets, and streams regular-file bytes through
-  `adb exec-out`.
+  `adb exec-out`. This is the `host-adb` data source.
 - `backup.py` is the Android production controller. It merges configuration,
-  performs an optional TCP `adb connect`, runs the source and compressor,
-  verifies a unique host-side partial archive, then atomically replaces the
-  requested output.
+  performs an optional TCP `adb connect`, selects the source mode, runs the
+  source and compressor, verifies a unique host-side partial archive, then
+  atomically replaces the requested output. With `source_mode: device-python`
+  it uploads a user-provided Android Python binary and `paxck.py`, then runs
+  `paxck.py create` on the device.
 - `backup-android.sh` and `backup-android.bat` are deliberately thin POSIX and
   CMD forwarding wrappers.
 
@@ -28,9 +30,71 @@ Android files -- adb exec-out --> adb_source.py -- raw PAX --> paxck.py compress
                                                         atomic final output
 ```
 
-The Android device only runs `find -print0`, `stat`, `readlink`, and `cat` as
-the ADB shell user. It does not run tar, a compressor, Python, or receive a
-temporary archive.
+The diagram above is the default `host-adb` mode. There, the Android device
+only runs `find -print0`, `stat`, `readlink`, and `cat` as the ADB shell user.
+It does not run tar, a compressor, Python, or receive a temporary archive.
+
+## Source Modes
+
+The controller reads `source_mode` and never auto-switches between modes.
+
+### `host-adb` (default)
+
+The host enumerates and reads each entry over separate `adb exec-out`
+invocations (see the consistency model below). This keeps the device free of
+any uploaded executable, but many small files pay one ADB round trip per
+`stat` and per file read.
+
+### `device-python`
+
+The host uploads the user-provided Android ARM64 Python (`DEVICE_PYTHON`) and
+`paxck.py` to a unique `/data/local/tmp/andbackup-*` directory, then runs
+`paxck.py create SOURCE_DIR` on the device. `DEVICE_PYTHON` may be a single
+self-contained interpreter file or a python install prefix directory (`bin/` +
+`lib/`); a directory is packed into one tar, uploaded, and extracted on the
+device so the interpreter can resolve its standard library. The device writes a
+raw PAX tar to stdout; the host compresses and verifies it exactly as in
+`host-adb`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant BP as host backup.py
+    participant ADB as adb (USB/TCP)
+    participant DEV as device /data/local/tmp
+    participant PYD as device paxck.py create
+    participant PX as host paxck.py compress
+
+    BP->>ADB: shell mkdir /data/local/tmp/andbackup-<random>
+    BP->>ADB: push DEVICE_PYTHON and paxck.py
+    ADB->>DEV: write Python binary and script
+    BP->>ADB: exec-out sh -c "python paxck.py create SOURCE_DIR"
+    ADB->>PYD: enumerate and stream raw PAX tar
+    PYD-->>BP: raw PAX tar on stdout
+    BP->>PX: raw PAX tar (process pipe)
+    BP->>ADB: shell rm -rf /data/local/tmp/andbackup-<random>
+```
+
+Because the device runs the same `paxck.py create` writer, `device-python`
+keeps the two-pass read and `PAXCK.checksum.sha256` semantics. It is useful
+When many small files make `host-adb` round trips too slow, or when directory
+walking is faster on the device. The device temporarily holds only the Python
+and `paxck.py`; it does not create an archive or compressed file, and
+the controller removes the temporary directory when done. A missing or
+incompatible Python is a hard error — the controller does not fall back to
+`host-adb`.
+
+The interpreter is not shipped with the repo. Set `download_device_python:
+true` to let the controller fetch the pinned python-build-standalone release
+(`device_python_url` overrides it and may be a local `.tar.zst` for offline
+use) and unpack it into `device_python` or a per-user cache when no usable
+interpreter is present. Extraction uses only the Python standard library, an
+external `zstd`, or the OS `tar` (Windows `bsdtar`), never a third-party Python
+package.
+
+The host counts bytes received from the device tar stream and can report
+progress and rate on stderr (controlled by `log_level`, `progress_interval`,
+and `show_rate`), without altering archive bytes.
 
 ## ADB Transports
 
@@ -121,3 +185,11 @@ may preserve different metadata or special files; and normally lacks this
 project's two-pass PAX SHA-256 semantics. It may yield the same logical files,
 but the tar bytes, PAX headers, compression bytes, hardlink treatment, and
 metadata can differ.
+
+`device-python` is this project's controlled take on device-side packing:
+instead of an independent tar binary it uploads a Python interpreter and the
+same `paxck.py` writer used on the host. As a result it keeps the two-pass read
+and `PAXCK.checksum.sha256` guarantees, while a plain device tar binary
+typically does not. Its remaining differences from `host-adb` are where the
+directory walk and tar writing happen (device instead of host), and the
+requirement to provide a compatible Android Python binary.

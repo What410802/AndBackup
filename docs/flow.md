@@ -2,9 +2,10 @@
 
 [English version](flow.en.md) | [中文 README](../README.md)
 
-本项目只使用 ADB 直读，不再包含 Termux、SSH、端口转发或设备端 Python。ADB 可以通过
-USB 有线链路或 TCP 无线链路承载，备份协议和主机处理流程完全相同。原因是
-Android 11+ 的 scoped storage 会阻止 Termux 等普通应用读取其他应用的
+本项目只使用 ADB 直读，不再包含 Termux、SSH 或端口转发；Android 数据源有两种显式
+模式：主机逐条读取（`host-adb`，默认）与上传 Python 后在设备端打包（`device-python`）。
+ADB 可以通过 USB 有线链路或 TCP 无线链路承载，两种模式遵循相同的二进制通道约束。
+原因是 Android 11+ 的 scoped storage 会阻止 Termux 等普通应用读取其他应用的
 `Android/data/*`，而已授权的 ADB shell 可读取测试目标。
 
 ## 职责与组合
@@ -15,8 +16,11 @@ Android 11+ 的 scoped storage 会阻止 Termux 等普通应用读取其他应�
   它产生的裸 PAX tar。
 - `adb_source.py --adb <ADB> <Android目录>` 只负责以 `adb exec-out` 枚举/读取设备目录，并把
   条目交给 `paxck.py` 的通用 PAX writer。它的 stdout 是裸 tar，不负责压缩或最终落盘。
-- `backup.py` 是 Android 组合入口：启动前两者、检查两个子进程的退出码，写入并校验
-  `OUT.partial.*` 后再原子替换最终输出。`.bat` 和 `.sh` 仅转发到它。
+  这是 `host-adb` 模式的数据源。
+- `backup.py` 是 Android 组合入口：读取 `source_mode` 选择数据源，启动数据源与压缩器、
+  检查两个子进程的退出码，写入并校验 `OUT.partial.*` 后再原子替换最终输出。`.bat` 和
+  `.sh` 仅转发到它。`source_mode: device-python` 时，它上传 `DEVICE_PYTHON` 二进制与
+  `paxck.py` 到设备并在设备端运行 `paxck.py create`。
 
 因此 `paxck.py` 可以完全脱离 Android 使用；Android 手动组合为
 `adb_source.py ... | paxck.py compress xz`，但生产备份应使用 `backup.py` 以得到完整的失败清理
@@ -92,9 +96,57 @@ sequenceDiagram
     BP->>DISK: 原子移动为指定 OUT
 ```
 
-设备端只会运行不可替代的读取动作：`find -print0` 枚举，`stat` 获取元数据，
-`readlink` 读取链接以及 `cat` 把文件内容写进 ADB 通道。不会调用设备端
-`tar`、压缩程序或 Python，也不会创建文件。
+上面的时序图是 `host-adb` 模式。该模式设备端只会运行不可替代的读取动作：
+`find -print0` 枚举，`stat` 获取元数据，`readlink` 读取链接以及 `cat` 把文件内容写进
+ADB 通道。不会调用设备端 `tar`、压缩程序或 Python，也不会创建文件。
+
+### `device-python` 模式
+
+`source_mode: device-python` 把打包环节也放到设备端，但复用同一个 `paxck.py create`
+通用写入器，因此仍保留 PAX SHA-256 与两遍读取语义；压缩与最终校验仍在主机完成。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SH as backup-android.sh / .bat
+    participant BP as 主机 backup.py
+    participant ADB as adb (USB/TCP)
+    participant DEV as 设备端 /data/local/tmp
+    participant PYD as 设备端 paxck.py create
+    participant PX as 主机 paxck.py compress
+    participant DISK as 主机临时归档
+    participant VFY as 主机 paxck.py verify
+
+    SH->>BP: 读取 YAML + 环境覆盖
+    BP->>ADB: get-state / 可选 connect
+    BP->>ADB: shell mkdir /data/local/tmp/andbackup-<随机>
+    BP->>ADB: push DEVICE_PYTHON 与 paxck.py
+    ADB->>DEV: 写入 Python 二进制与脚本
+    BP->>ADB: exec-out sh -c "python paxck.py create SOURCE_DIR"
+    ADB->>PYD: 设备端遍历目录并生成裸 PAX tar
+    PYD-->>BP: stdout 裸 PAX tar（二进制）
+    BP->>PX: 裸 PAX tar（进程管道）
+    PX->>DISK: 压缩流写入 .partial
+    BP->>VFY: verify .partial
+    VFY->>DISK: 解压、解析 tar、逐文件 SHA-256
+    BP->>DISK: 原子移动为指定 OUT
+    BP->>ADB: shell rm -rf 临时目录
+```
+
+- 设备端只临时写入 `DEVICE_PYTHON`（单文件解释器，或含 `bin/`+`lib/` 的 prefix
+  目录——目录会被主机打包为一个 tar 上传并在设备端解压，使解释器能找到其标准库）与
+  `paxck.py`，不生成 tar 文件或压缩包；运行结束由主控 `rm -rf` 清理。
+- 设备端 `paxck.py create` 的 stdout 是唯一数据通道；诊断写到设备端 stderr 文件，主控
+  在结束后读回并转交主机 stderr。
+- 主机在接收 tar 流时统计已接收字节并可按 `progress_interval`/`show_rate` 显示进度与
+  速率（写 stderr，不进入归档字节）。
+- 该模式需要用户提供与设备 ABI/linker 兼容的 Android ARM64 Python（常见做法是
+  python-build-standalone 等静态 musl aarch64 构建，`DEVICE_PYTHON` 指定其单文件或
+  prefix 目录）；解释器缺失、无法执行或打包失败都是硬错误，不会自动回退到
+  `host-adb`。解释器不随仓库分发：可设 `download_device_python: true`，脚本会从
+  python-build-standalone 固定 Release（`device_python_url` 可覆盖，也可为本地
+  `.tar.zst` 离线复用）下载并解压到 `DEVICE_PYTHON` 或默认缓存；解压仅用标准库 /
+  外部 `zstd` / 系统 `tar`，不引入第三方 Python 包。
 
 ## USB 与无线 ADB
 
@@ -244,23 +296,26 @@ Python 3.12+ 是当前最低支持版本，覆盖 tar/PAX、ADB、xz、gzip、�
 运行跨平台选择用例。Python 3.12 未在本机额外安装，但会由 CI 覆盖。Ubuntu 24.04 的系统
 Python 为 3.12；Debian 12 的系统 Python 为 3.11，使用 Debian 12 时须自行提供 3.12+。
 
-`adb` 是外部的 Android 调试工具，不是 Python 依赖。设备端只使用 ROM 提供的
-`find`、`stat`、`readlink` 和 `cat`，不需要安装 Python、tar 或压缩程序。
+`adb` 是外部的 Android 调试工具，不是 Python 依赖。`host-adb` 模式设备端只使用 ROM
+提供的 `find`、`stat`、`readlink` 和 `cat`，不需要安装 Python、tar 或压缩程序；
+`device-python` 模式需要用户提供 Android ARM64 Python 二进制（`DEVICE_PYTHON`）。
 
 ## 与设备端 tar 的效果差异
 
-可以把 tar 二进制和压缩程序上传到 Android `/data/local/tmp/`，让设备端 tar 遍历目录并把
-结果流回主机。这种方案与当前实现的逻辑文件树可能相同，但最终归档不保证等价：
+除了上面的 `host-adb`，还可以把 tar 二进制和压缩程序上传到 Android `/data/local/tmp/`，
+让设备端 tar 遍历目录并把结果流回主机。本项目的 `device-python` 是这条思路的受控实现：
+它上传的是 Python 解释器与 `paxck.py`，因此**仍复用同一个 PAX writer**，保留两遍读取与
+PAX SHA-256 语义；而上传独立 tar 二进制则通常没有这些保证。下表对比三者：
 
-| 维度 | 当前方案：主机生成 tar | 备选方案：Android 生成 tar |
-|---|---|---|
-| 实现与版本 | 主机 Python `tarfile` + 主机压缩器 | 设备端 tar/压缩器版本与参数 |
-| 设备资源 | 只读命令和 ADB 通道，不上传可执行文件 | 需要架构、linker、SELinux 和执行权限兼容 |
-| 普通文件 | 两遍读取，写入 PAX SHA-256，变化则失败 | 通常一遍读取，无同等校验语义 |
-| 硬链接 | ADB 模式不恢复 inode 关系 | 可能保留，取决于 tar |
-| 特殊文件 | FIFO/socket/设备节点跳过 | 可能记录或尝试读取 |
-| UID/GID 与扩展属性 | ADB UID/GID 默认值，不保存 xattr/ACL/SELinux | 可能保留，取决于权限与参数 |
-| 字节级结果 | 条目顺序、PAX 头和压缩参数由主机固定 | 由 Android tar 实现决定，通常不同 |
+| 维度 | `host-adb`：主机生成 tar | `device-python`：设备端 Python 生成 tar | 备选：上传独立 tar 二进制 |
+|---|---|---|---|
+| 实现与版本 | 主机 Python `tarfile` + 主机压缩器 | 设备端 Python `tarfile`（`paxck.py`）+ 主机压缩器 | 设备端 tar/压缩器版本与参数 |
+| 设备资源 | 只读命令和 ADB 通道，不上传可执行文件 | 上传 Python 二进制与 `paxck.py`，运行后清理 | 需要架构、linker、SELinux 和执行权限兼容 |
+| 普通文件 | 两遍读取，写入 PAX SHA-256，变化则失败 | 两遍读取，写入 PAX SHA-256，变化则失败 | 通常一遍读取，无同等校验语义 |
+| 硬链接 | ADB 模式不恢复 inode 关系 | 由设备端 `paxck.py create` 按本机逻辑处理 inode | 可能保留，取决于 tar |
+| 特殊文件 | FIFO/socket/设备节点跳过 | 与 `paxck.py create` 一致，跳过 | 可能记录或尝试读取 |
+| UID/GID 与扩展属性 | ADB UID/GID 默认值，不保存 xattr/ACL/SELinux | 取决于设备端 `paxck.py` 能读到的 lstat 字段 | 可能保留，取决于权限与参数 |
+| 字节级结果 | 条目顺序、PAX 头和压缩参数由主机固定 | 条目顺序由设备端 `os.walk` 决定，压缩参数由主机固定 | 由 Android tar 实现决定，通常不同 |
 
 因此，“解压后文件内容相同”是可实现的目标，“tar 文件逐字节相同”不是自然结果。若需要
 跨实现比较，应比较解压后的路径、类型、内容哈希和明确选定的元信息集合，而不是直接比较

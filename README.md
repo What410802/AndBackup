@@ -4,8 +4,15 @@
 
 项目由两个可独立使用的组件组成：`paxck.py` 将**本机目录**写成带 PAX 内嵌 SHA-256 的
 裸 `tar`，并可压缩、校验或提取；`adb_source.py` 则把已开启 ADB 调试（USB 有线或
-TCP 无线）的 Android 目录作为同一打包器的数据源。两者组合时，设备上不会生成 tar、压缩包
-或临时文件，归档落盘后还会逐文件校验 SHA-256。
+TCP 无线）的 Android 目录作为同一打包器的数据源。归档落盘后还会逐文件校验 SHA-256。
+Android 数据源可显式选择两种模式，且不会自动互相切换：
+
+- `host-adb`（默认）：主机通过 `adb exec-out` 逐条读取，设备端只运行
+  `find`/`stat`/`readlink`/`cat`，不生成 tar、压缩包或临时文件。
+- `device-python`：把本机提供的 Android ARM64 Python 与 `paxck.py` 上传到
+  `/data/local/tmp`，在设备端流式生成 tar 再回传主机压缩；设备端不生成 tar 文件或
+  压缩包，但会临时写入 Python（单文件或 prefix 目录，后者打包为一个 tar 上传解压）
+  与脚本（运行结束自动清理）。
 
 项目针对一个常见但受限的场景：Android 11+ 禁止普通应用读取其他应用的
 `Android/data`；因此不使用 Termux/SSH，而是让主机通过授权的 `adb exec-out` 以
@@ -116,6 +123,10 @@ Linux 与 Windows 主控共用以下环境变量：
 | `SOURCE_DIR` | `/sdcard/DCIM` | 设备上的绝对目录 |
 | `OUT` | 随压缩类型决定 | 主机端归档路径 |
 | `COMPRESS` | `xz` | `xz`、`gzip`、`zstd` 或 `none` |
+| `SOURCE_MODE` | `host-adb` | `host-adb`：主机逐条读取；`device-python`：上传 Python 到设备端执行 `paxck.py create` |
+| `DEVICE_PYTHON` | 未设置 | `device-python` 用；本机 Android ARM64 Python：单文件解释器，或含 `bin/`+`lib/` 的 prefix 目录（目录会上传解压） |
+| `DOWNLOAD_DEVICE_PYTHON` | `0` | `device-python` 且未提供可用 `DEVICE_PYTHON` 时设为 `1`/`true`，自动从 python-build-standalone 下载并解压到 `DEVICE_PYTHON`（若设了不存在的路径）或默认缓存 |
+| `DEVICE_PYTHON_URL` | 固定的上游 `.tar.zst` 地址 | 覆盖下载地址；可填本地 `.tar.zst` 文件路径以离线复用已下载的归档 |
 | `PYTHON` | 自动查找 | Windows 上 Python 解释器的完整路径（可选） |
 | `ADB_SERIAL` | 未指定 | 要使用的设备 serial；USB 填 `adb devices` 的 serial，无线填 `host:port` |
 | `ADB_CONNECT` | 未指定 | 无线 TCP serial 设为 `1`/`true` 时先执行 `adb connect`；USB 应保持关闭 |
@@ -154,7 +165,9 @@ CPython 3.14.4 已运行跨平台选择用例。Python 3.12 是声明的最低�
 的系统 Python 为 3.11，需另行安装或提供 3.12+ 解释器。
 
 `adb` 不是 Python 包，需按 Android 官方 Platform-Tools 的版本和目标系统单独分发或要求用户
-安装。设备端不需要 Python、tar、xz、gzip 或 zstd。
+安装。`host-adb` 模式设备端不需要 Python、tar、xz、gzip 或 zstd；`device-python` 模式的
+Android 解释器默认由脚本按需从 python-build-standalone 下载到缓存
+（`download_device_python: true`），也可由 `device_python` 指定已有的单文件/prefix。
 
 ## 打包器与 Android 数据源
 
@@ -191,10 +204,32 @@ python3 src/paxck.py verify -i android.tar.xz
 成功后才原子替换 `OUT`。普通 shell 管道通常只能可靠取得最后一个命令的退出码，也没有上述
 临时文件保护。
 
-设备端不使用 `tar`、`xz`、`gzip` 或 Python。为了在不落盘的情况下枚举并读取文件，
-ADB shell 只调用系统自带的 `find -print0`、`stat`、`readlink` 和 `cat`；这部分无法由
-主机替代。主机端的 `adb_source.py` 传递条目和数据，`paxck.py` 用 Python 标准库流式写 tar
-和 xz/gzip，内存不会随归档总大小增长。
+两种模式都由同一个 `backup.py` 主控驱动，都会在主机端压缩、校验 `.partial` 并原子替换
+最终归档，归档格式与逐文件 PAX SHA-256 语义一致；所选模式失败时不会自动切换到另一种。
+
+`host-adb`（默认）设备端不使用 `tar`、`xz`、`gzip` 或 Python。为了在不落盘的情况下
+枚举并读取文件，ADB shell 只调用系统自带的 `find -print0`、`stat`、`readlink` 和
+`cat`；这部分无法由主机替代。主机端的 `adb_source.py` 传递条目和数据，`paxck.py` 用
+Python 标准库流式写 tar 和 xz/gzip，内存不会随归档总大小增长。
+
+`device-python` 把 `DEVICE_PYTHON` 指向的本机 Android ARM64 Python（单文件解释器，
+或含 `bin/`+`lib/` 的 prefix 目录，后者会被打包为一个 tar 上传并在设备端解压）和
+`src/paxck.py` 上传到 `/data/local/tmp/andbackup-<随机>`，在设备端运行
+`paxck.py create SOURCE_DIR` 直接生成裸 PAX tar 到 stdout，再由主机的 `paxck.py
+compress` 压缩。它适合大量小文件（`host-adb` 每个文件需要多次 ADB 往返）或希望把目录
+遍历/打包放在设备端完成的场景；代价是需要你自行提供与设备 ABI/linker 兼容的 Python
+（常见做法是 python-build-standalone 等静态 musl aarch64 构建），且设备端会临时写入
+该 Python 与脚本（运行结束自动删除）。两种模式都不在设备上生成 tar 文件或压缩包，
+最终压缩与校验都在主机完成。
+
+解释器不随仓库分发，而是按需获取：设置 `download_device_python: true` 后，若
+`device_python` 为空（或指向尚不存在的路径），`backup.py` 会从
+[astral-sh/python-build-standalone](https://github.com/astral-sh/python-build-standalone)
+的固定 Release（`device_python_url` 可覆盖，也可填本地 `.tar.zst` 以离线复用）下载并解压
+到 `device_python` 或默认缓存（Windows `%LOCALAPPDATA%\andbackup`，POSIX
+`~/.cache/andbackup`），之后复用缓存、不再联网。解压不依赖第三方 Python 包：
+Python 3.14+ 用标准库 `compression.zstd`，否则用外部 `zstd`，否则用系统 `tar`
+（Windows `bsdtar` 原生支持 zstd）。
 
 读取命令始终使用 `adb exec-out`，而不是把 `adb shell` 的输出经 Windows 控制台或文本管道
 转发。`adb_source.py` 从二进制子进程管道读取字节，CMD 只重定向 Python 的二进制 stdout，因此
@@ -225,15 +260,16 @@ ADB shell 只调用系统自带的 `find -print0`、`stat`、`readlink` 和 `cat
 | 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别裸 tar、xz、gzip、zstd，验证每个普通文件的 PAX SHA-256。 |
 | 默认提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | `DEST` 必须尚不存在；在同级临时目录逐文件校验 SHA-256、拒绝不安全路径/未校验普通文件，成功后原子改名发布。 |
 | 直接提取 | `paxck.py extract --direct-tarfile [ARCHIVE] -C DEST`（`--direct` 为别名） | 直接调用 Python `tarfile`，允许已有 `DEST`，不验证 PAX SHA-256，也不具有原子性。仅用于可信归档或互操作；失败可留下部分文件。 |
-| Android 源适配器 | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | 经 `adb exec-out` 将 Android 绝对目录写为裸 PAX tar 到 stdout；进度/流量统计写 stderr。 |
+| Android 源适配器 | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | `host-adb` 方案：经 `adb exec-out` 将 Android 目录写为裸 PAX tar。 |
 | Android 主控 | `backup.py [--config PATH] [--log-level LEVEL] [--progress-interval SECONDS] [--show-rate]` | 读取配置/环境，组合 ADB 适配器与压缩器，校验 `.partial` 后原子替换最终归档。 |
 | 平台包装 | `backup-android.sh [ARGS...]`；`backup-android.bat [ARGS...]` | 仅转发所有参数给同目录 `backup.py`；前者用于 POSIX shell，后者用于 Windows CMD。 |
 
 `paxck.py --version`、`adb_source.py --version` 和 `backup.py --version` 输出同一个发布版本。
 `backup.py` 的公开配置键为 `adb`、`adb_serial`、`adb_connect`、`source_dir`、`out`、`compress`、
-`log_level`、`progress_interval`、`show_rate`；命令行也可用 `--log-level`、
+`source_mode`、`device_python`、`log_level`、`progress_interval`、`show_rate`；命令行也可用 `--log-level`、
 `--progress-interval` 和 `--show-rate` 覆盖。
-同名环境变量 `ADB`、`ADB_SERIAL`、`ADB_CONNECT`、`SOURCE_DIR`、`OUT`、`COMPRESS` 优先于 YAML。
+同名环境变量 `ADB`、`ADB_SERIAL`、`ADB_CONNECT`、`SOURCE_DIR`、`OUT`、`COMPRESS`、
+`SOURCE_MODE`、`DEVICE_PYTHON`、`LOG_LEVEL`、`PROGRESS_INTERVAL`、`SHOW_RATE` 优先于 YAML。
 `PYTHON` 和 `BACKUP_CONFIG_FILE` 是包装/配置选择环境变量，含义见上表。
 上表以外的 Python 模块函数、类和常量都是实现细节，不构成稳定公开 API。
 
@@ -268,9 +304,11 @@ Android 元数据来源”。
 | 条目顺序与头部 | 由本项目固定排序和 PAX 规则 | 由设备端 tar 版本和参数决定 |
 
 若两边明确采用相同的条目集合、路径、时间/权限策略和 tar 参数，逻辑文件树可以等价；但
-不同实现的 tar 头、PAX 扩展、硬链接表示和压缩参数通常会使最终归档字节不同。当前方案的
-额外保证是设备端不需要执行上传的二进制，且主机在替换最终文件前会验证每个普通文件的
-SHA-256。
+不同实现的 tar 头、PAX 扩展、硬链接表示和压缩参数通常会使最终归档字节不同。`host-adb`
+的额外保证是设备端不需要执行上传的二进制，且主机在替换最终文件前会验证每个普通文件的
+SHA-256。`device-python`（见上文）上传的是 Python 解释器与同一个 `paxck.py`，因此仍保留
+两遍读取和 PAX SHA-256 语义，只把目录遍历与 tar 生成移到设备端；它与上传独立 tar 二进制
+不同，也不会悄悄回退到 `host-adb`。
 
 ## 项目结构
 
@@ -278,6 +316,7 @@ SHA-256。
 src/
   paxck.py                 通用本机 PAX 归档、压缩、校验和提取器
   adb_source.py            Android ADB 数据源适配器（写裸 PAX tar）
+  android_python.py        device-python 解释器引导：按需从 python-build-standalone 下载/解压
   backup.py                 跨平台 Android 主控（配置、组合、原子输出与校验）
   backup-android.sh        POSIX 启动包装（转发至 backup.py）
   backup-android.bat       Windows CMD 启动包装（转发至 backup.py）

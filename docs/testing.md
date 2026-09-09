@@ -92,9 +92,10 @@ flowchart LR
 | 文件 | 类型 | 重点 |
 |---|---|---|
 | `tests/test_paxck_unit.py` | 单元 | 通用 PAX writer、魔术字节、流读取器、PAX 哈希、符号链接、硬链接、变化文件、压缩、校验/提取退出码、默认安全提取与 `tarfile` 直接提取，以及 `adb_source` 的 Android `%Y/%y` 元数据解析 |
+| `tests/test_android_python.py` | 单元 | `device-python` 解释器引导：已有路径/缓存复用（不联网）、缺失报错、本地 `.tar.zst` 下载+解压（含离线 fixture），覆盖 stdlib `compression.zstd`/外部 `zstd`/系统 `tar` 三种解压路径 |
 | `tests/test_pipeline_local.py` | 离线集成 | 独立本机 `create | compress | verify`、系统 tar 互操作、还原保真、非 UTF-8 文件名 |
 | `tests/test_backup_sh_integration.py` | 离线集成 | 真实 `.sh` + 替身 ADB；`backup.py -> adb_source.py -> paxck.py` 组合、USB serial（不 connect）与 TCP serial（connect）、中文/空格/单引号路径、二进制安全、截断、错误退出、Android/data 路径 |
-| `tests/test_backup_bat_integration.py` | Windows 离线集成 | 真实 `cmd.exe` + `.bat` + `.cmd` 替身 ADB；`backup.py -> adb_source.py -> paxck.py` 组合、USB serial（不 connect）与 TCP serial（connect）、UTF-8 路径、二进制重定向、gzip/裸 tar、失败清理、命令行 YAML 路径 |
+| `tests/test_backup_bat_integration.py` | Windows 离线集成 | 真实 `cmd.exe` + `.bat` + `.cmd` 替身 ADB；`backup.py -> adb_source.py -> paxck.py` 组合、USB serial（不 connect）与 TCP serial（connect）、UTF-8 路径、二进制重定向、gzip/裸 tar、失败清理、命令行 YAML 路径，以及 `device-python` 上传/回读/清理、缺少 `DEVICE_PYTHON` 报错与不自动回退 |
 | `tests/test_device_integration.py` | 真机集成 | ADB 授权、目标目录读取、双遍字节一致性、平台对应主控备份、设备空间不生成中间文件 |
 
 ## 单元测试要点
@@ -132,13 +133,17 @@ flowchart LR
 find/stat/readlink/cat。主控实际组合 `adb_source.py` 的裸 PAX 输出与 `paxck.py compress`，这样
 不依赖手机，也能验证：
 
-- 脚本不再 `adb push`、`adb forward`，设备上没有代码或归档暂存。
+- `host-adb` 模式脚本不再 `adb push`、`adb forward`，设备上没有代码或归档暂存。
 - 目录名含中文、空格、单引号时仍可正确读取。
 - xz、gzip、none 三种模式都能生成并验证归档。
 - ADB 不可用、源路径不存在/不是目录、ADB 输出截断时脚本失败。
 - 输出先写 `.partial`，校验成功后才移动到最终文件。
 - USB 模式显式传入 serial 时不调用 `adb connect`；无线模式传入 `host:port` 时先调用
   `adb connect`，并将同一 serial 传递给后续所有 ADB 子进程。
+- `device-python` 模式（Windows/CMD 替身实现 `push`/`shell mkdir`/`exec-out cat`/`rm -rf`）：
+  上传后回读 tar、校验成功并清理临时目录；设备端失败时保留原备份、不自动回退到
+  `host-adb`。`backup.py` 的 `device-python` 逻辑是跨平台共享代码，Windows 替身覆盖其
+  完整数据通路。
 
 Windows 用例会由 Python 真正启动 `cmd.exe /d /c backup-android.bat`，而不是模拟批处理
 语法。替身 ADB 本身是一个 `.cmd` 文件，继续转交给 Python，以覆盖 Windows 的命令行参数

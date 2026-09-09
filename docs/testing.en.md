@@ -67,8 +67,9 @@ cause `more than one device/emulator` failures.
 | Area | Tests |
 |---|---|
 | `paxck.py` | Magic sniffing, PAX checksums, local file changes, links, compression, verified extraction, direct-tarfile extraction, malformed archives, and CLI status. |
+| Interpreter bootstrap | Cache reuse without network, missing-interpreter errors, and local `.tar.zst` download+unpack using an offline fixture. |
 | Local integration | `create | compress | verify`, system tar interoperability, restoration fidelity, and non-UTF-8 names where supported. |
-| POSIX/CMD controllers | Fake ADB plus real `.sh` or `cmd.exe`/`.bat`, USB and TCP selection, binary bytes, temporary-output cleanup, and configuration selection. |
+| POSIX/CMD controllers | Fake ADB plus real `.sh` or `cmd.exe`/`.bat`, USB and TCP selection, binary bytes, temporary-output cleanup, configuration selection, and `device-python` upload/round-trip/cleanup without fallback. |
 | Device integration | Opt-in real ADB transport and source-byte checks. |
 
 The verified-extraction tests assert that checksum failure or path traversal
