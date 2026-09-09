@@ -1,6 +1,6 @@
 # AndBackup
 
-[Chinese README](README.md) | [English architecture notes](docs/flow.en.md) | [English testing notes](docs/testing.en.md)
+[Chinese README](README.md) | [English architecture notes](docs/flow.en.md) | [English testing notes](docs/testing.en.md) | [Configuration and CLI reference](docs/configuration.en.md)
 
 AndBackup has two independent pieces:
 
@@ -18,11 +18,13 @@ mode is never auto-switched to the other:
   the device only runs `find`/`stat`/`readlink`/`cat` and never receives an
   archive, compression binary, Python runtime, or temporary file.
 - `device-python`: the host uploads a user-provided Android ARM64 Python and
-  `paxck.py` to `/data/local/tmp`, where the device streams a raw PAX tar to
-  stdout for host-side compression. No archive or compressed file is created on
-  the device, but the Python and script are written there temporarily. A python
-  install prefix directory (`bin/` + `lib/`) is packed into one tar, uploaded,
-  and extracted on the device so it can resolve its standard library.
+  `paxck.py` to the fixed device directory `/data/local/tmp/andbackup-pyenv`,
+  where the device streams a raw PAX tar to stdout for host-side compression.
+  No archive or compressed file is created on the device; the interpreter is
+  validated and reused from the cache, or removed per the caching rules (see
+  [docs/configuration.en.md](docs/configuration.en.md)). A python install
+  prefix directory (`bin/` + `lib/`) is packed into one tar, uploaded, and
+  extracted on the device so it can resolve its standard library.
 
 Files travel as binary data over `adb exec-out`; the host builds, compresses,
 and verifies the archive in both modes.
@@ -156,9 +158,14 @@ For `device-python`, set `source_mode: device-python` and `device_python` in
 YAML (or the `SOURCE_MODE`/`DEVICE_PYTHON` environment variables), then run the
 same wrapper. `DEVICE_PYTHON` may be a single self-contained interpreter file or
 a python install prefix directory (`bin/` + `lib/`); a directory is packed into
-one tar, uploaded, and extracted on the device. The Python must be compatible
-with the device ABI/linker (static musl aarch64 builds work well). The host
-removes the uploaded Python and `paxck.py` after the run. If `device-python`
+one tar, uploaded, and extracted on the device. The Python must be compatible with the device ABI/linker (static musl aarch64
+builds work well). The interpreter is cached at `/data/local/tmp/andbackup-pyenv`;
+each run checks the stamp and `--version`, reusing a valid cache and otherwise
+re-provisioning it. After a run that created the env, an interactive terminal
+is asked whether to keep it (Enter = keep); non-interactive runs remove it
+unless `keep_android_env: true`. Delete the device env with `--clean-env` and
+the host download cache with `--clean-host-cache` (see
+[docs/configuration.en.md](docs/configuration.en.md)). If `device-python`
 cannot run, the controller fails instead of silently falling back to
 `host-adb`.
 
@@ -184,35 +191,16 @@ py src\paxck.py verify -i local.tar.xz
 py src\paxck.py extract -i local.tar.xz -C local-restored
 ```
 
-## Public Command-Line Interface
+## Public Interfaces and Differences
 
-The following commands are the public interface for v0.1.0. Archive data uses
-binary stdin/stdout; human-facing status and diagnostics are separate.
-
-| Entry point | Syntax | Contract |
-|---|---|---|
-| Local writer | `paxck.py create DIRECTORY` | Writes a raw PAX tar to stdout. The directory itself is the archive root. Each regular file has `PAXCK.checksum.sha256`. |
-| Compressor | `paxck.py compress {xz,gzip,zstd,none}` | Reads bytes from stdin and writes compressed or unchanged bytes to stdout. |
-| Verifier | `paxck.py verify [ARCHIVE]` or `-i ARCHIVE`, optional `-q` | Detects raw tar, xz, gzip, and zstd; verifies every regular-file PAX SHA-256. |
-| Verified extractor | `paxck.py extract [ARCHIVE] -C DEST`, or `-i ARCHIVE` | Default recovery mode. `DEST` must not exist. It checks each file while writing a sibling staging directory, rejects unsafe paths and unchecked regular files, and atomically publishes only after the entire archive succeeds. |
-| Direct extractor | `paxck.py extract --direct-tarfile [ARCHIVE] -C DEST` | `--direct` is an alias. Calls Python `tarfile` directly, permits an existing destination, skips PAX SHA-256 validation, and is not atomic. It is only for trusted archives or interoperability; a failure can leave partial output. |
-| Android source | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | The `host-adb` adapter: streams an Android absolute directory to stdout as raw PAX tar; progress/traffic status goes to stderr. |
-| Android controller | `backup.py [--config PATH] [--log-level LEVEL] [--progress-interval SECONDS] [--show-rate]` | Reads configuration/environment, starts the Android source and compressor, verifies a unique `.partial` archive, then atomically replaces `OUT`. |
-| POSIX wrapper | `backup-android.sh [ARGS...]` | Forwards all arguments to its sibling `backup.py`. |
-| CMD wrapper | `backup-android.bat [ARGS...]` | Forwards all arguments to its sibling `backup.py`; run from CMD. |
-
-`paxck.py --version`, `adb_source.py --version`, and `backup.py --version`
-print the release version. Successful extraction status goes to stdout. Failure
-diagnostics go to stderr. A direct-extraction success explicitly says that it
-was not SHA-256-verified and was non-atomic.
-
-No undocumented Python module functions, classes, or constants are a stable
-public API in v0.1.0; the table above is the supported interface.
-
-The Android controller also accepts `log_level` (`quiet`, `error`, `warn`,
-`info`, `debug`, `trace`), `progress_interval` (seconds, minimum `0.1`), and
-`show_rate` in YAML, or the corresponding command-line options. Progress and traffic counters
-are status output only and never alter archive bytes.
+The complete command-line tables for `paxck.py`, `adb_source.py`, and
+`backup.py`, the supported YAML keys/environment variables, the cache and
+cleanup rules (`keep_android_env`, `--clean-env`, `--clean-host-cache`), and
+compression notes live in [docs/configuration.en.md](docs/configuration.en.md).
+Archive metadata fields, time precision, Android permission boundaries, and the
+comparison against uploading an independent tar binary to the device live in
+[docs/flow.en.md](docs/flow.en.md). Archive semantics, security rules, and the
+exit-code table follow below.
 
 ## Archive Semantics and Security
 

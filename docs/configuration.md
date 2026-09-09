@@ -1,0 +1,105 @@
+# 配置与命令行参考
+
+[English version](configuration.en.md) | [中文 README](../README.md) | [数据流与边界](flow.md)
+
+本项目把用户面用法放在 [README](../README.md)，把完整配置、命令行与缓存清理细节集中在本页。
+
+## 配置来源与优先级
+
+1. 命令行 `--config PATH`（优先级最高）
+2. 环境变量 `BACKUP_CONFIG_FILE`
+3. 脚本同目录默认 `src/backup-android.yaml`（存在时）
+4. 业务环境变量（`ADB`、`SOURCE_DIR`、`OUT`、`COMPRESS`、`SOURCE_MODE`、`DEVICE_PYTHON`、
+   `DOWNLOAD_DEVICE_PYTHON`、`DEVICE_PYTHON_URL`、`KEEP_ANDROID_ENV`、`LOG_LEVEL`、
+   `PROGRESS_INTERVAL`、`SHOW_RATE`）始终优先于 YAML 内的同名键
+5. 内置默认值
+
+显式传入但不存在的 `--config` 会报错；把 `BACKUP_CONFIG_FILE` 设为空或不存在路径，则不加载
+默认 YAML，适合自动化或完全用环境变量。YAML 只使用顶层 `key: value`（字符串可用单引号/双引号，
+布尔可用 `true/false/yes/no/on/off`）；解析由 `backup.py` 内置完成，不需要 PyYAML。
+
+## YAML 键
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `adb` | `adb` | `adb` 可执行文件或绝对路径 |
+| `adb_serial` | 空 | USB serial 或无线 `host:port`；空则由 ADB 自动选择 |
+| `adb_connect` | `false` | 仅当需要先执行 `adb connect`（TCP serial）时为 `true`；USB 应关闭 |
+| `source_dir` | `/sdcard/DCIM` | 设备上要备份的绝对目录 |
+| `out` | 随压缩类型 | 主机端归档路径 |
+| `compress` | `xz` | `xz`、`gzip`、`zstd` 或 `none` |
+| `source_mode` | `host-adb` | `host-adb`（主机逐条读）或 `device-python`（设备端打包） |
+| `device_python` | 未设置 | `device-python` 用：本机 Android ARM64 Python——单文件解释器，或含 `bin/`+`lib/` 的 prefix 目录 |
+| `download_device_python` | `false` | `device-python` 且无可用的 `DEVICE_PYTHON` 时自动下载到缓存/目标路径 |
+| `device_python_url` | 固定上游 `.tar.zst` | 覆盖下载地址；可为本地 `.tar.zst` 文件路径（离线复用） |
+| `keep_android_env` | 未设置 | `device-python` 保留设备端解释器缓存：`true`/`false`，未设置则交互询问、非交互删除 |
+| `log_level` | `info` | `quiet`、`error`、`warn`、`info`、`debug`、`trace` |
+| `progress_interval` | `5` | 进度输出最小间隔（秒），最小 `0.1` |
+| `show_rate` | `false` | 在定期进度行显示有效载荷速率 |
+
+## 环境变量
+
+与 YAML 键同名、语义相同（`DEVICE_PYTHON_URL`↔`device_python_url` 等）。另有两个选择类变量：
+
+| 变量 | 说明 |
+|---|---|
+| `PYTHON` | Windows 上包装脚本使用的 Python 解释器完整路径（可选） |
+| `BACKUP_CONFIG_FILE` | UTF-8 配置文件路径；空值/不存在则不加载 YAML |
+
+## 命令行
+
+所有归档字节走二进制 stdin/stdout；Windows 用 `cmd.exe` 的管道与重定向（避免 PowerShell
+文本管道）。三个 Python 入口都支持 `--version`。
+
+| 入口 | 用法 | 行为 |
+|---|---|---|
+| 本机打包 | `paxck.py create DIRECTORY` | 把 `DIRECTORY` 作为根目录写裸 PAX tar 到 stdout；普通文件带 `PAXCK.checksum.sha256` |
+| 压缩 | `paxck.py compress {xz,gzip,zstd,none}` | stdin→stdout；`xz`/`gzip`/`none` 只用标准库 |
+| 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别裸 tar/xz/gzip/zstd，逐普通文件校验 PAX SHA-256 |
+| 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | 默认：校验后暂存原子发布，`DEST` 须不存在；`--direct-tarfile` 为可信归档直接模式 |
+| Android 源适配器 | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | `host-adb`：经 `adb exec-out` 写裸 PAX tar 到 stdout |
+| Android 主控 | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [--clean-env] [--clean-host-cache]` | 读取配置、组合源与压缩器、校验 `.partial` 后原子替换；`--clean-*` 只清理缓存后退出 |
+| 平台包装 | `backup-android.sh [ARGS...]`；`backup-android.bat [ARGS...]` | 把所有参数转发给同目录 `backup.py` |
+
+提取成功信息只在 stdout，失败诊断只在 stderr；默认提取成功显示“已验证并提取”，直接模式明确
+显示“未校验 PAX SHA-256，非原子”。`paxck.py` 校验失败以非零退出，普通文件无 SHA-256 记录的
+第三方 tar 会被拒绝。
+
+## 缓存与清理
+
+### 主机下载缓存（自动）
+`download_device_python: true` 且缺少可用解释器时，`backup.py` 从
+[python-build-standalone](https://github.com/astral-sh/python-build-standalone) 固定 Release
+下载 `.tar.zst` 到缓存（Windows `%LOCALAPPDATA%\andbackup`，POSIX `~/.cache/andbackup`），
+只解出 `bin/python3.x` + `lib/python3.x`（跳过符号链接与 `share/`，兼容 Windows）。之后每次
+先检查缓存布局，有效即复用、不再联网。解压只用标准库 `compression.zstd`（3.14+）、外部
+`zstd`、或系统 `tar`（Windows `bsdtar`），不引入第三方 Python 包。
+
+### Android 端环境缓存（device-python）
+解释器会先放置到设备固定目录 `/data/local/tmp/andbackup-pyenv`（内含 `bin/`、`lib/`、
+`paxck.py`、`stamp`）。每次打包前会做“正确性检查”：目录布局 + `stamp`（解释器标识 +
+本机 `paxck.py` SHA-256）匹配 + 解释器可执行 `--version`。匹配则复用（不上传、不询问）；
+不匹配则整体重传，并以 `--version` 自检；若自检失败（通常为损坏/不兼容上传）会自动重走放置流程。
+
+打包完成后：
+- 若本次是新建环境，交互终端会询问是否保留；回车=保留。`keep_android_env: true` 强制保留，
+  `false` 强制删除；非交互（无 TTY）且未设置时默认删除，避免脚本静默留下约 230 MiB。
+- 若本次复用了已存在环境，则不询问、不删除。
+- 每次运行的状态文件放 `<env>/run/<uuid>`，无论保留与否都会删除，避免污染缓存。
+- 解释器本身无法执行导致的失败会删除缓存并明确报错，不会悄悄回退到 `host-adb`。
+
+清理命令（互不影响）：
+```sh
+src/backup-android.sh  --clean-env          # 删除设备端 /data/local/tmp/andbackup-pyenv
+src/backup-android.sh  --clean-host-cache   # 删除主机下载缓存目录
+```
+```bat
+src\backup-android.bat --clean-env
+src\backup-android.bat --clean-host-cache
+```
+
+## 压缩说明
+- `xz`、`gzip`、裸 tar：只用 Python 标准库（`lzma`/`gzip`），任何平台无需外部命令。
+- `zstd`：Python 3.14+ 用标准库 `compression.zstd`；3.12/3.13 需主机 `PATH` 中的 `zstd`，
+  否则以退出码 2 失败。
+- xz 是 CPU 密集的默认档（`preset=6`）；追求速度可用 `none` 或 `gzip`。
