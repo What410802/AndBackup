@@ -14,6 +14,9 @@
 # ABI 匹配的解释器并缓存到 /data/local/tmp/andbackup-pyenv，之后自动复用；失败只会
 # 明确报错，不会自动退回 host-adb。键值完整说明见 README.md 与 docs/configuration.md
 # （English: docs/configuration.en.md）。
+#
+# 刻意不提供的配置项：删除源条目只在命令行给出（backup.py --prune-source
+# [--prune-dry-run]），避免配置一次后每次备份都静默删除设备上的源文件。
 
 # adb: adb
 host: ""

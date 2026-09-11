@@ -397,7 +397,7 @@ def _tar_name(path):
 
 
 def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0,
-              show_rate=False):
+              show_rate=False, manifest=None):
     """Stream an Android directory into the generic PAX tar writer."""
     root = root.rstrip('/') or '/'
     if not root.startswith('/') or root == '/':
@@ -405,6 +405,7 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
             'adb.err.source_root_absolute', root=repr(root)) + '\n')
         return 1
 
+    listed = paxck.PackedManifest(manifest)
     try:
         root_st = _lstat(adb, root)
         if not stat.S_ISDIR(root_st['mode']):
@@ -412,11 +413,8 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
                 'adb.err.source_not_directory', root=root) + '\n')
             return 1
         reporter = ProgressReporter(log_level, progress_interval, show_rate=show_rate)
-        listed = _list_paths(adb, root, return_status=True, reporter=reporter)
-        if isinstance(listed, tuple):
-            paths, find_rc = listed
-        else:  # compatibility with callers/mocks implementing the old API
-            paths, find_rc = listed, 0
+        paths, find_rc = _list_paths(adb, root, return_status=True,
+                                     reporter=reporter)
         if reporter.total is None:
             reporter.finish_listing(len(paths))
     except OSError as e:
@@ -432,10 +430,11 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
     reporter.start()
 
     def warn(message):
-        reporter.emit('warn', f'[WARN] {message}')
+        reporter.emit('warn', i18n.tag('warn') + ' ' + message)
 
     incomplete = bool(find_rc)
     if find_rc:
+        listed.incomplete(find_rc)
         warn(i18n.t('adb.warn.find_rc', rc=find_rc))
 
     def entry_warn(message):
@@ -450,6 +449,7 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
                 source_stat = _lstat(adb, full)
             except OSError as e:
                 incomplete = True
+                listed.skipped(full)
                 warn(i18n.t('adb.warn.skip_metadata', path=full, err=e))
                 reporter.entry(full, skipped=True)
                 continue
@@ -463,6 +463,7 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
             if stat.S_ISDIR(mode):
                 tar_info.type = tarfile.DIRTYPE
                 tf.addfile(tar_info)
+                listed.packed(full, is_dir=True)
                 reporter.entry(relative)
                 continue
 
@@ -473,27 +474,35 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
                     tf.addfile(tar_info)
                 except OSError as e:
                     incomplete = True
+                    listed.skipped(full)
                     warn(i18n.t('adb.warn.skip_symlink', name=relative, err=e))
                     reporter.entry(relative, skipped=True)
                 else:
+                    listed.packed(full)
                     reporter.entry(relative)
                 continue
 
             if not stat.S_ISREG(mode):
+                listed.skipped(full)
                 warn(i18n.t('adb.warn.skip_non_regular', name=relative))
                 reporter.entry(relative, skipped=True)
                 continue
 
-            rc, _written = paxck.write_regular(
+            rc, written = paxck.write_regular(
                 tf, tar_info, source_stat['size'],
                 lambda path=full: _hash_file(adb, path, reporter.on_file_bytes),
                 lambda path=full: _open_stream(adb, path, reporter.on_file_bytes),
                 relative, False, entry_warn)
             if rc:
                 return rc
-            reporter.entry(relative, skipped=not _written)
+            if written:
+                listed.packed(full)
+            else:
+                listed.skipped(full)
+            reporter.entry(relative, skipped=not written)
     finally:
         tf.close()
+        listed.close()
     reporter.finish()
     if incomplete:
         warn(i18n.t('adb.warn.incomplete'))
@@ -519,10 +528,13 @@ def main(argv=None):
                         help=i18n.t('adb.cli.progress_help'))
     parser.add_argument('--show-rate', action='store_true',
                         help=i18n.t('adb.cli.show_rate_help'))
+    parser.add_argument('--packed-manifest', metavar='PATH',
+                        help=i18n.t('prune.cli.manifest_help'))
     args = parser.parse_args(argv)
     return write_tar(args.directory, args.adb, log_level=args.log_level,
                      progress_interval=args.progress_interval,
-                     show_rate=args.show_rate)
+                     show_rate=args.show_rate,
+                     manifest=args.packed_manifest)
 
 
 if __name__ == '__main__':

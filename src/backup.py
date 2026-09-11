@@ -25,6 +25,7 @@ import uuid
 import i18n
 import paxck
 import android_python
+import prune
 
 
 ENV_KEYS = ('ADB', 'HOST', 'SERIAL', 'ANDROID_SERIAL',
@@ -421,13 +422,17 @@ def cmd_tree(settings, out_path=None):
 
 
 def _stream_android_archive(source, adb, compress, output, env,
-                            log_level='info', progress_interval='5', show_rate=False):
+                            log_level='info', progress_interval='5', show_rate=False,
+                            manifest=None):
     """Compose the Android source adapter and generic compressor safely."""
+    source_args = [sys.executable, os.path.join(_script_dir(), 'adb_source.py'),
+                   '--adb', adb, '--log-level', str(log_level),
+                   '--progress-interval', str(progress_interval),
+                   *(('--show-rate',) if show_rate else ()),
+                   *(('--packed-manifest', manifest) if manifest else ()),
+                   source]
     source_process = subprocess.Popen(
-        [sys.executable, os.path.join(_script_dir(), 'adb_source.py'),
-         '--adb', adb, '--log-level', str(log_level),
-         '--progress-interval', str(progress_interval),
-         *(('--show-rate',) if show_rate else ()), source],
+        source_args,
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     source_log = []
 
@@ -839,9 +844,29 @@ def _finish_device_env(adb, env, settings, device_env, log_level):
         print(i18n.tag('cache') + ' ' + i18n.t('backup.info.removed_env'))
 
 
+def _read_remote_file(adb, env, remote_path):
+    """Return the bytes of one device file, or b'' when it cannot be read."""
+    result = _run_adb(adb, ('exec-out', 'cat', remote_path), env)
+    return result.stdout if result.returncode == 0 else b''
+
+
+def _publish_raw_received(adb, env, remote_path, local_path):
+    """Copy one device file onto ``local_path`` (best effort)."""
+    blob = _read_remote_file(adb, env, remote_path)
+    if not blob:
+        return False
+    try:
+        with open(local_path, 'wb') as fh:
+            fh.write(blob)
+    except OSError:
+        return False
+    return True
+
+
 def _stream_device_python_archive(source, adb, compress, output, env,
                                   device_env, log_level='info',
-                                  progress_interval='5', show_rate=False):
+                                  progress_interval='5', show_rate=False,
+                                  manifest=None):
     """Stream one pack using an already-provisioned device-python environment.
 
     ``device_env`` is the dict produced by ``_provision_device_python_env``:
@@ -859,6 +884,7 @@ def _stream_device_python_archive(source, adb, compress, output, env,
     remote_python = env_dir + '/' + interp_rel
     remote_status = run_dir + '/status'
     remote_error = run_dir + '/stderr'
+    remote_manifest = run_dir + '/packed'
     source_process = None
     compressor = None
     log_thread = None
@@ -876,7 +902,10 @@ def _stream_device_python_archive(source, adb, compress, output, env,
 
         command = (
             f'{shlex.quote(remote_python)} {shlex.quote(remote_paxck)} create '
-            f'{shlex.quote(source)} 2>{shlex.quote(remote_error)}; '
+            f'{shlex.quote(source)} '
+            + (f'--packed-manifest {shlex.quote(remote_manifest)} '
+               if manifest else '')
+            + f'2>{shlex.quote(remote_error)}; '
             f'__andbackup_rc=$?; printf "%s" "$__andbackup_rc" '
             f'>{shlex.quote(remote_status)}; exit "$__andbackup_rc"')
         progress.emit('info', i18n.tag('progress') + ' '
@@ -927,6 +956,8 @@ def _stream_device_python_archive(source, adb, compress, output, env,
         error_result = _run_adb(adb, ('exec-out', 'cat', remote_error), env)
         if error_result.returncode == 0:
             remote_stderr = error_result.stdout
+        if manifest:
+            _publish_raw_received(adb, env, remote_manifest, manifest)
     finally:
         if compressor is not None and compressor.poll() is None:
             compressor.kill()
@@ -994,7 +1025,90 @@ def _plan_out(out, source, compress):
     return os.path.abspath(out), True
 
 
-def run(settings):
+def _prune_source(adb, env, manifest_path, source, log_level, dry_run=False):
+    """Delete the source entries that were packed, after a verified publish.
+
+    Only entries the packer reported as packed are considered; a directory is
+    deleted only when its listing was complete and nothing underneath it was
+    skipped, so an unreadable child cannot disappear by accident.
+    """
+    def warn(message):
+        sys.stderr.write(i18n.tag('warn') + ' ' + message + '\n')
+        sys.stderr.flush()
+
+    def info(message):
+        if log_level not in ('quiet', 'error'):
+            print(i18n.tag('info') + ' ' + message)
+
+    try:
+        with open(manifest_path, 'rb') as fh:
+            blob = fh.read()
+    except OSError:
+        blob = b''
+    if not blob:
+        warn(i18n.t('prune.warn.no_manifest'))
+        return
+
+    packed, packed_dirs, skipped, listing_ok = prune.parse_manifest(blob)
+    to_delete, kept = prune.build_plan(packed, packed_dirs, skipped,
+                                       listing_ok, source)
+    if not listing_ok:
+        warn(i18n.t('prune.warn.incomplete_listing'))
+    if not to_delete:
+        info(i18n.t('prune.info.nothing'))
+        return
+    if dry_run:
+        print(i18n.tag('info') + ' ' + prune.describe_plan(to_delete, kept))
+        for path in to_delete:
+            print('  ' + path)
+        print(i18n.tag('info') + ' '
+              + i18n.t('prune.info.dry_run', count=len(to_delete)))
+        return
+    if not prune.confirm(to_delete, kept, log_level):
+        return
+
+    failed = []
+    kept_dirs = []
+    files, directories = prune.split_plan(to_delete, packed_dirs)
+    # Files first (deepest-first order is preserved inside each group), then
+    # the now-empty directories.  Directories use `rmdir`, never `rm -rf`, so a
+    # directory that gained an entry after the listing survives.
+    for batch in prune.chunked(files):
+        result = _run_adb(
+            adb, ('exec-out', 'sh', '-c', prune.remove_command(batch)), env)
+        if not result.returncode:
+            continue
+        # Narrow a batch failure down to the individual paths.
+        for path in batch:
+            single = _run_adb(
+                adb, ('exec-out', 'sh', '-c', prune.remove_command([path])),
+                env)
+            if single.returncode:
+                detail = single.stderr.decode('utf-8', 'replace').strip()
+                failed.append((path, detail or f'exit {single.returncode}'))
+    for batch in prune.chunked(directories):
+        result = _run_adb(
+            adb, ('exec-out', 'sh', '-c', prune.rmdir_command(batch)), env)
+        if not result.returncode:
+            continue
+        for path in batch:
+            single = _run_adb(
+                adb, ('exec-out', 'sh', '-c', prune.rmdir_command([path])),
+                env)
+            if single.returncode:
+                detail = single.stderr.decode('utf-8', 'replace').strip()
+                kept_dirs.append((path, detail or f'exit {single.returncode}'))
+    for path, detail in failed:
+        warn(i18n.t('prune.warn.delete_failed', path=path, err=detail))
+    for path, detail in kept_dirs:
+        if log_level in ('debug', 'trace'):
+            warn(i18n.t('prune.warn.kept_dir', path=path))
+    info(i18n.t('prune.info.deleted',
+                count=len(to_delete) - len(failed) - len(kept_dirs),
+                dirs=len(directories) - len(kept_dirs), kept=kept))
+
+
+def run(settings, prune_source=False, prune_dry_run=False):
     adb = settings['ADB']
     source = settings['SOURCE_DIR']
     compress = (settings.get('COMPRESS', '') or 'none').strip().lower()
@@ -1011,6 +1125,8 @@ def run(settings):
     if compress not in ('xz', 'gzip', 'zstd', 'none'):
         raise RuntimeError(
             i18n.t('backup.err.unknown_compressor', kind=compress))
+    if prune_dry_run and not prune_source:
+        raise RuntimeError(i18n.t('prune.err.dry_run_needs_source'))
     if not source:
         raise RuntimeError(i18n.t('backup.err.source_dir_empty'))
     if source_mode not in ('host-adb', 'device-python'):
@@ -1054,6 +1170,11 @@ def run(settings):
     device = _resolve_device(adb, settings, log_level)
     env['ANDROID_SERIAL'] = device
 
+    manifest_path = None
+    if prune_source:
+        fd, manifest_path = tempfile.mkstemp(prefix='andbackup-packed-')
+        os.close(fd)
+
     result = _run_adb(adb, ('get-state',), env)
     if result.returncode:
         raise RuntimeError(_display_error(
@@ -1073,13 +1194,14 @@ def run(settings):
         with open(partial, 'wb') as fh:
             if source_mode == 'host-adb':
                 _stream_android_archive(source, adb, compress, fh, env,
-                                        log_level, progress_interval, show_rate)
+                                        log_level, progress_interval, show_rate,
+                                        manifest_path)
             else:
                 device_env = _provision_device_python_env(
                     adb, env, device_python, log_level)
                 _stream_device_python_archive(
                     source, adb, compress, fh, env, device_env,
-                    log_level, progress_interval, show_rate)
+                    log_level, progress_interval, show_rate, manifest_path)
 
         if log_level not in ('quiet', 'error'):
             print('[3/3] ' + i18n.t('backup.step.verify'))
@@ -1098,6 +1220,11 @@ def run(settings):
                   + i18n.t('backup.done.archive', path=output_path))
             print('       ' + i18n.t('backup.info.size',
                                     size=os.path.getsize(output_path)))
+        # The archive is verified and published: only now may packed source
+        # entries be deleted, and only those the packer actually wrote.
+        if prune_source and manifest_path:
+            _prune_source(adb, env, manifest_path, source, log_level,
+                          prune_dry_run)
         # After a successful, verified run, ask whether to keep the env (or
         # honour keep_android_env / the non-interactive default).
         _finish_device_env(adb, env, settings, device_env, log_level)
@@ -1106,6 +1233,11 @@ def run(settings):
         if partial:
             try:
                 os.unlink(partial)
+            except OSError:
+                pass
+        if manifest_path:
+            try:
+                os.unlink(manifest_path)
             except OSError:
                 pass
         if (device_env is not None and device_env.get('uploaded')
@@ -1171,6 +1303,10 @@ def main(argv=None):
                             help=i18n.t('backup.cli.list_tree_help'))
         parser.add_argument('--tree-out', metavar='PATH',
                             help=i18n.t('backup.cli.tree_out_help'))
+        parser.add_argument('--prune-source', action='store_true',
+                            help=i18n.t('prune.cli.source_help'))
+        parser.add_argument('--prune-dry-run', action='store_true',
+                            help=i18n.t('prune.cli.dry_run_help'))
         args = parser.parse_args(argv)
         settings, _config = _settings(args.config)
         if args.log_level is not None:
@@ -1183,7 +1319,7 @@ def main(argv=None):
             return cmd_tree(settings, args.tree_out)
         if args.clean_env or args.clean_host_cache:
             return cmd_clean(settings, args.clean_env, args.clean_host_cache)
-        return run(settings)
+        return run(settings, args.prune_source, args.prune_dry_run)
     except (RuntimeError, OSError) as e:
         print(i18n.tag('error') + ' ' + i18n.t('backup.err.fatal', err=e),
               file=sys.stderr)

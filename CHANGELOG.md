@@ -6,6 +6,16 @@ All notable changes to this project are recorded in this file.
 
 ### Added
 
+- `backup.py --prune-source` (command-line only): after the archive has been
+  verified and atomically published, delete the source entries that really made
+  it into the archive, to free space on the device. The packer records a
+  manifest (`paxck.py`/`adb_source.py`/device-side `create` accept
+  `--packed-manifest PATH`, passed automatically by the controller), so skipped
+  or unreadable entries are never deleted; the source root is never deleted;
+  directories are removed only when their listing was complete and nothing
+  underneath them was skipped and use `rmdir`, never `rm -rf`. `--prune-dry-run`
+  lists the plan without deleting, and an interactive terminal confirms once.
+  Nothing is deleted when the run fails.
 - Message localization (Chinese/English) for every command-line entry point:
   `--lang zh|en|auto` on `paxck.py`, `adb_source.py` and `backup.py`, plus the
   `ANDROBACKUP_LANG` environment variable. The order is CLI flag, environment,

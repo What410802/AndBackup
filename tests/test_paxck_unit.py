@@ -28,6 +28,10 @@ import testsupport as T  # noqa: E402
 
 paxck = T.load_paxck()
 adb_source = T.load_adb_source()
+
+sys.path.insert(0, T.SRC_DIR)
+
+import prune  # noqa: E402
 backup = T.load_backup()
 
 
@@ -170,7 +174,8 @@ class TestAdbSourceMetadata(unittest.TestCase):
         out = io.BytesIO()
         with mock.patch.object(adb_source, '_lstat',
                                side_effect=lambda _adb, path: metadata[path]), \
-             mock.patch.object(adb_source, '_list_paths', return_value=paths), \
+             mock.patch.object(adb_source, '_list_paths',
+                               return_value=(paths, 0)), \
              mock.patch.object(adb_source, '_hash_file',
                                return_value=(T.sha256_of(b'abc'), 3)), \
              mock.patch.object(adb_source, '_open_stream',
@@ -534,6 +539,31 @@ class TestCreateFaultTolerance(T.BaseCase):
         self.assertIn('shrink.bin', err)
         members = T.list_members(blob)
         self.assertEqual(len(members['测试.d/shrink.bin'][2]), 1000)
+
+    def test_packed_manifest_records_packed_and_skipped_entries(self):
+        """--packed-manifest 同时记录已打包（P/D）与被跳过（S）的条目。"""
+        if os.name == 'nt' or getattr(os, 'geteuid', lambda: -1)() == 0:
+            self.skipTest('root 无视文件权限位')
+        locked = os.path.join(self.root, 'locked.txt')
+        with open(locked, 'wb') as fh:
+            fh.write(b'nope')
+        fd, manifest = tempfile.mkstemp(prefix='paxck-manifest-')
+        os.close(fd)
+        os.chmod(locked, 0)
+        try:
+            rc, _blob, _err = T.run_cli(
+                ['create', self.root, '--packed-manifest', manifest])
+        finally:
+            os.chmod(locked, 0o644)
+        self.assertEqual(rc, 0)
+        with open(manifest, 'rb') as fh:
+            packed, dirs, skipped, listing_ok = prune.parse_manifest(fh.read())
+        os.unlink(manifest)
+        self.assertTrue(listing_ok)
+        self.assertIn(self.root, dirs)
+        self.assertIn(locked, skipped)
+        self.assertIn(os.path.join(self.root, 'readme.txt'), packed)
+        self.assertNotIn(locked, packed)
 
     def test_unlistable_subdirectory_is_reported(self):
         locked_dir = os.path.join(self.root, 'locked-dir')

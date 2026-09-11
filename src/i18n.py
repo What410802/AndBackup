@@ -333,6 +333,26 @@ MESSAGES = {
         'backup.cli.list_tree_help': '列出源目录的详细信息树后退出（不备份）',
         'backup.cli.tree_out_help':
             '配合 --list-tree：把目录树写入文件（默认写 stdout）',
+        # ---- prune.py / packed manifest --------------------------
+        'prune.info.planned':
+            '将删除 {count} 个已打包条目，保留 {kept} 个未打包/不完整条目',
+        'prune.prompt.confirm': '确认删除这 {count} 个已打包的源条目？[y/N] ',
+        'prune.info.deleted':
+            '已删除 {count} 个已打包条目（其中目录 {dirs} 个），保留 {kept} 个未打包或未能删除的条目',
+        'prune.info.dry_run': '演练模式：本应删除 {count} 个条目（未执行）',
+        'prune.info.nothing': '没有可删除的已打包条目',
+        'prune.warn.no_manifest': '未取得已打包清单，跳过删除源条目',
+        'prune.warn.incomplete_listing':
+            '源目录枚举不完整，仅删除已打包的普通文件与符号链接（保留目录）',
+        'prune.warn.kept_dir': '目录 {path} 下存在未打包条目，保留该目录',
+        'prune.warn.delete_failed': '删除 {path} 失败：{err}',
+        'prune.err.dry_run_needs_source':
+            '--prune-dry-run 需要与 --prune-source 一起使用',
+        'prune.cli.source_help':
+            '归档验证并发布后，删除已成功打包的源条目（仅命令行选项，不读配置）',
+        'prune.cli.dry_run_help': '配合 --prune-source：只列出将删除的条目，不真的删除',
+        'prune.cli.manifest_help':
+            '把本次成功打包/跳过的条目写成 NUL 分隔清单（供 --prune-source 使用）',
     },
     'en': {
         # ---- shared command line ------------------------------------------
@@ -699,6 +719,35 @@ MESSAGES = {
         'backup.cli.list_tree_help': 'list the detailed source tree and exit (no backup)',
         'backup.cli.tree_out_help':
             'with --list-tree: write the tree to a file (default: stdout)',
+        # ---- prune.py / packed manifest --------------------------
+        'prune.info.planned':
+            'will delete {count} packed entries and keep {kept} unpacked or '
+            'incomplete entries',
+        'prune.prompt.confirm': 'delete these {count} packed source entries? [y/N] ',
+        'prune.info.deleted':
+            'deleted {count} packed entries ({dirs} of them directories); kept '
+            '{kept} unpacked or undeletable entries',
+        'prune.info.dry_run': 'dry run: {count} entries would be deleted (nothing done)',
+        'prune.info.nothing': 'no packed entry can be deleted',
+        'prune.warn.no_manifest':
+            'no packed manifest was produced; skipping source deletion',
+        'prune.warn.incomplete_listing':
+            'the source listing was incomplete, so only packed files and '
+            'symlinks were deleted (directories kept)',
+        'prune.warn.kept_dir':
+            'kept the directory {path}: it still contains unpacked entries',
+        'prune.warn.delete_failed': 'failed to delete {path}: {err}',
+        'prune.err.dry_run_needs_source':
+            '--prune-dry-run must be used together with --prune-source',
+        'prune.cli.source_help':
+            'after the archive is verified and published, delete the source '
+            'entries that were packed (command-line only; the config file is '
+            'not consulted)',
+        'prune.cli.dry_run_help':
+            'with --prune-source: list what would be deleted without deleting',
+        'prune.cli.manifest_help':
+            'write the packed/skipped entries as a NUL-separated manifest (used '
+            'by --prune-source)',
         # ---- end of catalog ----
     },
 }

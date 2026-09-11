@@ -146,6 +146,32 @@ This bounds memory by the stream chunk size and turns concurrent source changes
 into a failure rather than a silently successful partial backup. Local
 `paxck.py create` uses the same two-pass rule for regular files.
 
+## Packed Manifest and `--prune-source`
+
+While writing the archive, the packing side (`adb_source.py`, or the device-side
+`paxck.py create` in `device-python` mode) also writes a NUL-separated manifest
+of what happened to each entry: `P:<path>` a packed non-directory entry,
+`D:<path>` a packed directory, `S:<path>` listed but not packed (skipped), and
+`L:<code>` an incomplete listing. The controller requests it
+(`--packed-manifest PATH`) only for `--prune-source`, and only uses it after the
+archive was verified and atomically replaced:
+
+```mermaid
+flowchart LR
+    L[find listing] --> W[write tar + manifest entry by entry]
+    W --> V[host verifies .partial]
+    V -->|failure| X[nothing is deleted]
+    V -->|ok| P[atomic replace of OUT]
+    P --> D[delete the packed entries listed in the manifest]
+```
+
+Deletion is deliberately conservative: only `P`/`D` records under the source
+root can be removed; every `S` record and its parent directories are kept; when
+an `L` record is present only `P` entries (files and symlinks) are deleted and
+all directories are kept. Files are deleted first (`rm -f`), then the emptied
+directories (`rmdir`, not `rm -rf`, so a file written after the listing keeps its
+directory instead of being recursively removed).
+
 ## PAX Contents
 
 The writer uses `tarfile.PAX_FORMAT`. It writes `name`, tar type, mode, mtime,

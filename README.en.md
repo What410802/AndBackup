@@ -272,6 +272,18 @@ comparison against uploading an independent tar binary to the device live in
 lists just the detailed tree of the source directory (mode, numeric owner/group
 UID:GID, size, time, symlink targets) to stdout or to a file, writes no archive,
 and costs one adb round trip per entry, so large trees are slow.
+
+`backup.py --prune-source [--prune-dry-run]` deletes the source entries that
+were really packed **after the archive was verified and published**, to free
+space on the device. It is command-line only on purpose (no YAML key, so a
+one-time setting cannot silently delete sources later) and it only touches
+entries that made it into the archive: entries the adapter skipped (permissions,
+scoped storage, modified while packing, non-regular files) and the source root
+are never deleted, and directories are removed only when their listing was
+complete with nothing skipped underneath, using `rmdir` rather than `rm -rf`
+(with an incomplete listing only files and symlinks are deleted).
+`--prune-dry-run` only prints the plan; an interactive terminal confirms once;
+a failed backup or verification deletes nothing.
 Archive semantics, security rules, and the exit-code table follow below.
 
 ## Archive Semantics and Security

@@ -293,6 +293,60 @@ class TestBackupBatch(unittest.TestCase):
                      if '.partial.' in name]
         self.assertEqual(leftovers, [])
 
+    def test_prune_source_deletes_only_packed_entries(self):
+        """--prune-source：归档发布后删除已打包条目，保留源根目录。"""
+        result = self.run_script(_args=('--prune-source',))
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 0, text)
+        self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
+        self.assertTrue(os.path.isdir(self.device_root))
+        self.assertEqual(os.listdir(self.device_root), [])
+        self.assertIn('已删除', text)
+
+    def test_prune_source_keeps_everything_that_was_skipped(self):
+        """被跳过的条目及其父目录必须保留：不完整的源不能被删除。"""
+        result = self.run_script(_args=('--prune-source',),
+                                 FAKE_ADB_TRUNCATE='3')
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 0, text)
+        # Only entries that were really packed may disappear: the truncated
+        # (skipped) files and their directory stay, the empty file goes.
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.device_root, 'readme.txt')))
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.device_root, 'sub dir', 'binary-crlf.bin')))
+        self.assertTrue(os.path.isdir(
+            os.path.join(self.device_root, 'sub dir')))
+        self.assertFalse(os.path.isfile(
+            os.path.join(self.device_root, 'empty.bin')))
+        self.assertIn('已删除', text)
+
+    def test_prune_dry_run_lists_without_deleting(self):
+        result = self.run_script(_args=('--prune-source', '--prune-dry-run'))
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 0, text)
+        self.assertIn('演练', text)
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.device_root, 'readme.txt')))
+        self.assertTrue(os.path.isfile(self.out))
+
+    def test_prune_dry_run_requires_prune_source(self):
+        result = self.run_script(_args=('--prune-dry-run',))
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--prune-source', text)
+        self.assertFalse(os.path.isfile(self.out))
+
+    def test_prune_source_in_device_python_mode_uses_the_remote_manifest(self):
+        result = self.run_script(_args=('--prune-source',),
+                                 SOURCE_MODE='device-python',
+                                 DEVICE_PYTHON=self.device_python,
+                                 KEEP_ANDROID_ENV='0')
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 0, text)
+        self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
+        self.assertEqual(os.listdir(self.device_root), [])
+
     def test_unavailable_adb_keeps_existing_target_and_removes_partial(self):
         original = b'previous verified backup'
         with open(self.out, 'wb') as fh:

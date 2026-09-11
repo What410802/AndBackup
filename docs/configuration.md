@@ -94,8 +94,41 @@ TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互
 | 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别裸 tar/xz/gzip/zstd，逐普通文件校验 PAX SHA-256 |
 | 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | 默认：校验后暂存原子发布，`DEST` 须不存在；`--direct-tarfile` 为可信归档直接模式 |
 | Android 源适配器 | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | `host-adb`：经 `adb exec-out` 写裸 PAX tar 到 stdout |
-| Android 主控 | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [--clean-env] [--clean-host-cache] [--list-tree] [--tree-out PATH]` | 读取配置、组合源与压缩器、校验 `.partial` 后原子替换；`--clean-*` 只清理缓存后退出；`--list-tree` 只列出源目录的详细信息树（模式、属主/组（数字 UID/GID）、大小、时间、符号链接目标），默认写 stdout，`--tree-out PATH` 写入文件。每个条目一次 adb 调用，大树较慢；它是诊断命令，不写入归档 |
+| Android 主控 | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [--clean-env] [--clean-host-cache] [--list-tree] [--tree-out PATH] [--prune-source] [--prune-dry-run]` | 读取配置、组合源与压缩器、校验 `.partial` 后原子替换；`--clean-*` 只清理缓存后退出；`--list-tree` 只列出源目录的详细信息树（模式、属主/组（数字 UID/GID）、大小、时间、符号链接目标），默认写 stdout，`--tree-out PATH` 写入文件。每个条目一次 adb 调用，大树较慢；它是诊断命令，不写入归档；`--prune-source` 在归档发布后删除已打包的源条目（见下） |
 | 平台包装 | `backup-android.sh [ARGS...]`；`backup-android.bat [ARGS...]` | 把所有参数转发给同目录 `backup.py` |
+
+### 删除已打包的源条目（`--prune-source`）
+
+`backup.py --prune-source` 在**归档通过校验并原子发布之后**，把源目录下确实写进归档的
+条目从设备上删除，用于释放空间。它是纯粹的释放空间操作，不可撤销：
+
+- **仅命令行选项**：不提供 YAML 键，也不从环境变量读取（配置文件里写了也无效），避免
+  一次性配置后每次备份都静默删源。
+- **只删已打包的条目**：打包器会把每个条目的结果写成清单（`P:` 普通条目、`D:` 目录、
+  `S:` 被跳过、`L:` 枚举不完整）；适配器因权限、scoped storage、非普通文件或“打包期间
+  被修改”而跳过的条目**永远不删**。
+- **源根目录永不删除**（例如 `/storage/emulated/0/Android/data/com.tencent.mobileqq` 本身
+  会保留，即使里面的条目都被删除）。
+- **目录条件更严**：仅当该目录的枚举完整、且其下没有任何被跳过的条目时才删除；枚举不完整
+  （`find` 返回非零）时**只删普通文件与符号链接，保留全部目录**。
+- **目录用 `rmdir` 而非 `rm -rf`**：若枚举之后应用又写了新文件，该目录删除失败并被保留，
+  绝不会递归误删。
+- 文件用 `rm -f`、目录用 `rmdir`，按路径深度由深到浅分批执行；每个批次失败时会逐个重试
+  以定位具体条目，失败的条目以 `[WARN]` 报出。
+- 删除顺序：先删文件，再删空目录；删除完成后以 `[INFO]` 汇总“删除 N 个（其中目录 M 个），
+  保留 K 个未打包或未能删除的条目”。
+- `--prune-dry-run` 只列出将删除的条目和数量，不做任何删除（必须与 `--prune-source` 同用）。
+- 交互终端（且 `log_level` 不是 `quiet`/`error`）会在删除前打印计划并询问一次；回车或 `y`
+  继续，`n` 取消。非交互（无 TTY）视为已授权——`--prune-source` 本身就是授权信号。
+- `backup.py` 与 `adb_source.py`（以及 `device-python` 模式下设备端 `paxck.py create`）
+  都支持 `--packed-manifest PATH`；它只在使用 prune 时由主控自动传递，正常使用无需手工调用。
+- 备份失败、校验失败或未发布时**不会**删除任何源条目；失败清理逻辑只移除主机端临时文件。
+
+示例：
+```sh
+src/backup-android.sh --prune-source --prune-dry-run   # 先看会删什么
+src/backup-android.sh --prune-source                   # 归档发布后真删
+```
 
 ### stdout / stderr 职责
 

@@ -102,8 +102,45 @@ All three Python entry points support `--version`.
 | Verifier | `paxck.py verify [ARCHIVE]` or `-i ARCHIVE`, optional `-q` | auto-detect tar/xz/gzip/zstd; verify each PAX SHA-256 |
 | Extractor | `paxck.py extract [ARCHIVE] -C DEST` | default verified/staged/atomic; `--direct-tarfile` for trusted archives |
 | Android source | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | `host-adb`: raw PAX tar to stdout |
-| Android controller | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [--clean-env] [--clean-host-cache] [--list-tree] [--tree-out PATH]` | run + verify + atomic replace; `--clean-*` clean caches and exit; `--list-tree` only lists the detailed tree of the source directory (mode, numeric owner/group UID/GID, size, time, symlink targets) to stdout, or to `--tree-out PATH`. One adb round trip per entry, so large trees are slow; it is a diagnostic and writes no archive |
+| Android controller | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [--clean-env] [--clean-host-cache] [--list-tree] [--tree-out PATH] [--prune-source] [--prune-dry-run]` | run + verify + atomic replace; `--clean-*` clean caches and exit; `--list-tree` only lists the detailed tree of the source directory (mode, numeric owner/group UID/GID, size, time, symlink targets) to stdout, or to `--tree-out PATH`. One adb round trip per entry, so large trees are slow; it is a diagnostic and writes no archive; `--prune-source` deletes the packed source entries after the archive is published (see below) |
 | Wrappers | `backup-android.sh [ARGS…]` / `backup-android.bat [ARGS…]` | forward all args to `backup.py` |
+
+### Deleting the packed source entries (`--prune-source`)
+
+`backup.py --prune-source` removes the entries that really made it into the
+archive from the device *after the archive was verified and atomically
+published*, to free space. It is irreversible:
+
+- **Command-line only**: there is no YAML key and no environment variable (a
+  config-file entry is ignored), so a one-time setting cannot silently delete
+  the source on every later run.
+- **Only packed entries**: the packer writes a manifest of every entry
+  (`P:` packed, `D:` packed directory, `S:` skipped, `L:` incomplete listing).
+  Anything the adapter skipped — permissions, scoped storage, non-regular files,
+  or a file modified while packing — is **never** deleted.
+- **The source root itself is never deleted** (e.g.
+  `/storage/emulated/0/Android/data/com.tencent.mobileqq` stays even when all of
+  its entries are removed).
+- **Directories have stricter rules**: they are deleted only when their listing
+  was complete and nothing underneath them was skipped. With an incomplete
+  listing (`find` returned non-zero) only files and symlinks are deleted and
+  every directory is kept.
+- **Directories use `rmdir`, never `rm -rf`**: a directory that gained an entry
+  after the listing simply fails to be removed and is kept.
+- Files use `rm -f` and directories `rmdir`, in deepest-first batches; a failing
+  batch is retried per path so the exact entries are reported with `[WARN]`.
+- Order: files first, then the emptied directories, followed by an `[INFO]`
+  summary: “deleted N packed entries (M of them directories); kept K …”.
+- `--prune-dry-run` prints the plan and deletes nothing (it requires
+  `--prune-source`).
+- At an interactive terminal (and when `log_level` is not `quiet`/`error`) the
+  plan is printed and confirmed once; Enter or `y` proceeds, `n` cancels. A
+  non-interactive run treats `--prune-source` itself as the authorization.
+- `backup.py`, `adb_source.py` and (in `device-python` mode) the device-side
+  `paxck.py create` all accept `--packed-manifest PATH`; the controller passes
+  it automatically when pruning is requested, so it needs no manual use.
+- Nothing is deleted when the backup, the verification or the publish failed:
+  the failure path only removes host-side temporary files.
 
 ### stdout/stderr responsibilities
 

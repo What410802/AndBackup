@@ -7,6 +7,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import re
 
@@ -102,6 +103,41 @@ def _cat(device_path):
                 remaining -= len(chunk)
 
 
+def _rm(device_paths):
+    """Fake `rm -f --`: delete files and symlinks (never directories)."""
+    missing = []
+    for device_path in device_paths:
+        path = _local_path(device_path)
+        if os.path.isdir(path) and not os.path.islink(path):
+            missing.append(device_path + ': Is a directory')
+            continue
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            missing.append(device_path + ': No such file or directory')
+    if missing:
+        for item in missing:
+            sys.stderr.write('rm: %s\n' % item)
+        return 1
+    return 0
+
+
+def _rmdir(device_paths):
+    """Fake `rmdir --`: remove empty directories only, like the real tool."""
+    failed = []
+    for device_path in device_paths:
+        path = _local_path(device_path)
+        try:
+            os.rmdir(path)
+        except OSError as exc:
+            failed.append('%s: %s' % (device_path, exc.strerror or exc))
+    if failed:
+        for item in failed:
+            sys.stderr.write('rmdir: %s\n' % item)
+        return 1
+    return 0
+
+
 def main(args):
     _log(args)
     if os.environ.get('FAKE_ADB_FAIL'):
@@ -178,12 +214,41 @@ def main(args):
             remote_error = re.search(r'2>([^; ]+)', raw_command).group(1)
             remote_status = re.search(r'>/data/local/tmp/[^; ]+/status', raw_command).group(0)[1:]
             local_source = _local_path(source)
+            command = [sys.executable,
+                       os.path.join(os.path.dirname(__file__), '..', 'src',
+                                    'paxck.py'), 'create', local_source]
+            manifest_local = None
+            if '--packed-manifest' in tokens:
+                remote_manifest = tokens[tokens.index('--packed-manifest') + 1]
+                fd, manifest_local = tempfile.mkstemp(suffix='.manifest')
+                os.close(fd)
+                command += ['--packed-manifest', manifest_local]
             if os.environ.get('FAKE_ADB_DEVICE_PYTHON_FAIL'):
                 result = subprocess.CompletedProcess([], 7, b'device python failed\n')
             else:
                 result = subprocess.run(
-                    [sys.executable, os.path.join(os.path.dirname(__file__), '..', 'src', 'paxck.py'), 'create', local_source],
-                    stdout=sys.stdout.buffer, stderr=subprocess.PIPE, check=False)
+                    command, stdout=sys.stdout.buffer, stderr=subprocess.PIPE,
+                    check=False)
+            if manifest_local:
+                # The device-side packer sees device paths only: translate the
+                # host-side records back before publishing the remote manifest.
+                with open(manifest_local, 'rb') as fh:
+                    blob = fh.read()
+                os.unlink(manifest_local)
+                out = b''
+                for record in blob.split(b'\0'):
+                    if len(record) < 2 or record[1:2] != b':':
+                        continue
+                    status, value = record[:1], record[2:].decode(
+                        'utf-8', 'surrogateescape')
+                    if status in (b'P', b'D', b'S'):
+                        value = _device_path(source, local_source, value)
+                    out += (status + b':' +
+                            value.encode('utf-8', 'surrogateescape') + b'\0')
+                os.makedirs(os.path.dirname(_remote_path(remote_manifest)),
+                            exist_ok=True)
+                with open(_remote_path(remote_manifest), 'wb') as fh:
+                    fh.write(out)
             os.makedirs(os.path.dirname(_remote_path(remote_error)), exist_ok=True)
             with open(_remote_path(remote_error), 'wb') as fh:
                 fh.write(result.stderr)
@@ -201,6 +266,12 @@ def main(args):
                 'utf-8', 'surrogateescape'))
         elif words[:1] == ['cat'] and len(words) == 3 and words[1] == '--':
             _cat(words[2])
+        elif words[:1] == ['rm'] and len(words) >= 3 and words[1:3] == ['-f', '--']:
+            if _rm(words[3:]):
+                raise ValueError('rm failed')
+        elif words[:1] == ['rmdir'] and len(words) >= 2 and words[1] == '--':
+            if _rmdir(words[2:]):
+                raise ValueError('rmdir failed')
         elif words[1:] == ['--version'] and words[0].startswith(
                 '/data/local/tmp/andbackup-pyenv'):
             # Device-python self-test: the cached interpreter reports a version.

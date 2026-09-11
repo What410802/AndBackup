@@ -424,7 +424,45 @@ def _tar_relpath(path, start):
     return rel.replace('\\', '/')
 
 
-def cmd_create(root):
+class PackedManifest:
+    """Record which entries were packed, for ``backup.py --prune-source``.
+
+    Records are NUL-terminated ``<status>:<path>`` items: ``P`` a packed entry
+    that is not a directory, ``D`` a packed directory, ``S`` a listed but
+    unpacked entry, ``L`` a marker that the listing was incomplete.
+    """
+
+    def __init__(self, path=None):
+        self._fh = open(path, 'wb') if path else None
+
+    def packed(self, path, is_dir=False):
+        self._write('D' if is_dir else 'P', path)
+
+    def skipped(self, path):
+        self._write('S', path)
+
+    def incomplete(self, code=1):
+        self._write('L', str(code))
+
+    def _write(self, status, value):
+        if self._fh is None:
+            return
+        self._fh.write(status.encode('ascii') + b':' +
+                       value.encode('utf-8', 'surrogateescape') + b'\0')
+
+    def close(self):
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
+
+def cmd_create(root, manifest=None):
     root = os.path.abspath(root)
     if not os.path.isdir(root):
         sys.exit(i18n.tag('error') + ' '
@@ -452,7 +490,9 @@ def cmd_create(root):
     def walk_error(e):
         warn(i18n.t('paxck.warn.walk_failed',
                     name=getattr(e, 'filename', '?'), err=e.strerror or e))
+        listed.incomplete(1)
 
+    listed = PackedManifest(manifest)
     try:
         # 先归档根目录自身
         st = os.lstat(root)
@@ -461,6 +501,7 @@ def cmd_create(root):
         ti.mode = stat.S_IMODE(st.st_mode)
         ti.mtime = st.st_mtime
         tf.addfile(ti)
+        listed.packed(root, is_dir=True)
 
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False,
                                                     onerror=walk_error):
@@ -476,12 +517,14 @@ def cmd_create(root):
                 st = os.lstat(full)
                 if stat.S_ISLNK(st.st_mode):
                     add_symlink(full, rel, st)
+                    listed.packed(full)
                     continue
                 ti = tarfile.TarInfo(_encode(rel).decode('utf-8', 'surrogateescape'))
                 ti.type = tarfile.DIRTYPE
                 ti.mode = stat.S_IMODE(st.st_mode)
                 ti.mtime = st.st_mtime
                 tf.addfile(ti)
+                listed.packed(full, is_dir=True)
 
             for f in filenames:
                 full = os.path.join(dirpath, f)
@@ -497,10 +540,12 @@ def cmd_create(root):
 
                 if stat.S_ISLNK(st.st_mode):
                     add_symlink(full, rel, st)
+                    listed.packed(full)
                     continue
 
                 if not stat.S_ISREG(st.st_mode):
                     # 设备/FIFO/socket 等不写入归档；保持流式归档可继续。
+                    listed.skipped(full)
                     continue
 
                 # 硬链接：同一 inode 第二次出现时记为 LNKTYPE
@@ -510,6 +555,7 @@ def cmd_create(root):
                     ti.linkname = seen_ino[key]
                     ti.size = 0
                     tf.addfile(ti)
+                    listed.packed(full)
                     continue
 
                 def counted_warn(message):
@@ -525,7 +571,9 @@ def cmd_create(root):
                 if rc:
                     return rc
                 if not written:
+                    listed.skipped(full)
                     continue
+                listed.packed(full)
 
                 # 只有完整写入成功后，才允许后续硬链接指向它
                 if st.st_nlink > 1:
@@ -533,6 +581,7 @@ def cmd_create(root):
 
     finally:
         tf.close()
+        listed.close()
     return 0
 
 
@@ -1096,6 +1145,8 @@ def main(argv=None):
     c = sub.add_parser('create', help=i18n.t('paxck.cli.create_help'),
                        parents=[common])
     c.add_argument('directory')
+    c.add_argument('--packed-manifest', metavar='PATH',
+                   help=i18n.t('prune.cli.manifest_help'))
 
     z = sub.add_parser('compress', help=i18n.t('paxck.cli.compress_help'),
                        parents=[common])
@@ -1120,7 +1171,7 @@ def main(argv=None):
 
     args = ap.parse_args(argv)
     if args.cmd == 'create':
-        return cmd_create(args.directory)
+        return cmd_create(args.directory, args.packed_manifest)
     if args.cmd == 'compress':
         return cmd_compress(args.kind)
     if args.cmd == 'verify':

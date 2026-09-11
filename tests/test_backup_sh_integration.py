@@ -364,6 +364,34 @@ class TestBackupScriptFailurePaths(HarnessMixin, unittest.TestCase):
         # With device auto-selection, an unavailable adb fails at enumeration.
         self.assertIn('无法枚举 ADB 设备', text)
 
+    def test_prune_source_keeps_unreadable_entries(self):
+        """--prune-source 只删已打包条目：无权限的条目与其目录必须保留。"""
+        if os.name == 'nt' or getattr(os, 'geteuid', lambda: -1)() == 0:
+            self.skipTest('root 无视文件权限位')
+        locked = os.path.join(self.source, 'locked.pdf')
+        with open(locked, 'wb') as fh:
+            fh.write(b'secret')
+        os.chmod(locked, 0)
+        try:
+            r = self.run_script(_args=('--prune-source',))
+        finally:
+            os.chmod(locked, 0o644)
+        text = r.stdout.decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 0, text)
+        self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
+        self.assertTrue(os.path.isfile(locked), '未打包的条目不能被删除')
+        self.assertTrue(os.path.isdir(self.source), '源根目录必须保留')
+        self.assertFalse(os.path.isfile(os.path.join(self.source, 'readme.txt')))
+        self.assertIn('已删除', text)
+
+    def test_prune_dry_run_deletes_nothing(self):
+        r = self.run_script(_args=('--prune-source', '--prune-dry-run'))
+        text = r.stdout.decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 0, text)
+        self.assertIn('演练', text)
+        self.assertTrue(os.path.isfile(os.path.join(self.source, 'readme.txt')))
+        self.assertTrue(os.path.isfile(self.out))
+
     def test_truncated_content_is_skipped_and_archive_is_still_published(self):
         """内容读不完整只 WARN 跳过；仍有可归档条目就照常发布（退出码 0）。"""
         size_hint = 120
