@@ -50,6 +50,13 @@
 TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互终端询问一次是否自动
 追加该后缀（回车 = 追加，输入 `n`/`no` 则按原名写入）。
 
+**相对路径基准**：所有相对路径都相对 **启动进程的工作目录**（你调用包装脚本或 `backup.py`
+时所在的目录），不是配置文件所在目录，也不是 `src/` 脚本目录：`out`、`device_python`、
+`device_python_url` 指向的本地 `.tar.zst`、`BACKUP_CONFIG_FILE` 与 `--config` 都是这样；
+`out` 的父目录不存在时会自动创建（`backup.py` 会先 `os.makedirs`）。唯一例外是默认配置
+文件：未指定 `--config`/`BACKUP_CONFIG_FILE` 时，按 `backup.py` 所在目录查找
+`backup-android.yaml`。
+
 **设备选择**：`host` 管无线端点（`IP` 或 `IP:端口`），非空即先执行 `adb connect`；随后优先
 用 `serial` 固定设备，未给出 `serial` 时按 `adb devices` 中与 `host` 匹配（相同，或
 `IP:` 前缀，兼容只填 IP）的在线设备，匹配不到则报错退出（不会静默改用其他设备）。

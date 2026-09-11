@@ -53,7 +53,9 @@ Python `tarfile`，可写入已有目录，不校验 PAX SHA-256，不保证原�
 三个 Python 入口都支持 `--version`。`backup.py` 识别 YAML 键 `adb`、`host`、`serial`、
 `source_dir`、`out`、`compress`、`log_level`、`progress_interval`，并由同名环境变量覆盖（旧键
 `device_id`/`device`/`adb_serial` 视为 `serial` 的别名）；配置选择顺序为
-`--config`、`BACKUP_CONFIG_FILE`、存在的同目录 `backup-android.yaml`。应从
+`--config`、`BACKUP_CONFIG_FILE`、存在的同目录 `backup-android.yaml`（前两者及 YAML 里的
+`out`/`device_python` 等相对路径都以**启动进程的工作目录**为基准；只有这个默认配置文件
+按 `backup.py` 所在目录查找）。应从
 `backup-android.example.yaml` 复制并编辑本地 YAML；实际 YAML 已忽略，不能提交端点或本机路径。
 未列出的 Python 函数、类和常量均为实现细节，不是稳定公开 API。
 

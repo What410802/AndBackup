@@ -143,6 +143,10 @@ directory; pointing it at a directory (existing, or ending in `/` or `\`) writes
 extension differs from the compressor's theoretical suffix
 (`.tar.xz`/`.tar.gz`/`.tar.zst`/`.tar`) is written verbatim in non-interactive
 runs, while an interactive terminal is asked whether to append the suffix.
+Relative paths always resolve against the **working directory you launch from**
+(wherever you run `backup-android.sh`/`.bat` or `backup.py`), not the config
+file's directory and not the script directory; a missing target directory is
+created automatically.
 
 ## Modes and Architecture
 

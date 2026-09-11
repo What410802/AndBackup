@@ -57,7 +57,15 @@ already ends with the theoretical suffix, else treated as a suffix mismatch that
 non-interactive runs (no TTY, or `log_level` `quiet`/`error`) write verbatim,
 while an interactive terminal is asked once whether to append the suffix
 (Enter = append, `n`/`no` = keep the name).
-
+**Relative path base**: every relative path resolves against the **working
+directory of the launched process** (wherever you run the wrapper or
+`backup.py`), not the config file's directory and not the `src/` script
+directory: `out`, `device_python`, a local `.tar.zst` given as
+`device_python_url`, `BACKUP_CONFIG_FILE`, and `--config` all behave that way.
+A missing `out` parent directory is created (`backup.py` calls `os.makedirs`)
+first. The one exception is the default config file: without
+`--config`/`BACKUP_CONFIG_FILE`, `backup-android.yaml` is looked up next to
+`backup.py`.
 **Device selection**: `host` is the wireless endpoint (`IP` or `IP:port`);
 non-empty runs `adb connect` first. Afterwards `serial` pins the device when
 given; otherwise the controller matches `adb devices` against `host` (exact, or

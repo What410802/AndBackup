@@ -49,7 +49,9 @@ copy src\backup-android.example.yaml src\backup-android.yaml
 结尾）时，自动写为该目录下的 `<source_dir 尾部名><压缩后缀>`（例如 `./backups/DCIM.tar.xz`）；
 写具体**文件名**时，若后缀与 `compress` 的理论后缀
 （`.tar.xz`/`.tar.gz`/`.tar.zst`/`.tar`）不一致，交互终端会询问是否自动追加后缀，
-非交互环境按原文件名直接写入。完整键表见 [docs/configuration.md](docs/configuration.md)。
+非交互环境按原文件名直接写入。**相对路径一律相对于运行命令时的工作目录**（即你在哪个目录
+调用 `backup-android.sh`/`.bat` 或 `backup.py`），不是配置文件所在目录、也不是脚本目录；
+目标目录不存在时会自动创建。完整键表见 [docs/configuration.md](docs/configuration.md)。
 
 设备选择：`host` 管无线端点（`IP` 或 `IP:端口`，非空即自动 `adb connect`）；`serial` 是
 ADB 序列号（`adb devices` 第一列，等价 `adb -s SERIAL`；`-t` 传输 ID 仅在序列号重复时才需要）。

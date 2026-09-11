@@ -1,22 +1,27 @@
 # AndBackup 配置示例：复制为 backup-android.yaml 后使用（该副本被 .gitignore 忽略，
 # 不会随仓库包含设备 serial、无线端点或本机输出路径）。
+#
 # 开箱即可试用：只需把 source_dir 改成要备份的设备目录；out 指向一个目录时会自动
-# 以“<source_dir 尾部名>.<压缩后缀>”命名（此处为 ./backups/DCIM.tar.xz），留空则写
-# 当前目录的 backup.tar.xz，直接写文件名亦可（后缀与 compress 不符时交互询问是否补全）。
+# 以“<source_dir 尾部名>.<压缩后缀>”命名（此处为 ./backups/DCIM.tar.xz，若目录不存在会
+# 自动创建），留空则写当前目录的 backup.tar.xz，直接写文件名亦可（后缀与 compress 不符时
+# 交互询问是否补全）。相对路径都相对“运行命令时的工作目录”，不是本文件所在目录。
+#
 # 设备选择：host 管无线端点（IP 或 IP:端口，会自动 adb connect）；serial 是 ADB 的
 # 序列号（`adb devices` 第一列，如 AERF6R4517018096 或 adb-…._adb-tls-connect._tcp）。
 # 两者留空则自动选择：单设备直连，多设备在交互终端列出选择（非交互报错）。
+#
 # 推荐模式 device-python：缺省 download_device_python 即为 true，首跑联网下载与设备
 # ABI 匹配的解释器并缓存到 /data/local/tmp/andbackup-pyenv，之后自动复用；失败只会
 # 明确报错，不会自动退回 host-adb。键值完整说明见 README.md 与 docs/configuration.md
 # （English: docs/configuration.en.md）。
-adb: adb
+
+# adb: adb
 host: ""
 serial: ""
 source_dir: "/storage/emulated/0/DCIM"
 out: "./backups/"
-compress: xz
+compress: zstd
 source_mode: device-python
 log_level: info
-progress_interval: 5
-show_rate: false
+progress_interval: 1
+show_rate: true
