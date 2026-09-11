@@ -25,6 +25,11 @@ The project separates source acquisition from archive handling:
   owner/group, size, time, symlink targets) for pre-backup permission checks.
 - `backup-android.sh` and `backup-android.bat` are deliberately thin POSIX and
   CMD forwarding wrappers.
+- Controller-side helpers (none of which `paxck.py` depends on):
+  `adbdevice.py` (ADB invocation, device selection, the exec-out status-trailer
+  protocol), `device_python.py` (the device-side interpreter environment and
+  remote packing), `sourcetree.py` (`--list-tree`), and `prune.py`
+  (manifest parsing, deletion planning and execution for `--prune-source`).
 
 ```text
 Android files -- adb exec-out --> adb_source.py -- raw PAX --> paxck.py compress

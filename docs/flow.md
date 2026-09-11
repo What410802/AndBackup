@@ -22,6 +22,10 @@ ADB 可以通过 USB 有线链路或 TCP 无线链路承载，两种模式遵循
   检查两个子进程的退出码，写入并校验 `OUT.partial.*` 后再原子替换最终输出。`.bat` 和
   `.sh` 仅转发到它。`source_mode: device-python` 时，它上传 `DEVICE_PYTHON` 二进制与
   `paxck.py`/`i18n.py` 到设备并在设备端运行 `paxck.py create`。
+- 主控的辅助模块（都不被 `paxck.py` 依赖）：`adbdevice.py` 负责 ADB 调用、设备选择与
+  exec-out 状态尾标协议；`device_python.py` 负责设备端 Python 环境与远程打包；
+  `sourcetree.py` 实现 `--list-tree`；`prune.py` 实现 `--prune-source` 的清单解析、
+  删除计划与执行。
 
 因此 `paxck.py` 可以完全脱离 Android 使用；Android 手动组合为
 `adb_source.py ... | paxck.py compress xz`，但生产备份应使用 `backup.py` 以得到完整的失败清理

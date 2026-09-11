@@ -315,8 +315,7 @@ src/
   paxverify.py             归档校验器（CLI：paxck.py verify）
   paxextract.py            安全/直接提取器（CLI：paxck.py extract）
   i18n.py                  中英消息目录与 --lang 语言解析
-  prune.py                 已打包清单的解析、删除计划与执行（--prune-source）
-  adb_source.py            Android ADB 数据源适配器（写裸 PAX tar）
+  prune.py                 已打包清单的解析、删除计划与执行（--prune-source）  adb_source.py            Android ADB 数据源适配器（写裸 PAX tar）
   adbdevice.py             ADB 调用、设备选择与 exec-out 协议原语
   android_python.py        device-python 解释器引导：按需从 python-build-standalone 下载/解压
   device_python.py         device-python 子系统：设备端环境放置/校验/清理与远程打包

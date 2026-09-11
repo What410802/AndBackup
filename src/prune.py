@@ -28,8 +28,9 @@ The manifest is produced by the packing side (``paxck.py create`` locally or
     S:<path>   listed but not packed (skipped / unsupported)
     L:<code>   the source listing was incomplete (e.g. ``find`` exit code)
 """
-import posixpath
+import sys
 
+import adbdevice
 import i18n
 
 PACKED = 'P'
@@ -178,3 +179,84 @@ def rmdir_command(paths, rmdir='rmdir -- '):
     """Build the device shell command removing the listed empty directories."""
     import shlex
     return rmdir + ' '.join(shlex.quote(path) for path in paths)
+
+
+def prune_source(adb, env, manifest_path, source, log_level, dry_run=False):
+    """Delete the source entries that were packed, after a verified publish.
+
+    Only entries the packer reported as packed are considered; a directory is
+    deleted only when its listing was complete and nothing underneath it was
+    skipped, so an unreadable child cannot disappear by accident.
+    """
+    def warn(message):
+        sys.stderr.write(i18n.tag('warn') + ' ' + message + '\n')
+        sys.stderr.flush()
+
+    def info(message):
+        if log_level not in ('quiet', 'error'):
+            print(i18n.tag('info') + ' ' + message)
+
+    try:
+        with open(manifest_path, 'rb') as fh:
+            blob = fh.read()
+    except OSError:
+        blob = b''
+    if not blob:
+        warn(i18n.t('prune.warn.no_manifest'))
+        return
+
+    packed, packed_dirs, skipped, listing_ok = parse_manifest(blob)
+    to_delete, kept = build_plan(packed, packed_dirs, skipped, listing_ok,
+                                 source)
+    if not listing_ok:
+        warn(i18n.t('prune.warn.incomplete_listing'))
+    if not to_delete:
+        info(i18n.t('prune.info.nothing'))
+        return
+    if dry_run:
+        print(i18n.tag('info') + ' ' + describe_plan(to_delete, kept))
+        for path in to_delete:
+            print('  ' + path)
+        print(i18n.tag('info') + ' '
+              + i18n.t('prune.info.dry_run', count=len(to_delete)))
+        return
+    if not confirm(to_delete, kept, log_level):
+        return
+
+    failed = []
+    kept_dirs = []
+    files, directories = split_plan(to_delete, packed_dirs)
+    # Files first (deepest-first order is preserved inside each group), then
+    # the now-empty directories.  Directories use `rmdir`, never `rm -rf`, so a
+    # directory that gained an entry after the listing survives.
+    for batch in chunked(files):
+        result = adbdevice.run_adb(
+            adb, ('exec-out', 'sh', '-c', remove_command(batch)), env)
+        if not result.returncode:
+            continue
+        # Narrow a batch failure down to the individual paths.
+        for path in batch:
+            single = adbdevice.run_adb(
+                adb, ('exec-out', 'sh', '-c', remove_command([path])), env)
+            if single.returncode:
+                detail = single.stderr.decode('utf-8', 'replace').strip()
+                failed.append((path, detail or f'exit {single.returncode}'))
+    for batch in chunked(directories):
+        result = adbdevice.run_adb(
+            adb, ('exec-out', 'sh', '-c', rmdir_command(batch)), env)
+        if not result.returncode:
+            continue
+        for path in batch:
+            single = adbdevice.run_adb(
+                adb, ('exec-out', 'sh', '-c', rmdir_command([path])), env)
+            if single.returncode:
+                detail = single.stderr.decode('utf-8', 'replace').strip()
+                kept_dirs.append((path, detail or f'exit {single.returncode}'))
+    for path, detail in failed:
+        warn(i18n.t('prune.warn.delete_failed', path=path, err=detail))
+    for path, detail in kept_dirs:
+        if log_level in ('debug', 'trace'):
+            warn(i18n.t('prune.warn.kept_dir', path=path))
+    info(i18n.t('prune.info.deleted',
+                count=len(to_delete) - len(failed) - len(kept_dirs),
+                dirs=len(directories) - len(kept_dirs), kept=kept))

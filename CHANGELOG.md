@@ -31,6 +31,17 @@ All notable changes to this project are recorded in this file.
 
 ### Changed
 
+- Split the two large scripts into focused modules without changing any
+  behaviour or CLI. `paxck.py` (was 1186 lines) now holds only the writer,
+  the compressor and the CLI; verification and extraction moved to
+  `paxverify.py` and `paxextract.py` and are imported lazily, so the module
+  uploaded to the device stays just `paxck.py` + `i18n.py` and depends on
+  neither. `backup.py` (was 1331 lines) now owns configuration, the `host-adb`
+  pipeline, `OUT` planning, publishing and the CLI; the ADB primitives moved to
+  `adbdevice.py`, the `device-python` subsystem to `device_python.py`, the
+  listing tree to `sourcetree.py` and the prune execution to `prune.py`. The
+  "PAX packing with embedded SHA-256" and "Android/local backup" features stay
+  independent: the packing side imports none of the controller modules.
 - Status tags are now language-neutral (`[ERROR]`, `[WARN]`, `[DONE]`,
   `[INFO]`, `[PROGRESS]`, `[DEBUG]`, `[CACHE]`, `[CLEAN]`, `[DOWNLOAD]` and the
   existing `[FAIL]`) instead of the localized `[错误]`/`[完成]`/`[进度]`/`[缓存]`/
