@@ -329,7 +329,8 @@ class TestBackupScriptFailurePaths(HarnessMixin, unittest.TestCase):
         r = self.run_script(FAKE_ADB_FAIL='1')
         self.assertEqual(r.returncode, 1)
         text = r.stdout.decode('utf-8', 'replace')
-        self.assertIn('adb 不可用', text)
+        # With device auto-selection, an unavailable adb fails at enumeration.
+        self.assertIn('无法枚举 ADB 设备', text)
 
     def test_truncated_adb_read_fails_loudly(self):
         size_hint = 120
