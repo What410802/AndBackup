@@ -5,8 +5,10 @@
 AndBackup has two independent pieces:
 
 - `paxck.py` creates a streaming POSIX PAX tar archive for a local directory,
-  with a SHA-256 PAX header on every regular file. It can also compress, verify,
-  and extract those archives.
+  with a SHA-256 PAX header on every regular file, and exposes one CLI
+  (`create`/`compress`/`verify`/`extract`). Verification and extraction live in
+  `paxverify.py` and `paxextract.py`, which the CLI imports lazily, so the
+  writer itself depends on neither — that is what `device-python` mode uploads.
 - `adb_source.py` makes an ADB-shell-readable Android directory a source for
   the same archive writer. `backup.py` combines that source with compression,
   verification, and atomic replacement of the final host archive.

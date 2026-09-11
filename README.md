@@ -3,7 +3,8 @@
 [English README](README.en.md) | [中文技术说明](docs/flow.md) | [中文测试说明](docs/testing.md) | [配置与命令行参考](docs/configuration.md)
 
 项目由两个可独立使用的组件组成：`paxck.py` 将**本机目录**写成带 PAX 内嵌 SHA-256 的
-裸 `tar`，并可压缩、校验或提取；`adb_source.py` 则把已开启 ADB 调试（USB 有线或
+裸 `tar`（校验与提取在旁边两个模块 `paxverify.py`/`paxextract.py` 里，由 CLI 惰性加载，
+打包本身不依赖它们）；`adb_source.py` 则把已开启 ADB 调试（USB 有线或
 TCP 无线）的 Android 目录作为同一打包器的数据源。归档落盘后还会逐文件校验 SHA-256。
 Android 目录支持两种源模式——`device-python`（推荐，示例配置默认）与 `host-adb`（低依赖
 备选）；任一模式失败都不会自动切换到另一种。模式介绍与架构图见下文“模式说明与架构”。
@@ -310,10 +311,14 @@ UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-o
 
 ```text
 src/
-  paxck.py                 通用本机 PAX 归档、压缩、校验和提取器
+  paxck.py                 通用本机 PAX 打包/压缩（含 PAX 内嵌 SHA-256）+ 统一 CLI
+  paxverify.py             归档校验器（CLI：paxck.py verify）
+  paxextract.py            安全/直接提取器（CLI：paxck.py extract）
+  i18n.py                  中英消息目录与 --lang 语言解析
+  prune.py                 已打包清单的解析与删除计划（--prune-source）
   adb_source.py            Android ADB 数据源适配器（写裸 PAX tar）
   android_python.py        device-python 解释器引导：按需从 python-build-standalone 下载/解压
-  backup.py                 跨平台 Android 主控（配置、组合、原子输出与校验）
+  backup.py                跨平台 Android 主控（配置、组合、原子输出与校验）
   backup-android.sh        POSIX 启动包装（转发至 backup.py）
   backup-android.bat       Windows CMD 启动包装（转发至 backup.py）
   backup-android.example.yaml  无现场信息的配置模板
@@ -327,6 +332,11 @@ docs/
   release-0.1.0.md         首版发布说明（历史）
 tests/                     单元、离线集成和真机集成测试
 ```
+
+`paxck.py`（打包）与 `paxverify.py`/`paxextract.py`（校验/提取）互不依赖导入：打包器只被
+`adb_source.py`、`backup.py` 与设备端使用，校验/提取模块只被 CLI 惰性导入，因此
+`device-python` 模式上传到设备的文件只有 `paxck.py` + `i18n.py`。本机备份（`paxck.py`
++ `paxverify.py` + `paxextract.py`）完全不需要 ADB 或 Android 主控，两条主功能线保持独立。
 
 ## 限制与安全边界
 

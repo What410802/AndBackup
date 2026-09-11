@@ -6,8 +6,11 @@
 
 The project separates source acquisition from archive handling:
 
-- `paxck.py` is the generic host-side PAX writer, compressor, verifier, and
-  extractor. It has no ADB dependency.
+- `paxck.py` is the generic host-side PAX writer, compressor, and CLI. Its
+  verification and extraction halves live in `paxverify.py` and `paxextract.py`
+  and are imported lazily by the CLI, so the writer (the only part uploaded to
+  the device for `device-python` mode, together with `i18n.py`) depends on
+  neither of them.
 - `adb_source.py` adapts an Android directory to that writer. It lists paths,
   reads metadata, reads symlink targets, and streams regular-file bytes through
   `adb exec-out`. This is the `host-adb` data source.

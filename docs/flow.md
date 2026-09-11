@@ -13,14 +13,15 @@ ADB 可以通过 USB 有线链路或 TCP 无线链路承载，两种模式遵循
 归档写入与 Android 读取是两个独立层次：
 
 - `paxck.py create <本机目录>` 是通用本机目录打包器；`compress`、`verify` 和 `extract` 可处理
-  它产生的裸 PAX tar。
+  它产生的裸 PAX tar。校验与提取的实现分别在 `paxverify.py`、`paxextract.py`，由 `paxck.py`
+  的 CLI 惰性导入，因此打包器本身不依赖它们（设备端只需 `paxck.py` + `i18n.py`）。
 - `adb_source.py --adb <ADB> <Android目录>` 只负责以 `adb exec-out` 枚举/读取设备目录，并把
   条目交给 `paxck.py` 的通用 PAX writer。它的 stdout 是裸 tar，不负责压缩或最终落盘。
   这是 `host-adb` 模式的数据源。
 - `backup.py` 是 Android 组合入口：读取 `source_mode` 选择数据源，启动数据源与压缩器、
   检查两个子进程的退出码，写入并校验 `OUT.partial.*` 后再原子替换最终输出。`.bat` 和
   `.sh` 仅转发到它。`source_mode: device-python` 时，它上传 `DEVICE_PYTHON` 二进制与
-  `paxck.py` 到设备并在设备端运行 `paxck.py create`。
+  `paxck.py`/`i18n.py` 到设备并在设备端运行 `paxck.py create`。
 
 因此 `paxck.py` 可以完全脱离 Android 使用；Android 手动组合为
 `adb_source.py ... | paxck.py compress xz`，但生产备份应使用 `backup.py` 以得到完整的失败清理
