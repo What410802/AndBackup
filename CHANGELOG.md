@@ -28,9 +28,36 @@ All notable changes to this project are recorded in this file.
   source directory (type, mode, numeric owner/group UID/GID, size, mtime,
   symlink target) without writing an archive, so permissions can be checked
   before a backup. Requires one `adb` call per entry; large trees are slow.
+- `backup.py -f`/`--force` (and the `force`/`FORCE` config key): overwrite an
+  existing target without asking. Without it, an existing target file is never
+  replaced silently — an interactive terminal asks "Overwrite it? [y/N]" (the
+  default is no, and a "no" answer offers another path), a non-interactive run
+  fails with a hint to add `--force`. Only the question is skipped: targets that
+  cannot be written (directory, special file, unwritable parent, read-only or
+  held open on Windows) still fail before any transfer.
+
+### Fixed
+
+- An unusable output target no longer wastes a whole transfer. `backup.py` now
+  creates the `OUT.partial.*` placeholder, and hence validates the destination,
+  *before* any ADB command: a target that already exists and is a directory, is
+  not a regular file (pipe/device), lies under a path component that is an
+  existing file, sits in an unwritable directory or (on Windows) is read-only
+  or held open by another program now fails immediately with a clear message.
+  An interactive terminal prints the reason and asks for a new `out` path
+  instead of losing the run; non-interactive runs (or `log_level` `quiet`/
+  `error`) fail as before.
+- If publishing fails after the archive has already been verified, the verified
+  archive is kept next to the target as `<name>.partial.*` and its path is
+  printed, so a completed transfer plus verification is never thrown away.
 
 ### Changed
 
+- `backup.py` no longer overwrites an existing target on its own. Scripts that
+  intentionally reuse one output path (for example a nightly job writing
+  `out: ./backups/DCIM.tar.xz`) must now pass `-f`/`--force` or set
+  `force: true`; interactive runs are asked once instead. This trade keeps an
+  unattended typo or a re-run from destroying the previous verified archive.
 - Split the two large scripts into focused modules without changing any
   behaviour or CLI. `paxck.py` (was 1186 lines) now holds only the writer,
   the compressor and the CLI; verification and extraction moved to

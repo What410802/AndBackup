@@ -13,7 +13,7 @@ command-line and cache-cleanup reference.
 4. operational environment variables override the YAML values
    (`ADB`, `HOST`, `SERIAL`, `ANDROID_SERIAL`, `SOURCE_DIR`, `OUT`, `COMPRESS`, `SOURCE_MODE`, `DEVICE_PYTHON`,
    `DOWNLOAD_DEVICE_PYTHON`, `DEVICE_PYTHON_URL`, `KEEP_ANDROID_ENV`,
-   `LOG_LEVEL`, `PROGRESS_INTERVAL`, `SHOW_RATE`)
+   `LOG_LEVEL`, `PROGRESS_INTERVAL`, `SHOW_RATE`, `FORCE`)
 5. built-in defaults
 
 An explicitly missing `--config` is an error. Setting `BACKUP_CONFIG_FILE` empty
@@ -46,6 +46,7 @@ is a tiny top-level `key: value` subset (single/double-quoted strings,
 | `log_level` | `info` | `quiet`, `error`, `warn`, `info`, `debug`, `trace` |
 | `progress_interval` | `5` | minimum progress interval in seconds |
 | `show_rate` | `false` | include payload rate in periodic progress |
+| `force` | `false` | overwrite an existing target without asking (alias `overwrite`; same as `-f`/`--force`) |
 
 **OUT semantics**: empty → `backup.tar.<suffix>` in the current directory
 (suffix `.tar.xz`/`.tar.gz`/`.tar.zst`/`.tar` per `compress`). Pointing `out` at
@@ -57,6 +58,26 @@ already ends with the theoretical suffix, else treated as a suffix mismatch that
 non-interactive runs (no TTY, or `log_level` `quiet`/`error`) write verbatim,
 while an interactive terminal is asked once whether to append the suffix
 (Enter = append, `n`/`no` = keep the name).
+**Output target pre-flight**: before any ADB/device work, a placeholder file
+(`<name>.partial.<random>`, in the target's own directory) proves the parent
+chain can be created and written and screens the target itself. These therefore
+fail **immediately** instead of costing a whole transfer: the target already
+exists and is a directory; the target is not a regular file (pipe/device);
+some path component is an existing file; the parent directory is not writable;
+and on Windows the target is read-only or held open by another program. An
+interactive terminal is asked for a new `out` (Enter gives up and fails), while
+non-interactive runs and `log_level` `quiet`/`error` just error out. If the
+transfer and verification both succeed but the final rename fails (a race), the
+verified archive is **kept** as that `.partial.*` file and its path is printed,
+so it can be renamed or moved manually instead of being lost.
+**Existing target file**: an existing target (the name including its suffix) is
+never replaced silently. An interactive terminal asks "Overwrite it? [y/N]"
+(the default is no; answering `n` or Enter offers another path), while a
+non-interactive run (no console, or `log_level` `quiet`/`error`) fails with a
+hint to add `--force`, so an unattended run cannot clobber the previous backup.
+`-f`/`--force` on the command line (or `force: true` in the config) skips the
+question and overwrites; it only decides *whether to ask*, it does not bypass
+the cases above where the bytes really cannot be written.
 **Relative path base**: every relative path resolves against the **working
 directory of the launched process** (wherever you run the wrapper or
 `backup.py`), not the config file's directory and not the `src/` script
@@ -102,7 +123,7 @@ All three Python entry points support `--version`.
 | Verifier | `paxck.py verify [ARCHIVE]` or `-i ARCHIVE`, optional `-q` | auto-detect tar/xz/gzip/zstd; verify each PAX SHA-256 |
 | Extractor | `paxck.py extract [ARCHIVE] -C DEST` | default verified/staged/atomic; `--direct-tarfile` for trusted archives |
 | Android source | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | `host-adb`: raw PAX tar to stdout |
-| Android controller | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [--clean-env] [--clean-host-cache] [--list-tree] [--tree-out PATH] [--prune-source] [--prune-dry-run]` | run + verify + atomic replace; `--clean-*` clean caches and exit; `--list-tree` only lists the detailed tree of the source directory (mode, numeric owner/group UID/GID, size, time, symlink targets) to stdout, or to `--tree-out PATH`. One adb round trip per entry, so large trees are slow; it is a diagnostic and writes no archive; `--prune-source` deletes the packed source entries after the archive is published (see below) |
+| Android controller | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [-f|--force] [--clean-env] [--clean-host-cache] [--list-tree] [--tree-out PATH] [--prune-source] [--prune-dry-run]` | run + verify + atomic replace; `--clean-*` clean caches and exit; `--list-tree` only lists the detailed tree of the source directory (mode, numeric owner/group UID/GID, size, time, symlink targets) to stdout, or to `--tree-out PATH`. One adb round trip per entry, so large trees are slow; it is a diagnostic and writes no archive; `--prune-source` deletes the packed source entries after the archive is published (see below) |
 | Wrappers | `backup-android.sh [ARGS…]` / `backup-android.bat [ARGS…]` | forward all args to `backup.py` |
 
 ### Deleting the packed source entries (`--prune-source`)

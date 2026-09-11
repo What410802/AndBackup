@@ -281,7 +281,7 @@ class TestBackupBatch(unittest.TestCase):
         original = b'previous verified backup'
         with open(self.out, 'wb') as fh:
             fh.write(original)
-        result = self.run_script(FAKE_ADB_TRUNCATE='3')
+        result = self.run_script(_args=('--force',), FAKE_ADB_TRUNCATE='3')
         text = result.stdout.decode('utf-8', 'replace')
         self.assertEqual(result.returncode, 0, text)
         self.assertIn('[WARN]', text)
@@ -351,7 +351,9 @@ class TestBackupBatch(unittest.TestCase):
         original = b'previous verified backup'
         with open(self.out, 'wb') as fh:
             fh.write(original)
-        result = self.run_script(FAKE_ADB_FAIL='1')
+        # --force so the run really reaches adb instead of stopping at the
+        # existing-target check.
+        result = self.run_script(_args=('--force',), FAKE_ADB_FAIL='1')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(T.read_bytes(self.out), original)
         leftovers = [name for name in os.listdir(self.case)
@@ -362,6 +364,78 @@ class TestBackupBatch(unittest.TestCase):
         result = self.run_script(FAKE_ADB_FAIL='1')
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(os.path.exists(self.out))
+
+    def test_existing_target_is_kept_without_force(self):
+        """非交互环境不得静默覆盖上一次的备份：报错退出并保留原文件。"""
+        original = b'previous verified backup'
+        with open(self.out, 'wb') as fh:
+            fh.write(original)
+        result = self.run_script()
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertNotEqual(result.returncode, 0, text)
+        self.assertIn('--force', text)
+        self.assertEqual(T.read_bytes(self.out), original)
+        self.assertEqual([name for name in os.listdir(self.case)
+                          if '.partial.' in name], [])
+        if os.path.exists(self.log):
+            self.assertNotIn('exec-out', self.log_text())
+
+    def test_force_overwrites_an_existing_target(self):
+        original = b'previous verified backup'
+        with open(self.out, 'wb') as fh:
+            fh.write(original)
+        result = self.run_script(_args=('-f',))
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 0, text)
+        self.assertNotEqual(T.read_bytes(self.out), original)
+        self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
+
+    def test_force_does_not_bypass_an_unusable_target(self):
+        """--force 只表示“别问”，不表示“写不进去也要写”。"""
+        original = b'previous verified backup'
+        with open(self.out, 'wb') as fh:
+            fh.write(original)
+        os.chmod(self.out, 0o444)
+        try:
+            result = self.run_script(_args=('-f',))
+        finally:
+            os.chmod(self.out, 0o666)
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertNotEqual(result.returncode, 0, text)
+        self.assertEqual(T.read_bytes(self.out), original)
+        if os.path.exists(self.log):
+            self.assertNotIn('exec-out', self.log_text())
+
+    def test_read_only_target_fails_before_any_adb_work(self):
+        """只读的已存在目标必须在传输前失败，且不碰设备、不动原文件。"""
+        original = b'previous verified backup'
+        with open(self.out, 'wb') as fh:
+            fh.write(original)
+        os.chmod(self.out, 0o444)
+        try:
+            result = self.run_script()
+        finally:
+            os.chmod(self.out, 0o666)
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertNotEqual(result.returncode, 0, text)
+        self.assertIn('只读', text)
+        self.assertEqual(T.read_bytes(self.out), original)
+        self.assertEqual([name for name in os.listdir(self.case)
+                          if '.partial.' in name], [])
+        # No transfer may have started: no device commands at all.
+        if os.path.exists(self.log):
+            self.assertNotIn('exec-out', self.log_text())
+
+    def test_target_inside_a_file_fails_before_any_adb_work(self):
+        blocker = os.path.join(self.case, 'not-a-dir')
+        with open(blocker, 'w', encoding='ascii') as fh:
+            fh.write('x')
+        result = self.run_script(OUT=os.path.join(blocker, 'out.tar.xz'))
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertNotEqual(result.returncode, 0, text)
+        self.assertFalse(os.path.exists(os.path.join(blocker, 'out.tar.xz')))
+        if os.path.exists(self.log):
+            self.assertNotIn('exec-out', self.log_text())
 
     def test_unknown_compressor_is_rejected(self):
         result = self.run_script(COMPRESS='bad-compressor')
@@ -406,7 +480,10 @@ class TestBackupBatch(unittest.TestCase):
         original = b'previous verified backup'
         with open(self.out, 'wb') as fh:
             fh.write(original)
-        result = self.run_script(SOURCE_MODE='device-python',
+        # --force so the run really reaches the device instead of stopping at
+        # the existing-target check.
+        result = self.run_script(_args=('--force',),
+                                 SOURCE_MODE='device-python',
                                  DEVICE_PYTHON=self.device_python,
                                  FAKE_ADB_DEVICE_PYTHON_FAIL='1',
                                  KEEP_ANDROID_ENV='0')
@@ -534,7 +611,8 @@ class TestDeviceEnvCaching(unittest.TestCase):
             self.assertEqual(r1.returncode, 0, r1.stdout.decode('utf-8', 'replace'))
             self.assertTrue(os.path.isdir(self._env_dir(remote_root)))
             head = len(open(log, encoding='utf-8').read())
-            r2, _ = self._run(case, device_root, remote_root, prefix,
+            # Second run writes the same target again, so it needs --force.
+            r2, _ = self._run(case, device_root, remote_root, prefix, '-f',
                               KEEP_ANDROID_ENV='1')
             self.assertEqual(r2.returncode, 0, r2.stdout.decode('utf-8', 'replace'))
             log2 = self._log_tail(log, head)
@@ -562,7 +640,8 @@ class TestDeviceEnvCaching(unittest.TestCase):
             head = len(open(log, encoding='utf-8').read())
             # Simulate a broken cached env (e.g. interpreter removed).
             shutil.rmtree(self._env_dir(remote_root))
-            r2, _ = self._run(case, device_root, remote_root, prefix,
+            # Second run writes the same target again, so it needs --force.
+            r2, _ = self._run(case, device_root, remote_root, prefix, '-f',
                               KEEP_ANDROID_ENV='1')
             self.assertEqual(r2.returncode, 0, r2.stdout.decode('utf-8', 'replace'))
             self.assertTrue(os.path.isdir(self._env_dir(remote_root)))

@@ -36,10 +36,16 @@ ENV_KEYS = ('ADB', 'HOST', 'SERIAL', 'ANDROID_SERIAL',
             'SOURCE_DIR', 'OUT', 'COMPRESS',
             'SOURCE_MODE', 'DEVICE_PYTHON', 'DOWNLOAD_DEVICE_PYTHON',
             'DEVICE_PYTHON_URL', 'KEEP_ANDROID_ENV',
-            'LOG_LEVEL', 'PROGRESS_INTERVAL', 'SHOW_RATE')
+            'LOG_LEVEL', 'PROGRESS_INTERVAL', 'SHOW_RATE', 'FORCE')
 DEFAULTS = {'ADB': 'adb', 'SOURCE_DIR': '/sdcard/DCIM',
             'SOURCE_MODE': 'host-adb', 'LOG_LEVEL': 'info',
-            'PROGRESS_INTERVAL': '5', 'SHOW_RATE': '0'}
+            'PROGRESS_INTERVAL': '5', 'SHOW_RATE': '0', 'FORCE': '0'}
+
+
+def _enabled(value):
+    """Interpret a config/env boolean (`true`/`yes`/`on`/`1`)."""
+    return str(value or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
 
 # Fixed device-side cache location for the device-python interpreter tree.
 ANDROID_ENV_DIR = device_python.ANDROID_ENV_DIR
@@ -73,6 +79,7 @@ def read_config(path):
         'progress_interval': 'PROGRESS_INTERVAL',
         'progress-interval': 'PROGRESS_INTERVAL',
         'show_rate': 'SHOW_RATE', 'show-rate': 'SHOW_RATE',
+        'force': 'FORCE', 'overwrite': 'FORCE',
     }
     values = {}
     try:
@@ -243,6 +250,139 @@ def _plan_out(out, source, compress):
     return os.path.abspath(out), True
 
 
+def output_problem(output_path):
+    """Return a localized reason when ``output_path`` cannot be published.
+
+    Only cheap checks, run *before* any ADB work: a target that cannot be
+    written must not cost a full transfer.  The parent directory's
+    writability is proven separately by creating the placeholder file.
+    """
+    if os.path.isdir(output_path) and not os.path.islink(output_path):
+        return i18n.t('backup.err.out_is_dir', path=output_path)
+    if os.path.lexists(output_path):
+        if not os.path.isfile(output_path):
+            return i18n.t('backup.err.out_not_regular', path=output_path)
+        if os.name == 'nt':
+            # Windows refuses to replace a read-only file, and a file held open
+            # by another process (antivirus, viewer) blocks the replace too.
+            try:
+                with open(output_path, 'r+b'):
+                    pass
+            except OSError as e:
+                return i18n.t('backup.err.out_locked', path=output_path,
+                              err=e.strerror or e)
+    return None
+
+
+def _open_placeholder(output_path):
+    """Create the ``OUT.partial.*`` placeholder next to the target.
+
+    Creating it proves that the directory exists and is writable, and reserves
+    the name, both before any byte is transferred.
+    """
+    parent = os.path.dirname(output_path) or os.curdir
+    os.makedirs(parent, exist_ok=True)
+    fd, path = tempfile.mkstemp(
+        prefix=os.path.basename(output_path) + '.partial.', dir=parent)
+    os.close(fd)
+    return path
+
+
+def publish_archive(partial, output_path):
+    """Move the verified archive onto the target.
+
+    Returns ``None`` on success, else the localized error text.  The verified
+    archive stays at ``partial`` when publishing fails, so a finished transfer
+    is never thrown away because the destination was unusable.
+    """
+    try:
+        os.replace(partial, output_path)
+    except OSError as e:
+        return i18n.t('backup.err.publish_failed', path=output_path,
+                      partial=partial, err=e.strerror or e)
+    return None
+
+
+def _read_line(text):
+    """Read one line of input, or return ``None`` when nobody can answer.
+
+    Windows reports a NUL/DEVNULL stdin as a TTY, so an EOF here is the only
+    reliable sign that the run is not interactive after all.
+    """
+    try:
+        return input(text)
+    except EOFError:
+        return None
+
+
+def _target_problem(output_path, force):
+    """Return the reason ``output_path`` must not be published, or ``None``.
+
+    Pure (it never prompts) so the caller decides how to ask the user.  An
+    existing target is only a *question*: without ``force`` it needs consent,
+    which is why the reason mentions ``--force``.
+    """
+    problem = output_problem(output_path)
+    if problem is not None or force or not os.path.lexists(output_path):
+        return problem
+    return i18n.t('backup.err.out_exists', path=output_path)
+
+
+def _choose_output_path(output_path, source, compress, log_level, force=False):
+    """Validate the destination, creating the staging placeholder file.
+
+    Returns ``(output_path, partial)``.  A target that cannot be published at
+    all, or an existing target the user (or ``--force``) has not accepted,
+    stops the run here, before any transfer.  An interactive run prints the
+    reason and asks for another path (with permission to retry after an
+    existing file was kept); anything else raises ``RuntimeError``.
+    """
+    interactive = sys.stdin.isatty() and log_level not in ('quiet', 'error')
+    while True:
+        try:
+            partial = _open_placeholder(output_path)
+        except OSError as e:
+            # The placeholder could not be created, so the parent directory is
+            # unusable; an interactive run may still pick a better path.
+            parent = os.path.dirname(output_path) or os.curdir
+            problem = i18n.t('backup.err.out_parent', path=parent,
+                             err=e.strerror or e)
+        else:
+            problem = output_problem(output_path)
+            if problem is None and not force and os.path.lexists(output_path):
+                answer = (_read_line(i18n.t('backup.out.overwrite_prompt',
+                                            path=output_path))
+                          if interactive else None)
+                if answer is not None and answer.strip().lower() in ('y', 'yes'):
+                    return output_path, partial
+                if answer is not None:
+                    # The user chose to keep the file: offer another path.
+                    problem = i18n.t('backup.out.overwrite_declined',
+                                     path=output_path)
+                else:
+                    # Nobody was asked (or nobody answered): this is the
+                    # non-interactive failure, not a decision.
+                    interactive = False
+                    problem = i18n.t('backup.err.out_exists',
+                                     path=output_path)
+            if problem is None:
+                return output_path, partial
+            try:
+                os.unlink(partial)
+            except OSError:
+                pass
+        if not interactive:
+            # The caller reports `problem` through the normal fatal-error
+            # path, so do not print it twice.
+            raise RuntimeError(problem)
+        print(i18n.tag('warn') + ' ' + problem, file=sys.stderr)
+        answer = _read_line(i18n.t('backup.out.retry_prompt'))
+        if answer is None or not answer.strip():
+            raise RuntimeError(problem)
+        output_path, _needs_confirm = _plan_out(answer.strip(), source,
+                                                compress)
+
+
 def run(settings, prune_source=False, prune_dry_run=False):
     adb = settings['ADB']
     source = settings['SOURCE_DIR']
@@ -257,6 +397,7 @@ def run(settings, prune_source=False, prune_dry_run=False):
     log_level = str(settings.get('LOG_LEVEL', 'info')).lower()
     progress_interval = settings.get('PROGRESS_INTERVAL', '5')
     show_rate = str(settings.get('SHOW_RATE', '')).lower() in ('1', 'true', 'yes', 'on')
+    force = _enabled(settings.get('FORCE'))
 
     if compress not in ('xz', 'gzip', 'zstd', 'none'):
         raise RuntimeError(
@@ -303,27 +444,28 @@ def run(settings, prune_source=False, prune_dry_run=False):
 
     env = dict(os.environ)
     i18n.export(env)
-    device = adbdevice.resolve_device(adb, settings, log_level)
-    env['ANDROID_SERIAL'] = device
 
-    manifest_path = None
-    if prune_source:
-        fd, manifest_path = tempfile.mkstemp(prefix='andbackup-packed-')
-        os.close(fd)
+    # Validate the destination (and create the placeholder) before touching the
+    # device: an unusable target must not waste a whole transfer.
+    output_path, partial = _choose_output_path(
+        output_path, source, compress, log_level, force)
 
-    result = adbdevice.run_adb(adb, ('get-state',), env)
-    if result.returncode:
-        raise RuntimeError(adbdevice.display_error(
-            i18n.t('backup.err.adb_unavailable', serial=device), result))
-
-    parent = os.path.dirname(output_path) or os.curdir
-    os.makedirs(parent, exist_ok=True)
-    fd, partial = tempfile.mkstemp(
-        prefix=os.path.basename(output_path) + '.partial.', dir=parent)
-    os.close(fd)
     device_env = None
     published = False
+    manifest_path = None
     try:
+        device = adbdevice.resolve_device(adb, settings, log_level)
+        env['ANDROID_SERIAL'] = device
+
+        if prune_source:
+            fd, manifest_path = tempfile.mkstemp(prefix='andbackup-packed-')
+            os.close(fd)
+
+        result = adbdevice.run_adb(adb, ('get-state',), env)
+        if result.returncode:
+            raise RuntimeError(adbdevice.display_error(
+                i18n.t('backup.err.adb_unavailable', serial=device), result))
+
         if log_level not in ('quiet', 'error'):
             print('[1/3] ' + i18n.t('backup.step.check'))
             print('[2/3] ' + i18n.t('backup.step.stream'))
@@ -348,7 +490,12 @@ def run(settings, prune_source=False, prune_dry_run=False):
         if verify.returncode:
             detail = verify.stderr.decode('utf-8', 'replace').strip()
             raise RuntimeError(i18n.t('backup.err.verify_failed', detail=detail))
-        os.replace(partial, output_path)
+        problem = publish_archive(partial, output_path)
+        if problem:
+            # Publishing failed although the archive verified: keep the file so
+            # the transfer and verification were not wasted.
+            partial = None
+            raise RuntimeError(problem)
         partial = None
         published = True
         if log_level not in ('quiet', 'error'):
@@ -432,6 +579,8 @@ def main(argv=None):
                             help=i18n.t('backup.cli.progress_help'))
         parser.add_argument('--show-rate', action='store_true',
                             help=i18n.t('backup.cli.show_rate_help'))
+        parser.add_argument('-f', '--force', action='store_true',
+                            help=i18n.t('backup.cli.force_help'))
         parser.add_argument('--clean-env', action='store_true',
                             help=i18n.t('backup.cli.clean_env_help'))
         parser.add_argument('--clean-host-cache', action='store_true',
@@ -452,6 +601,8 @@ def main(argv=None):
             settings['PROGRESS_INTERVAL'] = args.progress_interval
         if args.show_rate:
             settings['SHOW_RATE'] = '1'
+        if args.force:
+            settings['FORCE'] = '1'
         if args.list_tree:
             return sourcetree.cmd_tree(settings, args.tree_out)
         if args.clean_env or args.clean_host_cache:

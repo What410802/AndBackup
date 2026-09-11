@@ -17,7 +17,10 @@ The project separates source acquisition from archive handling:
 - `backup.py` is the Android production controller. It merges configuration,
   performs an optional TCP `adb connect`, selects the source mode, runs the
   source and compressor, verifies a unique host-side partial archive, then
-  atomically replaces the requested output. With `source_mode: device-python`
+  atomically replaces the requested output. That partial file doubles as a
+  pre-flight check of the destination: a target that cannot be written, or that
+  already exists and could not be confirmed (`-f`/`--force`, an interactive
+  "yes"), fails before any transfer. With `source_mode: device-python`
   it uploads a user-provided Android Python binary plus the device scripts
   `paxck.py` and `i18n.py`, then runs
   `paxck.py create` on the device. `backup.py --list-tree [--tree-out PATH]`

@@ -11,7 +11,7 @@
 3. 脚本同目录默认 `src/backup-android.yaml`（存在时）
 4. 业务环境变量（`ADB`、`HOST`、`SERIAL`、`ANDROID_SERIAL`、`SOURCE_DIR`、`OUT`、`COMPRESS`、`SOURCE_MODE`、`DEVICE_PYTHON`、
    `DOWNLOAD_DEVICE_PYTHON`、`DEVICE_PYTHON_URL`、`KEEP_ANDROID_ENV`、`LOG_LEVEL`、
-   `PROGRESS_INTERVAL`、`SHOW_RATE`）始终优先于 YAML 内的同名键
+   `PROGRESS_INTERVAL`、`SHOW_RATE`、`FORCE`）始终优先于 YAML 内的同名键
 5. 内置默认值
 
 显式传入但不存在的 `--config` 会报错；把 `BACKUP_CONFIG_FILE` 设为空或不存在路径，则不加载
@@ -39,6 +39,7 @@
 | `device_python_url` | 固定上游 `.tar.zst` | 覆盖下载地址；可为本地 `.tar.zst` 文件路径（离线复用） |
 | `keep_android_env` | 未设置 | `device-python` 保留设备端解释器缓存：`true`/`false`，未设置则交互询问、非交互删除 |
 | `log_level` | `info` | `quiet`、`error`、`warn`、`info`、`debug`、`trace` |
+| `force` | `false` | 目标文件已存在时直接覆写，不再询问（别名 `overwrite`；等同命令行 `-f`/`--force`） |
 | `progress_interval` | `5` | 进度输出最小间隔（秒），最小 `0.1` |
 | `show_rate` | `false` | 在定期进度行显示有效载荷速率 |
 
@@ -49,6 +50,20 @@
 **文件名**处理：名字已以理论后缀结尾则原样使用；否则视为“后缀不符”——非交互（无
 TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互终端询问一次是否自动
 追加该后缀（回车 = 追加，输入 `n`/`no` 则按原名写入）。
+
+**输出目标预检**：在任何 ADB/设备操作之前，先在目标同目录创建占位文件
+（`<目标名>.partial.<随机>`），用它验证“父目录能创建、能写”，并顺带体检目标本身。因此以下
+情况都会**立刻失败**，不会白传一遍：“目标已存在且是目录”“目标不是普通文件（管道/设备文件）”
+“路径里某一段是已存在的文件”“父目录不可写”，以及 Windows 上“目标只读或被其他程序占用”。
+交互终端会提示改输新的 `out`（回车放弃并按失败退出）；非交互或 `log_level` 为
+`quiet`/`error` 时直接报错。万一传输与校验都成功、最后改名到目标却失败（竞态），校验过的
+归档会**保留**在该 `.partial.*` 文件里并打印其路径，可手动改名/移动，不会随失败一起删除。
+
+**已存在的目标文件**：目标文件（含后缀）已存在时不会静默覆盖：交互终端先问
+“覆盖它吗？[y/N]”（默认不覆盖，答 `n` 或回车可改输另一个路径），非交互环境（无控制台，
+或 `log_level` 为 `quiet`/`error`）直接报错退出并提示加 `--force`，以免无人值守时覆盖掉
+上一次的备份。加命令行 `-f`/`--force`（或配置 `force: true`）则跳过询问直接覆写；它只决定
+“是否询问”，并不会绕过上面那些真的写不进去的情况。
 
 **相对路径基准**：所有相对路径都相对 **启动进程的工作目录**（你调用包装脚本或 `backup.py`
 时所在的目录），不是配置文件所在目录，也不是 `src/` 脚本目录：`out`、`device_python`、
@@ -94,7 +109,7 @@ TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互
 | 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别裸 tar/xz/gzip/zstd，逐普通文件校验 PAX SHA-256 |
 | 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | 默认：校验后暂存原子发布，`DEST` 须不存在；`--direct-tarfile` 为可信归档直接模式 |
 | Android 源适配器 | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | `host-adb`：经 `adb exec-out` 写裸 PAX tar 到 stdout |
-| Android 主控 | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [--clean-env] [--clean-host-cache] [--list-tree] [--tree-out PATH] [--prune-source] [--prune-dry-run]` | 读取配置、组合源与压缩器、校验 `.partial` 后原子替换；`--clean-*` 只清理缓存后退出；`--list-tree` 只列出源目录的详细信息树（模式、属主/组（数字 UID/GID）、大小、时间、符号链接目标），默认写 stdout，`--tree-out PATH` 写入文件。每个条目一次 adb 调用，大树较慢；它是诊断命令，不写入归档；`--prune-source` 在归档发布后删除已打包的源条目（见下） |
+| Android 主控 | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [-f|--force] [--clean-env] [--clean-host-cache] [--list-tree] [--tree-out PATH] [--prune-source] [--prune-dry-run]` | 读取配置、组合源与压缩器、校验 `.partial` 后原子替换；`--clean-*` 只清理缓存后退出；`--list-tree` 只列出源目录的详细信息树（模式、属主/组（数字 UID/GID）、大小、时间、符号链接目标），默认写 stdout，`--tree-out PATH` 写入文件。每个条目一次 adb 调用，大树较慢；它是诊断命令，不写入归档；`--prune-source` 在归档发布后删除已打包的源条目（见下） |
 | 平台包装 | `backup-android.sh [ARGS...]`；`backup-android.bat [ARGS...]` | 把所有参数转发给同目录 `backup.py` |
 
 ### 删除已打包的源条目（`--prune-source`）

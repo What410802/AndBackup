@@ -153,8 +153,13 @@ class HarnessMixin:
 
     def run_script(self, **over):
         args = over.pop('_args', ())
+        # stdin is deliberately not a TTY, mirroring the Windows harness: the
+        # launchers must behave deterministically under automation, so any
+        # interactive prompt has to be addressed explicitly in a test.
+        stdin = over.pop('_stdin', subprocess.DEVNULL)
         return subprocess.run([T.BACKUP_SH, *args], env=self.env(**over),
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                              stdin=stdin, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT)
 
     def adb_log_text(self):
         with open(self.log) as fh:
@@ -364,6 +369,30 @@ class TestBackupScriptFailurePaths(HarnessMixin, unittest.TestCase):
         # With device auto-selection, an unavailable adb fails at enumeration.
         self.assertIn('无法枚举 ADB 设备', text)
 
+    def test_existing_target_is_kept_without_force(self):
+        """非交互环境不静默覆盖上次的备份：保留原文件并以失败退出。"""
+        original = b'previous verified backup'
+        with open(self.out, 'wb') as fh:
+            fh.write(original)
+        r = self.run_script()
+        text = r.stdout.decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 1, text)
+        self.assertIn('--force', text)
+        self.assertEqual(T.read_bytes(self.out), original)
+        self.assertEqual([name for name in os.listdir(self.case)
+                          if '.partial.' in name], [])
+        self.assertFalse(os.path.exists(self.log), '不得触碰设备')
+
+    def test_force_overwrites_an_existing_target(self):
+        original = b'previous verified backup'
+        with open(self.out, 'wb') as fh:
+            fh.write(original)
+        r = self.run_script(_args=('-f',))
+        text = r.stdout.decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 0, text)
+        self.assertNotEqual(T.read_bytes(self.out), original)
+        self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
+
     def test_prune_source_keeps_unreadable_entries(self):
         """--prune-source 只删已打包条目：无权限的条目与其目录必须保留。"""
         if os.name == 'nt' or getattr(os, 'geteuid', lambda: -1)() == 0:
@@ -422,6 +451,32 @@ class TestBackupScriptFailurePaths(HarnessMixin, unittest.TestCase):
         r = self.run_script(SOURCE_DIR=solo)
         self.assertEqual(r.returncode, 1)
         self.assertIn('传输失败', r.stdout.decode('utf-8', 'replace'))
+
+    def test_output_below_a_file_fails_before_any_device_work(self):
+        """OUT 路径里某一段是已存在的文件：必须在传输前失败。"""
+        blocker = os.path.join(self.case, 'not-a-dir')
+        with open(blocker, 'w') as fh:
+            fh.write('x')
+        r = self.run_script(OUT=os.path.join(blocker, 'out.tar.xz'))
+        text = r.stdout.decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 1, text)
+        self.assertFalse(os.path.exists(os.path.join(blocker, 'out.tar.xz')))
+        self.assertFalse(os.path.exists(self.log), '不得触碰设备')
+
+    def test_unwritable_output_directory_fails_before_any_device_work(self):
+        if getattr(os, 'geteuid', lambda: -1)() == 0:
+            self.skipTest('root 无视目录写权限')
+        locked = os.path.join(self.case, 'locked-out')
+        os.makedirs(locked)
+        os.chmod(locked, 0o500)
+        try:
+            r = self.run_script(OUT=os.path.join(locked, 'out.tar.xz'))
+        finally:
+            os.chmod(locked, 0o700)
+        text = r.stdout.decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 1, text)
+        self.assertEqual(os.listdir(locked), [])
+        self.assertFalse(os.path.exists(self.log), '不得触碰设备')
 
     def test_missing_local_python_is_reported(self):
         empty_bin = os.path.join(self.case, 'empty-bin')

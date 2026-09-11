@@ -217,7 +217,13 @@ python3 src/paxck.py extract -i local.tar.xz -C local-restored
 
 The Android source adapter can be composed manually, although `backup.py` is
 recommended for actual backups because it checks both pipe processes and
-publishes output atomically:
+publishes output atomically. Before touching the device it also pre-flights the
+output target with the same `OUT.partial.*` placeholder: a target that already
+exists and is a directory, is not a regular file, sits under a path component
+that is a file, lives in an unwritable directory (or, on Windows, is read-only
+or held open) fails **before any transfer**, and an interactive terminal may
+pick another path. If the final rename still fails, the verified archive is
+kept at that `.partial.*` path instead of being discarded.
 
 ```sh
 python3 src/adb_source.py --adb adb /storage/emulated/0/DCIM \
@@ -286,6 +292,14 @@ complete with nothing skipped underneath, using `rmdir` rather than `rm -rf`
 (with an incomplete listing only files and symlinks are deleted).
 `--prune-dry-run` only prints the plan; an interactive terminal confirms once;
 a failed backup or verification deletes nothing.
+
+An existing target file (the name including its suffix) is never replaced
+silently: an interactive terminal asks "Overwrite it? [y/N]" (the default is no;
+answering `n` or Enter offers another path), and a non-interactive run fails
+with a hint to add `--force`, so an unattended run cannot clobber the previous
+backup. `-f`/`--force` (or `force: true` in the config) skips the question and
+overwrites; it only decides *whether to ask*, it does not bypass targets that
+genuinely cannot be written.
 Archive semantics, security rules, and the exit-code table follow below.
 
 ## Archive Semantics and Security
@@ -340,7 +354,7 @@ untrusted input.
 | Code | Meaning |
 |---|---|
 | `0` | Successful command. |
-| `1` | Invalid argument, invalid/unverifiable archive, unsafe verified extraction input, or ordinary ADB/root-path failure. |
+| `1` | Invalid argument, invalid/unverifiable archive, unsafe verified extraction input, an output target that cannot be written (or that was not confirmed), or ordinary ADB/root-path failure. |
 | `2` | zstd input/output was requested but neither standard-library nor external zstd support is available. |
 | `3` | Irrecoverable source, compression, or extraction destination I/O failure. The output must not be considered a successful backup. |
 

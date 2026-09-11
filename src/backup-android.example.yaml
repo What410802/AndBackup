@@ -6,6 +6,9 @@
 # 自动创建），留空则写当前目录的 backup.tar.xz，直接写文件名亦可（后缀与 compress 不符时
 # 交互询问是否补全）。相对路径都相对“运行命令时的工作目录”，不是本文件所在目录。
 #
+# 目标文件（含后缀）已存在时，交互终端会先问是否覆写（默认不覆写）；非交互环境直接报错
+# 退出，免得无人值守时把上次的备份覆盖掉。force: true 或命令行 -f/--force 表示直接覆写。
+#
 # 设备选择：host 管无线端点（IP 或 IP:端口，会自动 adb connect）；serial 是 ADB 的
 # 序列号（`adb devices` 第一列，如 AERF6R4517018096 或 adb-…._adb-tls-connect._tcp）。
 # 两者留空则自动选择：单设备直连，多设备在交互终端列出选择（非交互报错）。
@@ -28,3 +31,4 @@ source_mode: device-python
 log_level: info
 progress_interval: 1
 show_rate: true
+# force: false   # 目标文件已存在时直接覆写（等同命令行 -f/--force），默认 false

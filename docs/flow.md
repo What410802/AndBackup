@@ -20,8 +20,9 @@ ADB 可以通过 USB 有线链路或 TCP 无线链路承载，两种模式遵循
   这是 `host-adb` 模式的数据源。
 - `backup.py` 是 Android 组合入口：读取 `source_mode` 选择数据源，启动数据源与压缩器、
   检查两个子进程的退出码，写入并校验 `OUT.partial.*` 后再原子替换最终输出。`.bat` 和
-  `.sh` 仅转发到它。`source_mode: device-python` 时，它上传 `DEVICE_PYTHON` 二进制与
-  `paxck.py`/`i18n.py` 到设备并在设备端运行 `paxck.py create`。
+  `.sh` 仅转发到它。开工前它会用该占位文件预检输出目标（目标不可用、或已存在而未加
+  `-f`/`--force` 且无法询问时立即失败，不浪费一次传输）。`source_mode: device-python` 时，
+  它上传 `DEVICE_PYTHON` 二进制与 `paxck.py`/`i18n.py` 到设备并在设备端运行 `paxck.py create`。
 - 主控的辅助模块（都不被 `paxck.py` 依赖）：`adbdevice.py` 负责 ADB 调用、设备选择与
   exec-out 状态尾标协议；`device_python.py` 负责设备端 Python 环境与远程打包；
   `sourcetree.py` 实现 `--list-tree`；`prune.py` 实现 `--prune-source` 的清单解析、
@@ -363,7 +364,7 @@ PAX SHA-256 语义；而上传独立 tar 二进制则通常没有这些保证。
 | 退出码 | 含义 |
 |---|---|
 | `0` | 打包或校验成功 |
-| `1` | 参数、ADB 根路径或校验失败 |
+| `1` | 参数、ADB 根路径或校验失败；也包括输出目标写不进去（目录/特殊文件/只读或占用）或已存在而未获同意覆写（无 `-f`/`--force` 且无法询问） |
 | `2` | 缺少 zstd 支持 |
 | `3` | 打包期间源文件变更、压缩/写入中断等无法恢复的 I/O 失败；结果不能视为备份。条目不可读只会 `[WARN]` 跳过并继续（仅当完全无法枚举时才不生成文件） |
 

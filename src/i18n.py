@@ -276,6 +276,25 @@ MESSAGES = {
         'backup.out.confirm':
             'OUT “{out}” 与 compress={compress} 的理论后缀“{suffix}”不符。'
             '自动追加后缀写为“{path}{suffix}”？[Y/n] ',
+        'backup.err.out_is_dir':
+            '输出路径已存在且是目录，无法写入归档文件：{path}',
+        'backup.err.out_not_regular':
+            '输出路径已存在且不是普通文件（管道/设备/其他特殊文件）：{path}',
+        'backup.err.out_locked':
+            '输出文件无法替换（只读或被其他程序占用）：{path}（{err}）',
+        'backup.err.out_parent':
+            '无法使用输出目录 {path}：{err}',
+        'backup.out.retry_prompt':
+            '输入新的输出路径（直接回车放弃本次备份）：',
+        'backup.out.overwrite_prompt':
+            '输出文件已存在：{path}。覆盖它吗？[y/N] ',
+        'backup.out.overwrite_declined':
+            '已按你的选择保留原有文件：{path}',
+        'backup.err.out_exists':
+            '输出文件已存在，为避免误覆盖已中止：{path}（如需直接覆写请加 --force / -f）',
+        'backup.err.publish_failed':
+            '归档已校验通过，但无法写入目标 {path}：{err}。'
+            '校验过的归档保留在 {partial}，可手动移动或改名后使用。',
         'backup.step.check': '检查 ADB 与源目录...',
         'backup.step.stream': '通过 PAX tar 与压缩器流式传输 Android 源...',
         'backup.step.verify': '校验归档...',
@@ -333,6 +352,8 @@ MESSAGES = {
         'backup.cli.list_tree_help': '列出源目录的详细信息树后退出（不备份）',
         'backup.cli.tree_out_help':
             '配合 --list-tree：把目录树写入文件（默认写 stdout）',
+        'backup.cli.force_help':
+            '目标文件已存在时直接覆写，不再询问（非交互环境本来就会报错退出）',
         # ---- prune.py / packed manifest --------------------------
         'prune.info.planned':
             '将删除 {count} 个已打包条目，保留 {kept} 个未打包/不完整条目',
@@ -648,6 +669,29 @@ MESSAGES = {
             'OUT "{out}" does not match the theoretical suffix "{suffix}" for '
             'compress={compress}. Append the suffix and write '
             '"{path}{suffix}"? [Y/n] ',
+        'backup.err.out_is_dir':
+            'the output path already exists and is a directory, so the archive '
+            'cannot be written there: {path}',
+        'backup.err.out_not_regular':
+            'the output path already exists and is not a regular file '
+            '(pipe/device/other special file): {path}',
+        'backup.err.out_locked':
+            'the output file cannot be replaced (read-only or held open by '
+            'another program): {path} ({err})',
+        'backup.err.out_parent':
+            'the output directory {path} cannot be used: {err}',
+        'backup.out.retry_prompt':
+            'enter a new output path (press Enter to give up this backup): ',
+        'backup.out.overwrite_prompt':
+            'the output file already exists: {path}. Overwrite it? [y/N] ',
+        'backup.out.overwrite_declined':
+            'kept the existing file as you chose: {path}',
+        'backup.err.out_exists':
+            'the output file already exists, so the run stopped instead of '
+            'overwriting it: {path} (use --force / -f to overwrite)',
+        'backup.err.publish_failed':
+            'the archive verified, but {path} could not be written: {err}. The '
+            'verified archive was kept at {partial}; move or rename it manually.',
         'backup.step.check': 'checking ADB and the source directory...',
         'backup.step.stream':
             'streaming the Android source through PAX tar and the compressor...',
@@ -719,6 +763,9 @@ MESSAGES = {
         'backup.cli.list_tree_help': 'list the detailed source tree and exit (no backup)',
         'backup.cli.tree_out_help':
             'with --list-tree: write the tree to a file (default: stdout)',
+        'backup.cli.force_help':
+            'overwrite an existing target without asking (non-interactive runs '
+            'fail instead)',
         # ---- prune.py / packed manifest --------------------------
         'prune.info.planned':
             'will delete {count} packed entries and keep {kept} unpacked or '
