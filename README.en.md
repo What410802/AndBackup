@@ -259,8 +259,9 @@ compression notes live in [docs/configuration.en.md](docs/configuration.en.md).
 Archive metadata fields, time precision, Android permission boundaries, and the
 comparison against uploading an independent tar binary to the device live in
 [docs/flow.en.md](docs/flow.en.md). `backup.py --list-tree [--tree-out PATH]`
-lists just the detailed tree of the source directory (mode, owner/group, size,
-time, symlink targets) and is useful for checking permissions before a backup.
+lists just the detailed tree of the source directory (mode, numeric owner/group
+UID:GID, size, time, symlink targets) to stdout or to a file, writes no archive,
+and costs one adb round trip per entry, so large trees are slow.
 Archive semantics, security rules, and the exit-code table follow below.
 
 ## Archive Semantics and Security

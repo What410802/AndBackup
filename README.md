@@ -288,8 +288,9 @@ Python 3.14+ 用标准库 `compression.zstd`，否则用外部 `zstd`，否则�
 `paxck.py`/`adb_source.py`/`backup.py` 的完整命令行表、退出码与校验/提取语义见
 [docs/configuration.md](docs/configuration.md)；归档元信息字段、时间精度与 Android 权限边界、
 以及与“上传独立 tar 二进制到设备端”的差异对比见 [docs/flow.md](docs/flow.md)。此外
-`backup.py --list-tree [--tree-out PATH]` 可只列出源目录的详细信息树（模式、属主/组、大小、
-时间、符号链接目标），用于备份前检查权限。
+`backup.py --list-tree [--tree-out PATH]` 可只列出源目录的详细信息树（模式、数字属主/组
+UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out` 写入文件，不产生归档；
+每个条目一次 adb 调用，大树较慢。
 
 ## 项目结构
 
