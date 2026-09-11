@@ -66,6 +66,13 @@ TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互
 
 ## 环境变量
 
+**语言**：命令行输出默认按环境自动选择语言，可用 `--lang zh|en|auto`（`paxck.py`、
+`adb_source.py`、`backup.py` 都接受；`paxck.py` 的位置在子命令前后皆可）或
+`ANDROBACKUP_LANG=zh|en` 强制。解析顺序为 `--lang` → `ANDROBACKUP_LANG` →
+`LC_ALL`/`LC_MESSAGES`/`LANGUAGE`/`LANG` → 系统区域设置 → 回退 `en`。主控会把选中的
+语言导出给子进程（即 `backup.py` 调用 `adb_source.py`/`paxck.py` 时语言一致）。
+`--help`/错误提示文本同样随之切换；`argparse` 自身的 `usage:`/`error:` 前缀保持英文。
+
 与 YAML 键同名、语义相同（`DEVICE_PYTHON_URL`↔`device_python_url` 等）。另有两个选择类变量：
 
 | 变量 | 说明 |
@@ -97,16 +104,20 @@ TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互
 
 | 命令 | stdout | stderr |
 |---|---|---|
-| `paxck.py create` | 仅二进制裸 tar（经 `sys.stdout.buffer`） | `[WARN]`、`[错误]` |
-| `paxck.py compress` | 仅二进制压缩流 | `[错误]`（如缺少 zstd 支持） |
+| `paxck.py create` | 仅二进制裸 tar（经 `sys.stdout.buffer`） | `[WARN]`、`[ERROR]` |
+| `paxck.py compress` | 仅二进制压缩流 | `[ERROR]`（如缺少 zstd 支持） |
 | `paxck.py verify` | 空（刻意不留任何文本） | 全部诊断与汇总——“共 N 个条目：…”，即使通过也写 stderr |
-| `paxck.py extract`（默认） | 成功时 `[完成] 已验证并提取到 …` | `[FAIL] …`、`[WARN] …` |
-| `paxck.py extract --direct-tarfile` | 成功时 `[完成] …（未校验 PAX SHA-256，非原子）` | `[FAIL] …` |
-| `adb_source.py` | 仅二进制裸 tar | 进度、`[WARN]`、`[错误]` |
-| `backup.py` | 文本状态（`[1/3]`…`[完成]`、`[缓存]`、`[清理]`） | 源侧进度、设备端诊断/警告、`[错误]` |
+| `paxck.py extract`（默认） | 成功时 `[DONE] 已验证并提取到 …` | `[FAIL] …`、`[WARN] …` |
+| `paxck.py extract --direct-tarfile` | 成功时 `[DONE] …（未校验 PAX SHA-256，非原子）` | `[FAIL] …` |
+| `adb_source.py` | 仅二进制裸 tar | `[PROGRESS]` 进度、`[WARN]`、`[ERROR]` |
+| `backup.py` | 文本状态（`[1/3]`…`[DONE]`、`[CACHE]`、`[CLEAN]`） | 源侧进度、设备端诊断/警告、`[ERROR]` |
 | `backup-android.sh/.bat` | 透传 `backup.py` 的 stdout | 透传 `backup.py` 的 stderr |
 
 约定细则：
+
+- 状态标签（`[ERROR]`/`[WARN]`/`[DONE]`/`[INFO]`/`[PROGRESS]`/`[DEBUG]`/`[FAIL]`/
+  `[CACHE]`/`[CLEAN]`/`[DOWNLOAD]`）**不翻译**，只翻译其后的正文；这样脚本与测试可以
+  在任意语言下匹配同一个标签（历史上中文输出用 `[错误]`/`[完成]`/`[进度]`，现已统一）。
 
 - 结果以退出码为准，不要靠解析 stdout。`paxck.py verify` 校验失败以非零退出；普通文件全部
   缺少 SHA-256 记录的第三方 tar 会被拒绝（并说明原因）。
@@ -129,8 +140,9 @@ TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互
 
 ### Android 端环境缓存（device-python）
 解释器会先放置到设备固定目录 `/data/local/tmp/andbackup-pyenv`（内含 `bin/`、`lib/`、
-`paxck.py`、`stamp`）。每次打包前会做“正确性检查”：目录布局 + `stamp`（解释器标识 +
-本机 `paxck.py` SHA-256）匹配 + 解释器可执行 `--version`。匹配则复用（不上传、不询问）；
+设备端脚本 `paxck.py` + `i18n.py`、`stamp`）。每次打包前会做“正确性检查”：目录布局 +
+`stamp`（解释器标识 + 本机 `paxck.py`/`i18n.py` 的 SHA-256）匹配 + 解释器可执行
+`--version`。匹配则复用（不上传、不询问）；
 不匹配则整体重传，并以 `--version` 自检；若自检失败（通常为损坏/不兼容上传）会自动重走放置流程。
 
 打包完成后：

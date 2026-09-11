@@ -148,6 +148,12 @@ Relative paths always resolve against the **working directory you launch from**
 file's directory and not the script directory; a missing target directory is
 created automatically.
 
+Message language: command-line text follows the environment by default
+(`--lang zh|en|auto` or `ANDROBACKUP_LANG` forces it; the fallback is English,
+and `backup.py` passes the chosen language to the tools it spawns). Help text,
+errors and progress all switch, while the tags `[ERROR]`/`[WARN]`/`[DONE]`/
+`[PROGRESS]` stay language-neutral so scripts can match them.
+
 ## Modes and Architecture
 
 Android directories are read in one of two explicitly selected modes; a failed

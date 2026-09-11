@@ -52,6 +52,8 @@ import subprocess
 import threading
 import tempfile
 
+import i18n
+
 # pax key 名：全大写 vendor 前缀，POSIX 保留给厂商扩展，避免与未来标准冲突
 PAX_KEY = 'PAXCK.checksum.sha256'
 CHUNK = 1 << 20          # 1 MiB，分块哈希
@@ -174,11 +176,11 @@ def _open_zstd(fobj):
         exe = shutil.which('zstd')
         if exe is not None:
             return _ZstdProcessReader(fobj, exe)
-        sys.stderr.write(
-            '错误：输入是 zstd 流，但当前 Python 无标准库 zstd 支持，PATH 里也没有 zstd。\n'
-            '  方案一：在主机安装 zstd\n'
-            '  方案二：升级到 Python 3.14+\n'
-            '  方案三：改用 xz 压缩（本脚本原生支持）\n')
+        sys.stderr.write(i18n.tag('error') + ' '
+                         + i18n.t('paxck.err.zstd_stream_missing') + '\n')
+        for key in ('paxck.hint.install_zstd', 'paxck.hint.upgrade_python',
+                    'paxck.hint.use_xz'):
+            sys.stderr.write('  ' + i18n.t(key) + '\n')
         sys.exit(2)
 
 
@@ -214,10 +216,10 @@ class _ZstdProcessReader:
         stderr = self._proc.stderr.read()
         rc = self._proc.wait()
         if self._pump_error is not None:
-            raise OSError(f'zstd 输入流读取失败：{self._pump_error}')
+            raise OSError(i18n.t('paxck.err.zstd_pump', err=self._pump_error))
         if rc:
             detail = stderr.decode('utf-8', 'replace').strip() or f'exit {rc}'
-            raise OSError(f'zstd 解压失败：{detail}')
+            raise OSError(i18n.t('paxck.err.zstd_decompress', detail=detail))
 
     def close(self):
         if self._proc.stdout is not None and not self._proc.stdout.closed:
@@ -322,31 +324,38 @@ def sha256_stream(fobj):
 def write_regular(tf, ti, expected_size, measure, open_stream, label,
                   strict_before_write, warn):
     """Write one regular-file entry independently of its local/ADB source."""
+    error_tag = i18n.tag('error')
     try:
         digest, actual_size = measure()
     except OSError as e:
         if strict_before_write:
-            sys.stderr.write(f'[错误] 读取 {label} 失败：{e}\n')
+            sys.stderr.write(error_tag + ' '
+                             + i18n.t('paxck.err.read_failed', label=label, err=e)
+                             + '\n')
             return 3, False
-        warn(f'跳过 {label}: {e.strerror or e}')
+        warn(i18n.t('paxck.warn.skip_read', label=label, err=e.strerror or e))
         return 0, False
 
     if actual_size != expected_size:
-        message = (f'{label}: 读取前后大小不一致'
-                   f'（{expected_size} -> {actual_size}），文件正在被修改')
+        message = i18n.t('paxck.warn.size_changed', label=label,
+                         expected=expected_size, actual=actual_size)
         if strict_before_write:
-            sys.stderr.write(f'[错误] {message}，终止打包\n')
+            sys.stderr.write(error_tag + ' '
+                             + i18n.t('paxck.err.abort_pack', message=message)
+                             + '\n')
             return 3, False
-        warn(f'跳过 {message}')
+        warn(i18n.t('paxck.warn.skip_read', label=label, err=message))
         return 0, False
 
     try:
         data, finish = open_stream()
     except OSError as e:
         if strict_before_write:
-            sys.stderr.write(f'[错误] 再次打开 {label} 失败：{e}\n')
+            sys.stderr.write(error_tag + ' '
+                             + i18n.t('paxck.err.reopen_failed', label=label,
+                                      err=e) + '\n')
             return 3, False
-        warn(f'跳过 {label}: {e.strerror or e}')
+        warn(i18n.t('paxck.warn.skip_read', label=label, err=e.strerror or e))
         return 0, False
 
     ti.size = actual_size
@@ -366,18 +375,23 @@ def write_regular(tf, ti, expected_size, measure, open_stream, label,
 
     if write_error is not None:
         sys.stderr.write(
-            f'[错误] 写入 {label} 时数据源失败：{write_error}\n'
-            '       归档流已不可恢复，终止打包\n')
+            error_tag + ' '
+            + i18n.t('paxck.err.write_source_failed', label=label,
+                     err=write_error) + '\n'
+            + '       ' + i18n.t('paxck.err.stream_unrecoverable') + '\n')
         return 3, False
     if wrapper.padded:
         sys.stderr.write(
-            f'[错误] 写入 {label} 时第二遍读少了 {wrapper.padded} 字节；\n'
-            '       源文件在打包期间发生变化，归档校验将失败，终止打包\n')
+            error_tag + ' '
+            + i18n.t('paxck.err.short_read', label=label, count=wrapper.padded)
+            + '\n'
+            + '       ' + i18n.t('paxck.err.source_changed_verify') + '\n')
         return 3, False
     if extra:
         sys.stderr.write(
-            f'[错误] 写入 {label} 时数据源多出 {extra} 字节；\n'
-            '       源文件在打包期间发生变化，终止打包\n')
+            error_tag + ' '
+            + i18n.t('paxck.err.extra_bytes', label=label, count=extra) + '\n'
+            + '       ' + i18n.t('paxck.err.source_changed') + '\n')
         return 3, False
     return 0, True
 
@@ -413,7 +427,8 @@ def _tar_relpath(path, start):
 def cmd_create(root):
     root = os.path.abspath(root)
     if not os.path.isdir(root):
-        sys.exit(f'错误：源目录不存在 -> {root}')
+        sys.exit(i18n.tag('error') + ' '
+                 + i18n.t('paxck.err.source_missing', root=root))
 
     # 硬链接检测：inode -> 首个已成功归档的相对路径
     seen_ino = {}
@@ -423,7 +438,7 @@ def cmd_create(root):
     tf = open_pax_writer(out)
 
     def warn(msg):
-        sys.stderr.write(f'[WARN] {msg}\n')
+        sys.stderr.write(i18n.tag('warn') + ' ' + msg + '\n')
 
     def add_symlink(full, rel, st):
         """符号链接统一走这里：名称含代理转义字节，交给 tarfile 编码。"""
@@ -435,7 +450,8 @@ def cmd_create(root):
         tf.addfile(ti)
 
     def walk_error(e):
-        warn(f'无法遍历 {getattr(e, "filename", "?")}: {e.strerror or e}')
+        warn(i18n.t('paxck.warn.walk_failed',
+                    name=getattr(e, 'filename', '?'), err=e.strerror or e))
 
     try:
         # 先归档根目录自身
@@ -560,7 +576,8 @@ def cmd_compress(kind):
     if kind == 'zstd':
         return _compress_zstd(data, out)
 
-    sys.stderr.write(f'错误：未知压缩类型 {kind}（可选 xz / gzip / zstd / none）\n')
+    sys.stderr.write(i18n.tag('error') + ' '
+                     + i18n.t('paxck.err.unknown_compressor', kind=kind) + '\n')
     return 1
 
 
@@ -585,11 +602,11 @@ def _compress_zstd(data, out):
 
     exe = shutil.which('zstd')
     if exe is None:
-        sys.stderr.write(
-            '错误：本机没有可用的 zstd 支持（无标准库 zstd，PATH 里也没有 zstd）\n'
-            '  方案一：在主机安装 zstd\n'
-            '  方案二：升级到 Python 3.14+\n'
-            '  方案三：改用 xz 压缩（本脚本原生支持）\n')
+        sys.stderr.write(i18n.tag('error') + ' '
+                         + i18n.t('paxck.err.zstd_unsupported') + '\n')
+        for key in ('paxck.hint.install_zstd', 'paxck.hint.upgrade_python',
+                    'paxck.hint.use_xz'):
+            sys.stderr.write('  ' + i18n.t(key) + '\n')
         return 2
 
     proc = subprocess.Popen([exe, '-12', '-c'], stdin=subprocess.PIPE, stdout=out)
@@ -611,13 +628,17 @@ def cmd_verify(quiet=False, infile=None):
     total = ok = bad = skip = nosum = regular = 0
     failures = []
     truncated = False
+    fail_tag = i18n.tag('fail')
 
     try:
         if infile:
             try:
                 src = open(infile, 'rb')
             except OSError as e:
-                sys.stderr.write(f'  [FAIL] 无法读取 {infile}：{e.strerror or e}\n')
+                sys.stderr.write(
+                    '  ' + fail_tag + ' '
+                    + i18n.t('paxck.verify.unreadable', path=infile,
+                             err=e.strerror or e) + '\n')
                 return 1
         else:
             src = _bin_in()
@@ -626,8 +647,10 @@ def cmd_verify(quiet=False, infile=None):
             stream = open_archive_stream(src)
             tf = tarfile.open(fileobj=stream, mode='r|')
         except (lzma.LZMAError, OSError, tarfile.TarError) as e:
-            sys.stderr.write(f'  [FAIL] 无法解析归档：{e}\n')
-            sys.stderr.write('         （若为压缩流，通常是传输不完整/被截断）\n')
+            sys.stderr.write('  ' + fail_tag + ' '
+                             + i18n.t('paxck.verify.unparsable', err=e) + '\n')
+            sys.stderr.write('        ' + i18n.t('paxck.verify.truncated_hint')
+                             + '\n')
             return 1
 
         try:
@@ -648,7 +671,8 @@ def cmd_verify(quiet=False, infile=None):
                 fobj = tf.extractfile(m)
                 if fobj is None:
                     bad += 1
-                    failures.append(f'{m.name}: 无法读取')
+                    failures.append(
+                        i18n.t('paxck.verify.entry_unreadable', name=m.name))
                     continue
 
                 actual, _ = sha256_stream(fobj)
@@ -656,8 +680,9 @@ def cmd_verify(quiet=False, infile=None):
                     ok += 1
                 else:
                     bad += 1
-                    failures.append(
-                        f'{m.name}: SHA-256 不符 (记录 {digest[:16]}…, 实际 {actual[:16]}…)')
+                    failures.append(i18n.t(
+                        'paxck.verify.mismatch', name=m.name,
+                        expected=digest[:16], actual=actual[:16]))
             # tar 结束标志之前不一定已经读完压缩流。必须排空，才能触发 gzip/xz
             # 的尾部校验，并取得外部 zstd 的最终退出码。
             while stream.read(CHUNK):
@@ -667,7 +692,8 @@ def cmd_verify(quiet=False, infile=None):
         except (lzma.LZMAError, tarfile.TarError, EOFError, OSError) as e:
             # 流在中途损坏/截断：已校验的部分仍有效，但整体必须判失败
             truncated = True
-            failures.append(f'流在第 {total} 个条目后中断：{e}')
+            failures.append(
+                i18n.t('paxck.verify.stream_broken', count=total, err=e))
             bad += 1
     finally:
         if tf is not None:
@@ -690,29 +716,35 @@ def cmd_verify(quiet=False, infile=None):
     # 空归档是静默失败的典型：tar 执行失败时流仍合法，但一个条目都没有。
     # 这种情况必须判为失败，否则会把空归档当成有效备份。
     if total == 0:
-        sys.stderr.write('  [FAIL] 归档为空（0 个条目）—— tar 很可能执行失败\n')
+        sys.stderr.write('  ' + fail_tag + ' '
+                         + i18n.t('paxck.verify.empty') + '\n')
         return 1
 
     # 普通文件一条 SHA-256 记录都没有：说明这不是 paxck 生成的归档，
     # 本次校验实际上什么都没验证。若判成功，等于给第三方 tar 发了免检通行证。
     if bad == 0 and ok == 0 and nosum > 0:
         sys.stderr.write(
-            f'  [FAIL] {nosum} 个普通文件全部缺少 {PAX_KEY} 记录，无法做内容校验。\n'
-            '        该归档不是由 paxck create 生成的（或被剥离了 pax 扩展头）。\n')
+            '  ' + fail_tag + ' '
+            + i18n.t('paxck.verify.no_checksum_records', count=nosum,
+                     key=PAX_KEY) + '\n'
+            + '        ' + i18n.t('paxck.verify.no_checksum_origin') + '\n')
         return 1
 
     # 一个普通文件都没有：不算失败（备份空目录是合法的），但要说清楚
     if regular == 0:
-        sys.stderr.write('  注意：归档内没有普通文件，本次没有做内容校验\n')
+        sys.stderr.write('  ' + i18n.t('paxck.verify.no_regular_files') + '\n')
 
     if not quiet:
         for line in failures[:50]:
-            sys.stderr.write(f'  [FAIL] {line}\n')
+            sys.stderr.write('  ' + fail_tag + ' ' + line + '\n')
         if len(failures) > 50:
-            sys.stderr.write(f'  ... 其余 {len(failures) - 50} 条省略\n')
+            sys.stderr.write('  ' + i18n.t('paxck.verify.more_failures',
+                                           count=len(failures) - 50) + '\n')
         if truncated:
-            sys.stderr.write('  提示：归档不完整（传输中断？），请重新传输\n')
-        sys.stderr.write(f'\n共 {total} 个条目：SHA-256 通过 {ok}，失败 {bad}，无记录 {skip}\n')
+            sys.stderr.write('  ' + i18n.t('paxck.verify.incomplete_hint')
+                             + '\n')
+        sys.stderr.write(i18n.t('paxck.verify.summary', total=total, ok=ok,
+                                bad=bad, skip=skip) + '\n')
 
     return 1 if bad else 0
 
@@ -728,16 +760,16 @@ class _ArchiveInputError(OSError):
 def _member_parts(name):
     """Return a safe, portable relative path split into native components."""
     if not isinstance(name, str) or not name:
-        raise _UnsafeArchive('条目路径为空')
+        raise _UnsafeArchive(i18n.t('paxck.extract.empty_path'))
     if '\0' in name:
-        raise _UnsafeArchive(f'条目路径含 NUL：{name!r}')
+        raise _UnsafeArchive(i18n.t('paxck.extract.nul_path', name=name))
     if name.startswith(('/', '\\')) or '\\' in name:
-        raise _UnsafeArchive(f'条目路径不是安全的 POSIX 相对路径：{name!r}')
+        raise _UnsafeArchive(i18n.t('paxck.extract.unsafe_path', name=name))
     parts = name.split('/')
     if any(part in ('', '.', '..') for part in parts):
-        raise _UnsafeArchive(f'条目路径含空、. 或 .. 组件：{name!r}')
+        raise _UnsafeArchive(i18n.t('paxck.extract.dot_path', name=name))
     if os.name == 'nt' and any(':' in part for part in parts):
-        raise _UnsafeArchive(f'条目路径含 Windows 驱动器语法：{name!r}')
+        raise _UnsafeArchive(i18n.t('paxck.extract.drive_path', name=name))
     return parts
 
 
@@ -746,7 +778,7 @@ def _member_path(stage, parts):
     stage_norm = os.path.normcase(os.path.abspath(stage))
     path_norm = os.path.normcase(os.path.abspath(path))
     if os.path.commonpath((stage_norm, path_norm)) != stage_norm:
-        raise _UnsafeArchive('条目路径越过了目标目录')
+        raise _UnsafeArchive(i18n.t('paxck.extract.escape'))
     return path
 
 
@@ -755,33 +787,38 @@ def _require_directory_parents(stage, parts):
     for part in parts[:-1]:
         current = os.path.join(current, part)
         if os.path.islink(current) or not os.path.isdir(current):
-            raise _UnsafeArchive(
-                f'条目父路径不是已创建的真实目录：{"/".join(parts)!r}')
+            raise _UnsafeArchive(i18n.t('paxck.extract.bad_parent',
+                                        path=repr('/'.join(parts))))
 
 
 def _restore_metadata(path, member, follow_symlinks=True):
     """Restore portable mode/mtime fields without requiring elevated rights."""
+    warn_tag = i18n.tag('warn')
     if follow_symlinks:
         try:
             os.chmod(path, member.mode)
         except OSError as e:
-            sys.stderr.write(f'[WARN] 无法恢复 {member.name} 的权限位：{e}\n')
+            sys.stderr.write(warn_tag + ' '
+                             + i18n.t('paxck.warn.chmod_failed', name=member.name,
+                                      err=e) + '\n')
     try:
         os.utime(path, (member.mtime, member.mtime),
                  follow_symlinks=follow_symlinks)
     except (NotImplementedError, OSError) as e:
-        sys.stderr.write(f'[WARN] 无法恢复 {member.name} 的修改时间：{e}\n')
+        sys.stderr.write(warn_tag + ' '
+                         + i18n.t('paxck.warn.utime_failed', name=member.name,
+                                  err=e) + '\n')
 
 
 def _copy_verified_member(tf, member, destination):
     headers = getattr(member, 'pax_headers', None) or {}
     expected = headers.get(PAX_KEY)
     if not expected:
-        raise _UnsafeArchive(
-            f'{member.name}: 普通文件缺少 {PAX_KEY}，拒绝提取未校验内容')
+        raise _UnsafeArchive(i18n.t('paxck.extract.missing_checksum',
+                                    name=member.name, key=PAX_KEY))
     source = tf.extractfile(member)
     if source is None:
-        raise OSError(f'{member.name}: tar 无法提供文件内容')
+        raise OSError(i18n.t('paxck.extract.no_content', name=member.name))
 
     digest = hashlib.sha256()
     size = 0
@@ -794,11 +831,13 @@ def _copy_verified_member(tf, member, destination):
             digest.update(chunk)
             size += len(chunk)
     if size != member.size:
-        raise OSError(f'{member.name}: 读取长度 {size} 不等于 tar 记录的 {member.size}')
+        raise OSError(i18n.t('paxck.extract.length_mismatch', name=member.name,
+                             size=size, expected=member.size))
     actual = digest.hexdigest()
     if actual != expected:
-        raise _UnsafeArchive(
-            f'{member.name}: SHA-256 不符（记录 {expected[:16]}…，实际 {actual[:16]}…）')
+        raise _UnsafeArchive(i18n.t('paxck.extract.mismatch', name=member.name,
+                                    expected=expected[:16],
+                                    actual=actual[:16]))
 
 
 def _drain_archive_stream(stream):
@@ -825,7 +864,8 @@ def _extract_to_stage(infile, stage):
                 src = open(infile, 'rb')
             except OSError as e:
                 raise _ArchiveInputError(
-                    f'无法读取归档 {infile}：{e.strerror or e}') from e
+                    i18n.t('paxck.err.archive_unreadable', path=infile,
+                           err=e.strerror or e)) from e
         else:
             src = _bin_in()
         stream = open_archive_stream(src)
@@ -836,7 +876,8 @@ def _extract_to_stage(infile, stage):
             parts = _member_parts(member.name)
             canonical = '/'.join(parts)
             if canonical in seen:
-                raise _UnsafeArchive(f'归档含重复条目：{member.name!r}')
+                raise _UnsafeArchive(
+                    i18n.t('paxck.extract.duplicate', name=member.name))
             seen.add(canonical)
             _require_directory_parents(stage, parts)
             destination = _member_path(stage, parts)
@@ -858,15 +899,17 @@ def _extract_to_stage(infile, stage):
 
             if member.issym():
                 if '\0' in member.linkname:
-                    raise _UnsafeArchive(f'{member.name}: 符号链接目标含 NUL')
+                    raise _UnsafeArchive(
+                        i18n.t('paxck.extract.link_nul', name=member.name))
                 deferred_symlinks.append((destination, member, parts))
                 continue
 
             raise _UnsafeArchive(
-                f'{member.name}: 不支持的 tar 条目类型 {member.type!r}')
+                i18n.t('paxck.extract.unsupported_type', name=member.name,
+                       type=member.type))
 
         if total == 0:
-            raise _UnsafeArchive('归档为空（0 个条目）')
+            raise _UnsafeArchive(i18n.t('paxck.extract.empty'))
 
         # All regular files and directories exist before links. This prevents a
         # symlink from becoming a parent used by a later extraction operation.
@@ -875,7 +918,8 @@ def _extract_to_stage(infile, stage):
             target = _member_path(stage, target_parts)
             if os.path.islink(target) or not os.path.isfile(target):
                 raise _UnsafeArchive(
-                    f'{member.name}: 硬链接目标不是已提取的普通文件：{member.linkname!r}')
+                    i18n.t('paxck.extract.bad_hardlink', name=member.name,
+                           target=repr(member.linkname)))
             os.link(target, destination)
             _restore_metadata(destination, member)
 
@@ -913,11 +957,15 @@ def cmd_extract(infile, directory):
     """Safely extract a PAXCK archive into a new directory, atomically."""
     destination = os.path.abspath(directory)
     parent = os.path.dirname(destination) or os.curdir
+    fail_tag = i18n.tag('fail')
     if os.path.lexists(destination):
-        sys.stderr.write(f'[FAIL] 目标目录已存在，拒绝覆盖：{destination}\n')
+        sys.stderr.write(fail_tag + ' '
+                         + i18n.t('paxck.extract.exists', path=destination)
+                         + '\n')
         return 1
     if not os.path.isdir(parent):
-        sys.stderr.write(f'[FAIL] 目标目录的父目录不存在：{parent}\n')
+        sys.stderr.write(fail_tag + ' '
+                         + i18n.t('paxck.extract.no_parent', path=parent) + '\n')
         return 1
 
     stage = None
@@ -927,19 +975,24 @@ def cmd_extract(infile, directory):
         _extract_to_stage(infile, stage)
         os.replace(stage, destination)
         stage = None
-        print(f'[完成] 已验证并提取到 {directory}')
+        print(i18n.tag('done') + ' '
+              + i18n.t('paxck.done.extracted', path=directory))
         return 0
     except _UnsafeArchive as e:
-        sys.stderr.write(f'[FAIL] 拒绝提取归档：{e}\n')
+        sys.stderr.write(fail_tag + ' '
+                         + i18n.t('paxck.extract.refused', err=e) + '\n')
         return 1
     except _ArchiveInputError as e:
-        sys.stderr.write(f'[FAIL] {e}\n')
+        sys.stderr.write(fail_tag + ' '
+                         + i18n.t('paxck.extract.input_failed', err=e) + '\n')
         return 1
     except (lzma.LZMAError, tarfile.TarError, EOFError) as e:
-        sys.stderr.write(f'[FAIL] 归档损坏或截断，未提取：{e}\n')
+        sys.stderr.write(fail_tag + ' '
+                         + i18n.t('paxck.extract.damaged', err=e) + '\n')
         return 1
     except OSError as e:
-        sys.stderr.write(f'[FAIL] 提取失败，未发布目标目录：{e}\n')
+        sys.stderr.write(fail_tag + ' '
+                         + i18n.t('paxck.extract.write_failed', err=e) + '\n')
         return 3
     finally:
         if stage is not None:
@@ -955,14 +1008,18 @@ def cmd_extract_direct(infile, directory):
     the backup-recovery path.
     """
     destination = os.path.abspath(directory)
+    fail_tag = i18n.tag('fail')
     if os.path.lexists(destination) and not os.path.isdir(destination):
-        sys.stderr.write(f'[FAIL] tarfile 直接提取的目标不是目录：{destination}\n')
+        sys.stderr.write(fail_tag + ' '
+                         + i18n.t('paxck.direct.not_a_dir', path=destination)
+                         + '\n')
         return 1
 
     try:
         os.makedirs(destination, exist_ok=True)
     except OSError as e:
-        sys.stderr.write(f'[FAIL] 无法创建提取目标目录：{e}\n')
+        sys.stderr.write(fail_tag + ' '
+                         + i18n.t('paxck.direct.mkdir_failed', err=e) + '\n')
         return 3
 
     src = None
@@ -973,7 +1030,10 @@ def cmd_extract_direct(infile, directory):
             try:
                 src = open(infile, 'rb')
             except OSError as e:
-                sys.stderr.write(f'[FAIL] 无法读取归档 {infile}：{e.strerror or e}\n')
+                sys.stderr.write(
+                    fail_tag + ' '
+                    + i18n.t('paxck.err.archive_unreadable', path=infile,
+                             err=e.strerror or e) + '\n')
                 return 1
         else:
             src = _bin_in()
@@ -990,10 +1050,12 @@ def cmd_extract_direct(infile, directory):
                 tf.extractall(destination)
             _drain_archive_stream(stream)
         except (lzma.LZMAError, tarfile.TarError, EOFError) as e:
-            sys.stderr.write(f'[FAIL] tarfile 直接提取失败：归档损坏或截断：{e}\n')
+            sys.stderr.write(fail_tag + ' '
+                             + i18n.t('paxck.direct.damaged', err=e) + '\n')
             return 1
         except OSError as e:
-            sys.stderr.write(f'[FAIL] tarfile 直接提取失败：{e}\n')
+            sys.stderr.write(fail_tag + ' '
+                             + i18n.t('paxck.direct.failed', err=e) + '\n')
             return 3
     finally:
         if tf is not None:
@@ -1012,37 +1074,49 @@ def cmd_extract_direct(infile, directory):
             except Exception:
                 pass
 
-    print(f'[完成] 已由 tarfile 直接提取到 {directory}（未校验 PAX SHA-256，非原子）')
+    print(i18n.tag('done') + ' '
+          + i18n.t('paxck.done.direct_extracted', path=directory))
     return 0
 
 
 def main(argv=None):
     configure_stdio_utf8()
+    i18n.set_language(i18n.resolve(cli=i18n.prescan_lang(argv)))
+    # --lang is accepted before and after the subcommand, so help text is in the
+    # requested language wherever the flag appears.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument('--lang', choices=i18n.LANGUAGES + (i18n.AUTO,),
+                        default=None, help=i18n.lang_help())
     ap = argparse.ArgumentParser(
-        prog='paxck',
-        description='创建/校验带 pax 内嵌 SHA-256 的 tar 归档（流式，仅用标准库）')
+        prog='paxck', description=i18n.t('paxck.cli.description'),
+        parents=[common])
     ap.add_argument('--version', action='version', version=f'%(prog)s {VERSION}')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
-    c = sub.add_parser('create', help='打包本机目录到 stdout')
+    c = sub.add_parser('create', help=i18n.t('paxck.cli.create_help'),
+                       parents=[common])
     c.add_argument('directory')
 
-    z = sub.add_parser('compress', help='把 stdin 压缩后写到 stdout（取代外部 xz/gzip）')
+    z = sub.add_parser('compress', help=i18n.t('paxck.cli.compress_help'),
+                       parents=[common])
     z.add_argument('kind', choices=('xz', 'gzip', 'zstd', 'none'))
 
-    v = sub.add_parser('verify', help='校验归档（自动识别 xz/gzip）')
-    v.add_argument('path', nargs='?', help='归档路径；省略则从 stdin 读')
-    v.add_argument('-i', '--input', dest='infile', help='同位置参数，归档路径')
+    v = sub.add_parser('verify', help=i18n.t('paxck.cli.verify_help'),
+                       parents=[common])
+    v.add_argument('path', nargs='?', help=i18n.t('paxck.cli.path_help'))
+    v.add_argument('-i', '--input', dest='infile',
+                   help=i18n.t('paxck.cli.input_help'))
     v.add_argument('-q', '--quiet', action='store_true')
 
-    x = sub.add_parser('extract', help='提取归档（默认校验 SHA-256 后原子发布）')
-    x.add_argument('path', nargs='?', help='归档路径；省略则从 stdin 读')
-    x.add_argument('-i', '--input', dest='infile', help='同位置参数，归档路径')
+    x = sub.add_parser('extract', help=i18n.t('paxck.cli.extract_help'),
+                       parents=[common])
+    x.add_argument('path', nargs='?', help=i18n.t('paxck.cli.path_help'))
+    x.add_argument('-i', '--input', dest='infile',
+                   help=i18n.t('paxck.cli.input_help'))
     x.add_argument('-C', '--directory', required=True,
-                   help='默认模式的尚不存在目标目录；直接模式可为已有目录')
+                   help=i18n.t('paxck.cli.directory_help'))
     x.add_argument('--direct-tarfile', '--direct', dest='direct',
-                   action='store_true',
-                   help='直接调用 tarfile 写入目标；跳过校验和原子性，只用于可信归档')
+                   action='store_true', help=i18n.t('paxck.cli.direct_help'))
 
     args = ap.parse_args(argv)
     if args.cmd == 'create':

@@ -53,6 +53,10 @@ copy src\backup-android.example.yaml src\backup-android.yaml
 调用 `backup-android.sh`/`.bat` 或 `backup.py`），不是配置文件所在目录、也不是脚本目录；
 目标目录不存在时会自动创建。完整键表见 [docs/configuration.md](docs/configuration.md)。
 
+界面语言：命令行文本默认按环境自动选择（`--lang zh|en|auto` 或 `ANDROBACKUP_LANG` 可强制，
+回退英文；`backup.py` 会把选定语言传给它启动的子进程）。`--help`、错误与进度文本都会切换，
+而 `[ERROR]`/`[WARN]`/`[DONE]`/`[PROGRESS]` 这类标签保持语言无关，便于脚本匹配。
+
 设备选择：`host` 管无线端点（`IP` 或 `IP:端口`，非空即自动 `adb connect`）；`serial` 是
 ADB 序列号（`adb devices` 第一列，等价 `adb -s SERIAL`；`-t` 传输 ID 仅在序列号重复时才需要）。
 两者留空则自动——单设备直接使用，多设备在交互终端列出选择（非交互报错）。
@@ -249,8 +253,9 @@ python3 src/paxck.py verify -i android.tar.xz
 Python 标准库流式写 tar 和 xz/gzip，内存不会随归档总大小增长。
 
 `device-python` 把 `DEVICE_PYTHON` 指向的本机 Android ARM64 Python（单文件解释器，
-或含 `bin/`+`lib/` 的 prefix 目录，后者会被打包为一个 tar 上传并在设备端解压）和
-`src/paxck.py` 上传到设备固定目录 `/data/local/tmp/andbackup-pyenv`，在设备端运行
+或含 `bin/`+`lib/` 的 prefix 目录，后者会被打包为一个 tar 上传并在设备端解压）和设备端
+脚本 `src/paxck.py` + `src/i18n.py` 上传到设备固定目录 `/data/local/tmp/andbackup-pyenv`，
+在设备端运行
 `paxck.py create SOURCE_DIR` 直接生成裸 PAX tar 到 stdout，再由主机的 `paxck.py
 compress` 压缩。它适合大量小文件（`host-adb` 每个文件需要多次 ADB 往返）或希望把目录
 遍历/打包放在设备端完成的场景；代价是需要你自行提供与设备 ABI/linker 兼容的 Python

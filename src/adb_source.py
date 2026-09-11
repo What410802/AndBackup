@@ -12,6 +12,7 @@ import argparse
 import threading
 import time
 
+import i18n
 import paxck
 
 
@@ -36,7 +37,7 @@ def _split_status(raw, command):
     match = _STATUS_RE.search(raw)
     if not match:
         raise _AdbProtocolError(
-            f'adb exec-out {command!r} 未返回有效的远端退出码')
+            i18n.t('adb.err.no_status', command=repr(command)))
     return raw[:match.start()], int(match.group(1))
 
 
@@ -46,7 +47,7 @@ class ProgressReporter:
     def __init__(self, level='info', interval=5.0, total=None, show_rate=False):
         self.level_name = str(level or 'info').lower()
         if self.level_name not in _LOG_LEVELS:
-            raise ValueError('无效日志级别：%s（可选 quiet/error/warn/info/debug/trace）' % level)
+            raise ValueError(i18n.t('adb.err.invalid_loglevel', level=level))
         self.level = _LOG_LEVELS[self.level_name]
         self.interval = max(0.1, float(interval))
         self.total = total
@@ -70,34 +71,42 @@ class ProgressReporter:
         sys.stderr.flush()
 
     def start(self):
-        self.emit('info', f'[进度] 已发现 {self.total} 个条目')
+        self.emit('info', i18n.tag('progress') + ' ' + i18n.t(
+            'adb.progress.discovered', count=self.total))
 
     def begin_listing(self):
-        self.current = '枚举目录'
-        self.emit('info', '[进度] 正在枚举 Android 目录...')
+        self.current = i18n.t('adb.progress.enum_label')
+        self.emit('info', i18n.tag('progress') + ' ' + i18n.t(
+            'adb.progress.enumerating'))
 
     def discovered(self):
         self.done += 1
 
     def listing_status(self):
-        self.emit('info', '[进度] 仍在枚举目录：已发现 %d 个条目，收到 %s 清单数据' % (
-            self.done, self._format_bytes(self.list_bytes)))
+        self.emit('info', i18n.tag('progress') + ' ' + i18n.t(
+            'adb.progress.enum_running', count=self.done,
+            size=self._format_bytes(self.list_bytes)))
 
     def finish_listing(self, total):
         self.total = total
         self.done = 0
         self.current = ''
-        self.emit('info', '[进度] 目录枚举完成：发现 %d 个条目，收到 %s 清单数据' % (
-            total, self._format_bytes(self.list_bytes)))
+        self.emit('info', i18n.tag('progress') + ' ' + i18n.t(
+            'adb.progress.enum_done', count=total,
+            size=self._format_bytes(self.list_bytes)))
 
     def entry(self, name, size=0, skipped=False):
         self.done += 1
-        suffix = '（跳过）' if skipped else ''
-        self.emit('info', f'[进度] 条目 {self.done}/{self.total}，ADB 有效载荷 {self._format_bytes(self.total_bytes)}：{name}{suffix}')
+        suffix = i18n.t('adb.progress.entry_skipped') if skipped else ''
+        self.emit('info', i18n.tag('progress') + ' ' + i18n.t(
+            'adb.progress.entry', done=self.done, total=self.total,
+            size=self._format_bytes(self.total_bytes), name=name,
+            suffix=suffix))
 
     def set_current(self, name):
         self.current = name
-        self.emit('debug', f'[调试] 开始处理：{name}')
+        self.emit('debug', i18n.tag('debug') + ' ' + i18n.t(
+            'adb.debug.entry', name=name))
 
     @property
     def total_bytes(self):
@@ -120,9 +129,14 @@ class ProgressReporter:
             self._last = now
             self._rate_at = now
             self._rate_bytes = self.total_bytes
-            current = f'：{self.current}' if self.current else ''
-            rate_text = f'，速率 {self._format_bytes(rate)}/s' if self.show_rate else ''
-            self.emit('info', f'[进度] 传输中，ADB 有效载荷 {self._format_bytes(self.total_bytes)}{rate_text}{current}')
+            current = (i18n.t('adb.progress.current', name=self.current)
+                       if self.current else '')
+            rate_text = (i18n.t('adb.progress.rate',
+                                rate=self._format_bytes(rate))
+                         if self.show_rate else '')
+            self.emit('info', i18n.tag('progress') + ' ' + i18n.t(
+                'adb.progress.transfer', size=self._format_bytes(self.total_bytes),
+                rate=rate_text, current=current))
 
     @staticmethod
     def _format_bytes(value):
@@ -137,16 +151,19 @@ class ProgressReporter:
         if self._live.live:
             self._live.clear()
             return
-        self.emit('info', '[进度] 完成：%d/%d 个条目，ADB 有效载荷 %s（清单 %s，文件内容 %s）' % (
-            self.done, self.total, self._format_bytes(self.total_bytes),
-            self._format_bytes(self.list_bytes), self._format_bytes(self.file_bytes)))
+        self.emit('info', i18n.tag('progress') + ' ' + i18n.t(
+            'adb.progress.finish', done=self.done, total=self.total,
+            size=self._format_bytes(self.total_bytes),
+            **{'list': self._format_bytes(self.list_bytes)},
+            files=self._format_bytes(self.file_bytes)))
 
 
 def _adb_error(command, result):
     detail = result.stderr.decode('utf-8', 'replace').strip()
     if not detail:
         detail = f'exit {result.returncode}'
-    return OSError(f'adb exec-out {command!r}: {detail}')
+    return OSError(i18n.t('adb.err.exec_out', command=repr(command),
+                          detail=detail))
 
 
 def _adb_exec_status(adb, command):
@@ -156,7 +173,7 @@ def _adb_exec_status(adb, command):
             [adb, 'exec-out', 'sh', '-c', _protocol_command(command)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     except OSError as e:
-        raise OSError(f'无法启动 adb {adb!r}: {e}') from e
+        raise OSError(i18n.t('adb.err.launch', adb=adb, err=e)) from e
     try:
         payload, remote_rc = _split_status(result.stdout, command)
     except OSError:
@@ -171,7 +188,8 @@ def _adb_exec_status(adb, command):
 def _adb_exec(adb, command):
     payload, remote_rc = _adb_exec_status(adb, command)
     if remote_rc:
-        raise OSError(f'adb exec-out {command!r} 远端退出码 {remote_rc}')
+        raise OSError(i18n.t('adb.err.remote_rc', command=repr(command),
+                             rc=remote_rc))
     return payload
 
 
@@ -181,7 +199,7 @@ def _adb_open_command(adb, command, on_bytes=None, allow_remote_failure=False):
             [adb, 'exec-out', 'sh', '-c', _protocol_command(command)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError as e:
-        raise OSError(f'无法启动 adb {adb!r}: {e}') from e
+        raise OSError(i18n.t('adb.err.launch', adb=adb, err=e)) from e
     return proc, _AdbPayloadReader(
         proc.stdout, command, on_bytes, allow_remote_failure)
 
@@ -222,8 +240,9 @@ class _AdbPayloadReader:
                         self._on_bytes(len(payload))
                     return payload
                 if self._remote_rc and not self._allow_remote_failure:
-                    raise OSError(
-                        f'adb exec-out {self._command!r} 远端退出码 {self._remote_rc}')
+                    raise OSError(i18n.t('adb.err.remote_rc',
+                                         command=repr(self._command),
+                                         rc=self._remote_rc))
                 return b''
 
             # The marker is only trusted after EOF; a file can legally contain
@@ -231,8 +250,8 @@ class _AdbPayloadReader:
             if self._eof:
                 match = _STATUS_RE.search(self._pending)
                 if not match:
-                    raise _AdbProtocolError(
-                        f'adb exec-out {self._command!r} 未返回有效的远端退出码')
+                    raise _AdbProtocolError(i18n.t(
+                        'adb.err.no_status', command=repr(self._command)))
                 self._pending = self._pending[:match.start()]
                 self._remote_rc = int(match.group(1))
                 self._status_done = True
@@ -310,14 +329,14 @@ def _list_paths(adb, root, return_status=False, reporter=None):
                     if reporter:
                         reporter.discovered()
         if pending:
-            raise OSError('adb exec-out find 输出没有 NUL 终止，拒绝解析不完整目录清单')
+            raise OSError(i18n.t('adb.err.find_not_nul'))
     finally:
         if timer:
             stop_timer.set()
             timer.join()
         _finish_adb_stream(proc, reader, command)
     if not paths:
-        raise OSError(f'adb exec-out 未列出源目录 {root!r}')
+        raise OSError(i18n.t('adb.err.no_paths', root=repr(root)))
     find_rc = reader._remote_rc
     if reporter:
         reporter.finish_listing(len(paths))
@@ -343,7 +362,8 @@ def _lstat(adb, path):
             'perm': int(mode_octal, 8),
         }
     except (UnicodeDecodeError, ValueError) as e:
-        raise OSError(f'无法解析 Android stat 输出 {raw!r}: {e}') from e
+        raise OSError(i18n.t('adb.err.stat_unparsable', raw=repr(raw),
+                             err=e)) from e
 
 
 def _readlink(adb, path):
@@ -381,13 +401,15 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
     """Stream an Android directory into the generic PAX tar writer."""
     root = root.rstrip('/') or '/'
     if not root.startswith('/') or root == '/':
-        sys.stderr.write(f'[错误] Android 源路径必须是非根绝对目录：{root!r}\n')
+        sys.stderr.write(i18n.tag('error') + ' ' + i18n.t(
+            'adb.err.source_root_absolute', root=repr(root)) + '\n')
         return 1
 
     try:
         root_st = _lstat(adb, root)
         if not stat.S_ISDIR(root_st['mode']):
-            sys.stderr.write(f'[错误] Android 源路径不是目录：{root}\n')
+            sys.stderr.write(i18n.tag('error') + ' ' + i18n.t(
+                'adb.err.source_not_directory', root=root) + '\n')
             return 1
         reporter = ProgressReporter(log_level, progress_interval, show_rate=show_rate)
         listed = _list_paths(adb, root, return_status=True, reporter=reporter)
@@ -398,7 +420,8 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
         if reporter.total is None:
             reporter.finish_listing(len(paths))
     except OSError as e:
-        sys.stderr.write(f'[错误] 无法枚举 Android 源目录：{e}\n')
+        sys.stderr.write(i18n.tag('error') + ' ' + i18n.t(
+            'adb.err.source_list_failed', err=e) + '\n')
         return 1
 
     parent = posixpath.dirname(root)
@@ -413,7 +436,7 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
 
     incomplete = bool(find_rc)
     if find_rc:
-        warn(f'find 枚举源目录时返回退出码 {find_rc}；无法访问的条目将被跳过')
+        warn(i18n.t('adb.warn.find_rc', rc=find_rc))
 
     def entry_warn(message):
         nonlocal incomplete
@@ -427,7 +450,7 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
                 source_stat = _lstat(adb, full)
             except OSError as e:
                 incomplete = True
-                warn(f'跳过 {full}：读取元数据失败：{e}')
+                warn(i18n.t('adb.warn.skip_metadata', path=full, err=e))
                 reporter.entry(full, skipped=True)
                 continue
 
@@ -450,14 +473,14 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
                     tf.addfile(tar_info)
                 except OSError as e:
                     incomplete = True
-                    warn(f'跳过符号链接 {relative}：{e}')
+                    warn(i18n.t('adb.warn.skip_symlink', name=relative, err=e))
                     reporter.entry(relative, skipped=True)
                 else:
                     reporter.entry(relative)
                 continue
 
             if not stat.S_ISREG(mode):
-                warn(f'跳过非普通文件 {relative}')
+                warn(i18n.t('adb.warn.skip_non_regular', name=relative))
                 reporter.entry(relative, skipped=True)
                 continue
 
@@ -473,24 +496,29 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
         tf.close()
     reporter.finish()
     if incomplete:
-        warn('部分条目无法读取，已跳过；归档仍会照常校验并发布')
+        warn(i18n.t('adb.warn.incomplete'))
     return 0
 
 
 def main(argv=None):
     paxck.configure_stdio_utf8()
+    i18n.set_language(i18n.resolve(cli=i18n.prescan_lang(argv)))
     parser = argparse.ArgumentParser(
-        description='经 adb exec-out 把 Android 目录写为 stdout 上的裸 PAX tar')
+        description=i18n.t('adb.cli.description'))
     parser.add_argument(
         '--version', action='version', version=f'%(prog)s {paxck.VERSION}')
-    parser.add_argument('directory', help='设备上的非根绝对目录')
-    parser.add_argument('--adb', default='adb', help='adb 可执行文件路径（默认 adb）')
+    parser.add_argument('--lang', choices=i18n.LANGUAGES + (i18n.AUTO,),
+                        default=None, help=i18n.lang_help())
+    parser.add_argument('directory', help=i18n.t('adb.cli.directory_help'))
+    parser.add_argument('--adb', default='adb',
+                        help=i18n.t('adb.cli.adb_help'))
     parser.add_argument('--log-level', default='info',
-                        choices=tuple(_LOG_LEVELS), help='日志级别')
+                        choices=tuple(_LOG_LEVELS),
+                        help=i18n.t('adb.cli.log_level_help'))
     parser.add_argument('--progress-interval', default='5', metavar='SECONDS',
-                        help='进度输出最小间隔秒数')
+                        help=i18n.t('adb.cli.progress_help'))
     parser.add_argument('--show-rate', action='store_true',
-                        help='在定期进度行显示 ADB 有效载荷速率')
+                        help=i18n.t('adb.cli.show_rate_help'))
     args = parser.parse_args(argv)
     return write_tar(args.directory, args.adb, log_level=args.log_level,
                      progress_interval=args.progress_interval,

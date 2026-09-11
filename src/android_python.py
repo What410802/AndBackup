@@ -28,6 +28,8 @@ import tempfile
 import urllib.error
 import urllib.request
 
+import i18n
+
 # Pinned upstream build: python-build-standalone release 20260901, arm64
 # (aarch64) Linux musl, fully static (includes the whole standard library and
 # statically links extension modules, so only bin/ + lib/ are needed on device).
@@ -97,9 +99,10 @@ def _download(url, dest):
             with open(dest, 'wb') as out:
                 shutil.copyfileobj(response, out)
     except (urllib.error.URLError, urllib.error.HTTPError) as e:
-        raise RuntimeError(f'无法下载 Android Python {url!r}：{e}') from e
+        raise RuntimeError(i18n.t('py.err.download', url=url, err=e)) from e
     except OSError as e:
-        raise RuntimeError(f'无法写入下载文件 {dest}：{e}') from e
+        raise RuntimeError(i18n.t('py.err.write_download', path=dest,
+                                  err=e)) from e
 
 
 _PY_LAYOUT = None  # cached (root, interpreter, minor) of the current archive
@@ -119,7 +122,7 @@ def _decompress_zst_to_tar(zst_path, tar_path):
     """Write the decompressed tar of ``zst_path`` into ``tar_path``."""
     backend = _which_zstd()
     if backend is None:
-        raise RuntimeError('没有可用的 zstd 解压器')
+        raise RuntimeError(i18n.t('py.err.no_zstd'))
     with open(zst_path, 'rb') as fin, open(tar_path, 'wb') as fout:
         if backend == 'stdlib':
             from compression import zstd
@@ -134,8 +137,9 @@ def _decompress_zst_to_tar(zst_path, tar_path):
                                   stderr=subprocess.PIPE)
             if proc.returncode:
                 detail = proc.stderr.decode('utf-8', 'replace').strip()
-                raise RuntimeError('zstd 解压失败' +
-                                   (f'：{detail}' if detail else ''))
+                raise RuntimeError(
+                    i18n.t('py.err.zstd_failed_detail', detail=detail)
+                    if detail else i18n.t('py.err.zstd_failed'))
     return backend
 
 
@@ -188,7 +192,7 @@ def _tarfile_extract_needed(tar_path, stage):
     with tarfile.open(tar_path, 'r') as tf:
         root, interp = _scan_tar_layout(tf)
     if root is None:
-        raise RuntimeError('归档中未找到 bin/python3* 解释器')
+        raise RuntimeError(i18n.t('py.err.interpreter_missing'))
     minor = interp[len('python3'):]          # '.14' ('' for a bare python3)
     prefix_mark = root + '/' if root else ''
     lib_mark = prefix_mark + 'lib/python3' + minor + '/'
@@ -216,7 +220,8 @@ def _tarfile_extract_needed(tar_path, stage):
             os.makedirs(parent, exist_ok=True)
             src = tf.extractfile(member)
             if src is None:
-                raise RuntimeError(f'无法读取归档条目：{member.name}')
+                raise RuntimeError(
+                    i18n.t('py.err.entry_unreadable', name=member.name))
             with open(target, 'wb') as out:
                 shutil.copyfileobj(src, out)
             os.chmod(target, member.mode & 0o777)
@@ -232,12 +237,13 @@ def _bsdtar_extract_needed(zst_path, stage):
     """
     tar = shutil.which('tar')
     if tar is None:
-        raise RuntimeError('没有可用的 zstd 解压器或 tar')
+        raise RuntimeError(i18n.t('py.err.no_zstd_or_bsdtar'))
     listing = subprocess.run([tar, '-tf', zst_path],
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if listing.returncode:
-        raise RuntimeError('tar 无法读取归档：' +
-                           listing.stderr.decode('utf-8', 'replace').strip())
+        raise RuntimeError(i18n.t(
+            'py.err.tar_read_failed',
+            detail=listing.stderr.decode('utf-8', 'replace').strip()))
     root, interp = None, None
     fallback_root = fallback_interp = None
     for line in listing.stdout.decode('utf-8', 'replace').splitlines():
@@ -259,7 +265,7 @@ def _bsdtar_extract_needed(zst_path, stage):
     if interp is None:
         root, interp = fallback_root, fallback_interp
     if root is None or interp is None:
-        raise RuntimeError('归档中未找到 bin/python3* 解释器')
+        raise RuntimeError(i18n.t('py.err.interpreter_missing'))
     minor = interp[len('python3'):]
     root_arg = root + '/' if root else ''
     proc = subprocess.run(
@@ -269,7 +275,9 @@ def _bsdtar_extract_needed(zst_path, stage):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if proc.returncode:
         detail = proc.stderr.decode('utf-8', 'replace').strip()
-        raise RuntimeError('tar 解压 Python 失败' + (f'：{detail}' if detail else ''))
+        raise RuntimeError(
+            i18n.t('py.err.tar_extract_failed_detail', detail=detail)
+            if detail else i18n.t('py.err.tar_extract_failed'))
     return root, interp
 
 
@@ -310,9 +318,7 @@ def _extract_tar_zst(zst_path, prefix):
             method = 'OS tar'
         else:
             if backend is None:
-                raise RuntimeError(
-                    '需要 zstd 支持才能解压 Python：当前 Python 无 '
-                    'compression.zstd，PATH 中没有 zstd，也没有可用的 tar')
+                raise RuntimeError(i18n.t('py.err.no_zstd_or_tar'))
             fd, tmp_tar = tempfile.mkstemp(
                 prefix='andbackup-python-', suffix='.tar', dir=parent)
             os.close(fd)
@@ -320,8 +326,7 @@ def _extract_tar_zst(zst_path, prefix):
             _tarfile_extract_needed(tmp_tar, stage)
         located = _locate_prefix(stage)
         if located is None:
-            raise RuntimeError(
-                '解压结果缺少 bin/python*，不是有效的 Python prefix')
+            raise RuntimeError(i18n.t('py.err.invalid_prefix'))
         os.replace(located, prefix)
         if os.path.isdir(stage):
             shutil.rmtree(stage, ignore_errors=True)
@@ -348,18 +353,19 @@ def _bootstrap(url, prefix, quiet):
     if not filename:
         filename = VARIANT + '.tar.zst'
     zst_path = os.path.join(downloads, filename)
+    tag = i18n.tag('download')
     if not os.path.isfile(zst_path):
         if not quiet:
-            _log(f'[下载] 获取 Android Python：{url}')
+            _log(tag + ' ' + i18n.t('py.log.fetching', url=url))
         _download(url, zst_path)
     else:
         if not quiet:
-            _log(f'[下载] 使用已缓存的归档：{zst_path}')
+            _log(tag + ' ' + i18n.t('py.log.cached_archive', path=zst_path))
     if not quiet:
-        _log(f'[下载] 解压到：{prefix}')
+        _log(tag + ' ' + i18n.t('py.log.unpacking_to', path=prefix))
     method = _extract_tar_zst(zst_path, prefix)
     if not quiet:
-        _log(f'[下载] 完成（{method}）：{prefix}')
+        _log(tag + ' ' + i18n.t('py.log.done', method=method, path=prefix))
 
 
 def resolve(device_python='', allow_download=False, url='', quiet=False):
@@ -380,9 +386,8 @@ def resolve(device_python='', allow_download=False, url='', quiet=False):
             return path
         if not allow_download:
             raise RuntimeError(
-                f'设备 Python 不存在：{path}\n'
-                '  可设置 device_python 指向已有解释器，或设 '
-                'download_device_python: true 自动下载到该路径')
+                i18n.t('py.err.device_python_missing', path=path) + '\n'
+                + i18n.t('py.hint.point_or_download'))
         prefix = path
     else:
         # The persistent cache is used only when the user asked for the
@@ -391,10 +396,9 @@ def resolve(device_python='', allow_download=False, url='', quiet=False):
         # deterministic error instead of depending on the machine cache.
         if not allow_download:
             raise RuntimeError(
-                'SOURCE_MODE=device-python 需要 Android 端 Python：\n'
-                '  · 设置 device_python 指向已有的单文件解释器或 prefix 目录，或\n'
-                '  · 设 download_device_python: true，脚本会自动从 '
-                'python-build-standalone 下载到缓存')
+                i18n.t('py.err.mode_needs_python') + '\n'
+                + i18n.t('py.hint.set_device_python') + '\n'
+                + i18n.t('py.hint.enable_download'))
         prefix = default_prefix_dir()
         if _is_prefix(prefix):
             return prefix
@@ -402,6 +406,5 @@ def resolve(device_python='', allow_download=False, url='', quiet=False):
         return prefix
     _bootstrap(url, prefix, quiet)
     if not _is_prefix(prefix):
-        raise RuntimeError(
-            f'下载/解压后未生成有效 Python prefix：{prefix}')
+        raise RuntimeError(i18n.t('py.err.no_prefix', prefix=prefix))
     return prefix

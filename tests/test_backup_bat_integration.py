@@ -334,6 +334,10 @@ class TestBackupBatch(unittest.TestCase):
                                  KEEP_ANDROID_ENV='0')
         self.assertEqual(result.returncode, 0,
                          result.stdout.decode('utf-8', 'replace'))
+        log = self.log_text()
+        # The device cache carries the packer and its message catalog.
+        self.assertIn('paxck.py', log)
+        self.assertIn('i18n.py', log)
         self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
         members = T.list_members(T.read_bytes(self.out))
         root = posix_basename(self.source)

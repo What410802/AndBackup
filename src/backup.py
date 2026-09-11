@@ -22,6 +22,7 @@ import threading
 import time
 import uuid
 
+import i18n
 import paxck
 import android_python
 
@@ -71,13 +72,14 @@ def read_config(path):
         with open(path, 'r', encoding='utf-8-sig') as fh:
             lines = list(fh)
     except OSError as e:
-        raise OSError(f'无法读取配置文件 {path!r}: {e.strerror or e}') from e
+        raise OSError(i18n.t('backup.err.config_read', path=repr(path),
+                             err=e.strerror or e)) from e
     for number, line in enumerate(lines, 1):
         text = line.strip()
         if not text or text.startswith('#'):
             continue
         if ':' not in text or text.startswith(('-', '{', '[')):
-            raise ValueError(f'配置文件第 {number} 行不是顶层 key: value')
+            raise ValueError(i18n.t('backup.err.config_line', number=number))
         key, raw = text.split(':', 1)
         env_key = aliases.get(key.strip().lower().replace('-', '_'))
         if env_key is None:
@@ -89,13 +91,16 @@ def read_config(path):
             try:
                 raw = ast.literal_eval(raw)
             except (SyntaxError, ValueError) as e:
-                raise ValueError(f'配置文件第 {number} 行字符串无效') from e
+                raise ValueError(i18n.t('backup.err.config_string',
+                                        number=number)) from e
             if not isinstance(raw, str):
-                raise ValueError(f'配置文件第 {number} 行必须是字符串')
+                raise ValueError(i18n.t('backup.err.config_must_be_string',
+                                        number=number))
         else:
             raw = raw.split(' #', 1)[0].strip()
             if raw.startswith(('[', '{')):
-                raise ValueError(f'配置文件第 {number} 行不支持列表/映射值')
+                raise ValueError(i18n.t('backup.err.config_no_lists',
+                                        number=number))
             if raw.lower() in ('true', 'yes', 'on'):
                 raw = '1'
             elif raw.lower() in ('false', 'no', 'off'):
@@ -117,7 +122,8 @@ def _settings(config_path=None):
         except (OSError, ValueError) as e:
             raise RuntimeError(str(e)) from e
     elif explicit_config and config_path:
-        raise RuntimeError(f'指定的配置文件不存在：{config_path!r}')
+        raise RuntimeError(i18n.t('backup.err.config_missing',
+                                  path=repr(config_path)))
     for key in ENV_KEYS:
         if key in os.environ:
             values[key] = os.environ[key]
@@ -138,7 +144,8 @@ def _run_adb(adb, args, env):
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               check=False)
     except OSError as e:
-        raise RuntimeError(f'无法启动 adb {adb!r}: {e}') from e
+        raise RuntimeError(i18n.t('backup.err.adb_launch', adb=repr(adb),
+                                  err=e)) from e
 
 
 def _display_error(prefix, result):
@@ -156,7 +163,8 @@ def _adb_devices(adb):
     """Parse `adb devices` into [(serial, state), ...]."""
     result = _run_adb(adb, ('devices',), _base_adb_env())
     if result.returncode:
-        raise RuntimeError(_display_error('无法枚举 ADB 设备', result))
+        raise RuntimeError(
+            _display_error(i18n.t('backup.err.list_devices'), result))
     devices = []
     for line in result.stdout.decode('utf-8', 'replace').splitlines()[1:]:
         line = line.strip()
@@ -175,23 +183,23 @@ def _choose_device(devices, log_level, hint=None):
     if len(devices) == 1:
         return devices[0]
     if not sys.stdin.isatty() or log_level in ('quiet', 'error'):
-        raise RuntimeError(
-            (hint + '：' if hint else '') +
-            '检测到多台 ADB 设备（' + '、'.join(devices) +
-            '），无法自动选择。请在配置中设置 serial，或在交互终端中选择。')
-    print(hint or '检测到多台 ADB 设备：')
+        message = i18n.t('backup.err.multi_device',
+                         devices='\u3001'.join(devices))
+        raise RuntimeError(i18n.t('backup.err.with_hint', hint=hint,
+                                  message=message) if hint else message)
+    print(hint or i18n.t('backup.info.multi_device'))
     for index, serial in enumerate(devices, 1):
         print(f'  [{index}] {serial}')
     try:
-        answer = input('请输入要备份的设备序号：')
+        answer = input(i18n.t('backup.prompt.device_index'))
     except EOFError:
-        raise RuntimeError('未选择设备，已退出。')
+        raise RuntimeError(i18n.t('backup.err.no_device_chosen'))
     try:
         choice = int(answer.strip())
     except ValueError:
-        raise RuntimeError(f'无效的序号：{answer!r}')
+        raise RuntimeError(i18n.t('backup.err.bad_index', answer=answer))
     if not 1 <= choice <= len(devices):
-        raise RuntimeError(f'序号超出范围：{choice}')
+        raise RuntimeError(i18n.t('backup.err.index_range', choice=choice))
     return devices[choice - 1]
 
 
@@ -224,18 +232,16 @@ def _resolve_device(adb, settings, log_level):
         result = _run_adb(adb, ('connect', host), _base_adb_env())
         if result.returncode:
             raise RuntimeError(_display_error(
-                f'无法连接 ADB 设备 {host}', result))
+                i18n.t('backup.err.connect_failed', host=host), result))
         if serial:
             return serial
         matched = _match_host(_adb_devices(adb), host)
         if len(matched) == 1:
             return matched[0]
         if not matched:
-            raise RuntimeError(
-                f'已连接 {host}，但 adb devices 中未找到对应设备。'
-                '请确认无线调试端口未变化，或在配置中设置 serial。')
+            raise RuntimeError(i18n.t('backup.err.host_no_match', host=host))
         return _choose_device(matched, log_level,
-                              hint=f'已连接 {host}，但匹配到多台设备')
+                              hint=i18n.t('backup.hint.host_multi', host=host))
 
     if serial:
         return serial
@@ -243,9 +249,7 @@ def _resolve_device(adb, settings, log_level):
     online = [serial for serial, state in _adb_devices(adb)
               if state == 'device']
     if not online:
-        raise RuntimeError(
-            'adb 未发现已授权的设备。请确认已开启 USB 调试并在设备上授权，'
-            '或在配置中设置 serial（或 host）。')
+        raise RuntimeError(i18n.t('backup.err.no_devices'))
     return _choose_device(online, log_level)
 
 
@@ -273,11 +277,12 @@ def _adb_exec_shell(adb, env, command):
     result = _run_adb(
         adb, ('exec-out', 'sh', '-c', _adb_shell_command(command)), env)
     if result.returncode:
-        raise RuntimeError(_display_error('adb 命令失败', result))
+        raise RuntimeError(
+            _display_error(i18n.t('backup.err.adb_command_failed'), result))
     match = _ADB_STATUS_RE.search(result.stdout)
     if not match:
         raise RuntimeError(
-            f'adb exec-out {command!r} 未返回有效的远端退出码')
+            i18n.t('backup.err.no_remote_rc', command=repr(command)))
     return result.stdout[:match.start()], int(match.group(1))
 
 
@@ -344,18 +349,18 @@ def cmd_tree(settings, out_path=None):
     adb = settings['ADB']
     source = (settings.get('SOURCE_DIR', '') or '').strip()
     if not source:
-        raise RuntimeError('SOURCE_DIR 不能为空')
+        raise RuntimeError(i18n.t('backup.err.source_dir_empty'))
     env = dict(os.environ)
     serial = _resolve_device(adb, settings, log_level)
     env['ANDROID_SERIAL'] = serial
     result = _run_adb(adb, ('get-state',), env)
     if result.returncode:
         raise RuntimeError(_display_error(
-            f'adb 不可用，请检查调试授权和 ADB 路径（serial {serial}）', result))
+            i18n.t('backup.err.adb_unavailable', serial=serial), result))
 
     paths, find_rc = _list_source_paths(adb, env, source)
     if not paths:
-        raise RuntimeError(f'未列出任何条目：{source}')
+        raise RuntimeError(i18n.t('backup.err.no_entries', source=source))
     root = source.rstrip('/')
     body = []
     unreadable = 0
@@ -368,7 +373,8 @@ def cmd_tree(settings, out_path=None):
         info = _stat_entry(adb, env, path)
         if info is None:
             unreadable += 1
-            body.append(f'{indent}[?] ??? {name}（无法 stat，可能权限不足）')
+            body.append(f'{indent}'
+                        + i18n.t('backup.tree.unreadable_entry', name=name))
             continue
         if info['uid'] is None:
             owner_hidden = True
@@ -394,12 +400,11 @@ def cmd_tree(settings, out_path=None):
     lines = [f'# source: {source}', f'# serial: {serial}',
              f'# entries: {len(paths)}']
     if find_rc:
-        lines.append(f'# find 退出码 {find_rc}：部分子目录不可读，'
-                     '列表可能不完整（对应条目显示为 [?]）')
+        lines.append(i18n.t('backup.tree.find_rc', rc=find_rc))
     if unreadable:
-        lines.append(f'# {unreadable} 个条目无法 stat，只显示名称')
+        lines.append(i18n.t('backup.tree.unreadable_count', count=unreadable))
     if owner_hidden:
-        lines.append('# 设备 stat 不支持 %u/%g，属主/组显示为 -')
+        lines.append(i18n.t('backup.tree.no_owner'))
     lines.extend(body)
     text = '\n'.join(lines) + '\n'
 
@@ -407,7 +412,8 @@ def cmd_tree(settings, out_path=None):
         with open(out_path, 'w', encoding='utf-8', newline='\n') as fh:
             fh.write(text)
         if log_level not in ('quiet', 'error'):
-            print(f'[完成] 已写出目录树：{out_path}（{len(paths)} 个条目）')
+            print(i18n.tag('done') + ' ' + i18n.t(
+                'backup.done.tree', path=out_path, count=len(paths)))
     else:
         sys.stdout.write(text)
         sys.stdout.flush()
@@ -465,10 +471,10 @@ def _stream_android_archive(source, adb, compress, output, env,
         if compressor_stderr:
             details.append(compressor_stderr.decode('utf-8', 'replace').strip())
         detail = '\n'.join(part for part in details if part)
-        raise RuntimeError(
-            '传输失败：Android 源退出码 %d，压缩器退出码 %d%s' % (
-                source_rc, compressor.returncode,
-                f'：{detail}' if detail else ''))
+        raise RuntimeError(i18n.t(
+            'backup.err.transfer_failed', source=source_rc,
+            compressor=compressor.returncode,
+            detail=i18n.t('i18n.detail_sep', detail=detail) if detail else ''))
 
 
 def _adb_run_checked(adb, args, env, label):
@@ -521,9 +527,11 @@ class _DeviceProgress:
             self._last = now
             self._rate_at = now
             self._rate_bytes = self.received
-            rate_text = f'，速率 {_format_size(rate)}/s' if self.show_rate else ''
-            line = (f'[进度] 设备端打包中，已接收 {_format_size(self.received)}'
-                    f'{rate_text}')
+            rate_text = (i18n.t('backup.progress.rate', rate=_format_size(rate))
+                         if self.show_rate else '')
+            line = i18n.tag('progress') + ' ' + i18n.t(
+                'backup.progress.device_sending',
+                size=_format_size(self.received), rate=rate_text)
             if self._live.live:
                 self._live.update(line)
             else:
@@ -533,9 +541,8 @@ class _DeviceProgress:
         if self._live.live:
             self._live.clear()
             return
-        self.emit(
-            'info',
-            f'[进度] 设备端打包完成，共接收 {_format_size(self.received)}')
+        self.emit('info', i18n.tag('progress') + ' ' + i18n.t(
+            'backup.progress.device_done', size=_format_size(self.received)))
 
 
 def _pump_source_to_compressor(source_stdout, compressor_stdin, progress):
@@ -574,12 +581,12 @@ def _find_prefix_interpreter(prefix):
     """Locate a real interpreter file inside a python install prefix directory."""
     bin_dir = os.path.join(prefix, 'bin')
     if not os.path.isdir(bin_dir):
-        raise RuntimeError(
-            f'DEVICE_PYTHON 目录不是有效的 Python prefix（缺少 bin/）：{prefix}')
+        raise RuntimeError(i18n.t('backup.err.prefix_no_bin', prefix=prefix))
     try:
         names = os.listdir(bin_dir)
     except OSError as e:
-        raise RuntimeError(f'无法读取 DEVICE_PYTHON 的 bin/：{e}') from e
+        raise RuntimeError(
+            i18n.t('backup.err.prefix_bin_unreadable', err=e)) from e
     candidates = []
     for name in names:
         full = os.path.join(bin_dir, name)
@@ -591,8 +598,7 @@ def _find_prefix_interpreter(prefix):
             return 'bin/' + name
     if candidates:
         return 'bin/' + sorted(candidates)[-1]
-    raise RuntimeError(
-        f'DEVICE_PYTHON 目录的 bin/ 下未找到 python 解释器：{prefix}')
+    raise RuntimeError(i18n.t('backup.err.prefix_no_interpreter', prefix=prefix))
 
 
 def _tar_prefix(prefix):
@@ -629,8 +635,15 @@ def _sha256_file(path):
     return h.hexdigest()
 
 
-def _local_paxck():
-    return os.path.join(_script_dir(), 'paxck.py')
+def _local_payload():
+    """Device-side Python files as ``(remote name, local path)`` pairs.
+
+    ``device-python`` mode uploads ``paxck.py`` (the packer) plus ``i18n.py``
+    (its message catalog) next to the interpreter.  The cache stamp covers all
+    of them, so replacing either file invalidates an older cached environment.
+    """
+    return [('paxck.py', os.path.join(_script_dir(), 'paxck.py')),
+            ('i18n.py', os.path.join(_script_dir(), 'i18n.py'))]
 
 
 def _device_python_plan(local_python):
@@ -646,14 +659,16 @@ def _device_python_plan(local_python):
 
 
 def _env_stamp_text(local_python, plan):
-    """Identity token of the interpreter + the local paxck.py SHA-256."""
+    """Identity token of the interpreter + the uploaded device scripts."""
     default_prefix = os.path.abspath(android_python.default_prefix_dir())
     if plan['prefix_mode'] and os.path.abspath(local_python) == default_prefix:
         token = android_python.VARIANT        # auto-downloaded build (no hash)
     else:
         token = _sha256_file(plan['interp_file'])[:16]
-    paxck_sha = _sha256_file(_local_paxck())
-    return (token + '\n' + paxck_sha + '\n').encode('ascii')
+    lines = [token]
+    for _name, path in _local_payload():
+        lines.append(_sha256_file(path))
+    return ('\n'.join(lines) + '\n').encode('ascii')
 
 
 def _remote_python_version_ok(adb, env, python_path):
@@ -677,16 +692,16 @@ def _place_device_env(adb, env, local_python, plan, env_dir):
     """Upload interpreter + paxck.py into a fresh device cache directory."""
     interp_rel = plan['interp_rel']
     _adb_run_checked(adb, ('shell', 'mkdir', '-p', env_dir), env,
-                     '无法创建设备缓存目录')
+                     i18n.t('backup.err.mkdir_cache'))
     if plan['prefix_mode']:
         local_tar = _tar_prefix(local_python)
         try:
             remote_tar = env_dir + '/python.tar'
             _adb_run_checked(adb, ('push', local_tar, remote_tar), env,
-                             '上传设备 Python 环境失败')
+                             i18n.t('backup.err.push_prefix'))
             _adb_run_checked(
                 adb, ('shell', 'tar', '-xf', remote_tar, '-C', env_dir),
-                env, '解压设备 Python 环境失败')
+                env, i18n.t('backup.err.unpack_prefix'))
             _run_adb(adb, ('shell', 'rm', '-f', remote_tar), env)
         finally:
             try:
@@ -695,12 +710,13 @@ def _place_device_env(adb, env, local_python, plan, env_dir):
                 pass
     else:
         _adb_run_checked(adb, ('push', local_python, env_dir + '/python'), env,
-                         '上传设备 Python 失败')
-    _adb_run_checked(adb, ('push', _local_paxck(), env_dir + '/paxck.py'), env,
-                     '上传设备 paxck.py 失败')
+                         i18n.t('backup.err.push_python'))
+    for name, path in _local_payload():
+        _adb_run_checked(adb, ('push', path, env_dir + '/' + name), env,
+                         i18n.t('backup.err.push_script', name=name))
     _adb_run_checked(adb, ('shell', 'chmod', '700',
                            env_dir + '/' + interp_rel), env,
-                     '设置设备 Python 执行权限失败')
+                     i18n.t('backup.err.chmod_python'))
 
 
 def _write_env_stamp(adb, env, env_dir, stamp):
@@ -710,7 +726,7 @@ def _write_env_stamp(adb, env, env_dir, stamp):
         with open(path, 'wb') as fh:
             fh.write(stamp)
         _adb_run_checked(adb, ('push', path, env_dir + '/stamp'), env,
-                         '写入设备缓存标识失败')
+                         i18n.t('backup.err.write_stamp'))
     finally:
         try:
             os.unlink(path)
@@ -727,7 +743,8 @@ def _provision_device_python_env(adb, env, local_python, log_level):
     """
     local_python = os.path.abspath(os.path.expanduser(local_python))
     if not os.path.exists(local_python):
-        raise RuntimeError(f'设备 Python 不存在：{local_python}')
+        raise RuntimeError(
+            i18n.t('backup.err.device_python_missing', path=local_python))
     plan = _device_python_plan(local_python)
     interp_rel = plan['interp_rel']
     stamp = _env_stamp_text(local_python, plan)
@@ -735,7 +752,8 @@ def _provision_device_python_env(adb, env, local_python, log_level):
 
     if _device_env_valid(adb, env, env_dir, interp_rel, stamp):
         if log_level not in ('quiet', 'error'):
-            print(f'[缓存] 复用 Android 端 Python 环境：{env_dir}')
+            print(i18n.tag('cache') + ' '
+                  + i18n.t('backup.info.reuse_env', dir=env_dir))
         return {'env_dir': env_dir, 'interp': interp_rel, 'uploaded': False}
 
     python_path = env_dir + '/' + interp_rel
@@ -748,24 +766,25 @@ def _provision_device_python_env(adb, env, local_python, log_level):
         if _remote_python_version_ok(adb, env, python_path):
             _write_env_stamp(adb, env, env_dir, stamp)
             if log_level not in ('quiet', 'error'):
-                print(f'[缓存] 已上传 Android 端 Python 环境：{env_dir}')
+                print(i18n.tag('cache') + ' '
+                      + i18n.t('backup.info.uploaded_env', dir=env_dir))
             return {'env_dir': env_dir, 'interp': interp_rel, 'uploaded': True}
         if log_level not in ('quiet', 'error'):
-            print('[缓存] 设备端 Python 自检失败，重新上传一次...')
+            print(i18n.tag('cache') + ' '
+                  + i18n.t('backup.warn.device_selfcheck'))
     try:
         _run_adb(adb, ('shell', 'rm', '-rf', env_dir), env)
     except (RuntimeError, OSError):
         pass
-    raise RuntimeError(
-        '设备端 Python 无法执行（上传或兼容性问题）。已删除设备缓存环境，'
-        '请检查 DEVICE_PYTHON 与设备 ABI，或重新下载解释器后重试。')
+    raise RuntimeError(i18n.t('backup.err.device_python_unusable'))
 
 
 def _clean_device_python_env(adb, env):
     try:
         return _run_adb(adb, ('shell', 'rm', '-rf', ANDROID_ENV_DIR), env)
     except (RuntimeError, OSError) as e:
-        raise RuntimeError(f'清理设备端 Python 环境失败：{e}') from e
+        raise RuntimeError(
+            i18n.t('backup.err.clean_device_env', err=e)) from e
 
 
 def _explicit_bool(value):
@@ -800,7 +819,7 @@ def _decide_keep_device_env(settings, log_level):
     if log_level in ('quiet', 'error') or not sys.stdin.isatty():
         return False
     try:
-        answer = input('保留 Android 端 Python 环境以便下次直接复用？[Y/n] ')
+        answer = input(i18n.t('backup.prompt.keep_env'))
     except EOFError:
         return False
     return (answer or 'y').strip().lower() not in ('n', 'no')
@@ -812,11 +831,12 @@ def _finish_device_env(adb, env, settings, device_env, log_level):
         return
     if _decide_keep_device_env(settings, log_level):
         if log_level not in ('quiet', 'error'):
-            print(f'[缓存] 已保留 Android 端 Python 环境：{ANDROID_ENV_DIR}')
+            print(i18n.tag('cache') + ' '
+                  + i18n.t('backup.info.kept_env', dir=ANDROID_ENV_DIR))
         return
     _clean_device_python_env(adb, env)
     if log_level not in ('quiet', 'error'):
-        print('[缓存] 已删除 Android 端 Python 环境')
+        print(i18n.tag('cache') + ' ' + i18n.t('backup.info.removed_env'))
 
 
 def _stream_device_python_archive(source, adb, compress, output, env,
@@ -852,14 +872,15 @@ def _stream_device_python_archive(source, adb, compress, output, env,
     progress = _DeviceProgress(log_level, progress_interval, show_rate)
     try:
         _adb_run_checked(adb, ('shell', 'mkdir', '-p', run_dir), env,
-                         '无法创建设备运行目录')
+                         i18n.t('backup.err.mkdir_run'))
 
         command = (
             f'{shlex.quote(remote_python)} {shlex.quote(remote_paxck)} create '
             f'{shlex.quote(source)} 2>{shlex.quote(remote_error)}; '
             f'__andbackup_rc=$?; printf "%s" "$__andbackup_rc" '
             f'>{shlex.quote(remote_status)}; exit "$__andbackup_rc"')
-        progress.emit('info', '[进度] 设备端 Python 开始打包...')
+        progress.emit('info', i18n.tag('progress') + ' '
+                      + i18n.t('backup.progress.device_start'))
         source_process = subprocess.Popen(
             [adb, 'exec-out', 'sh', '-c', command], env=env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -927,11 +948,11 @@ def _stream_device_python_archive(source, adb, compress, output, env,
         details = [part.decode('utf-8', 'replace').strip() for part in
                    (source_stderr, remote_stderr, compressor_stderr) if part]
         detail = '\n'.join(details)
-        raise RuntimeError(
-            '传输失败：设备 Python 源退出码 %s，压缩器退出码 %s%s' % (
-                remote_rc if remote_rc is not None else source_rc,
-                compressor_rc,
-                f'：{detail}' if detail else ''))
+        raise RuntimeError(i18n.t(
+            'backup.err.transfer_failed_device',
+            source=remote_rc if remote_rc is not None else source_rc,
+            compressor=compressor_rc,
+            detail=i18n.t('i18n.detail_sep', detail=detail) if detail else ''))
 
     # Success: surface device-side warnings (e.g. skipped unreadable entries)
     # that paxck wrote to the remote stderr file, so they are not dropped.
@@ -989,20 +1010,20 @@ def run(settings):
 
     if compress not in ('xz', 'gzip', 'zstd', 'none'):
         raise RuntimeError(
-            f'未知压缩类型：{compress}（可选 xz / gzip / zstd / none）')
+            i18n.t('backup.err.unknown_compressor', kind=compress))
     if not source:
-        raise RuntimeError('SOURCE_DIR 不能为空')
+        raise RuntimeError(i18n.t('backup.err.source_dir_empty'))
     if source_mode not in ('host-adb', 'device-python'):
         raise RuntimeError(
-            f'未知 SOURCE_MODE：{source_mode}（可选 host-adb / device-python）')
+            i18n.t('backup.err.unknown_source_mode', mode=source_mode))
     if log_level not in ('quiet', 'error', 'warn', 'info', 'debug', 'trace'):
         raise RuntimeError(
-            f'无效日志级别：{log_level}（可选 quiet/error/warn/info/debug/trace）')
+            i18n.t('backup.err.invalid_loglevel', level=log_level))
     try:
         if float(progress_interval) < 0.1:
             raise ValueError
     except (TypeError, ValueError):
-        raise RuntimeError('PROGRESS_INTERVAL 必须是不小于 0.1 的秒数')
+        raise RuntimeError(i18n.t('backup.err.invalid_progress_interval'))
     if source_mode == 'device-python':
         # Resolve (or download+unpack) the Android interpreter up front so
         # configuration/network errors surface before ADB/archive work starts.
@@ -1020,23 +1041,23 @@ def run(settings):
         if sys.stdin.isatty() and log_level not in ('quiet', 'error'):
             suffix = _OUT_SUFFIX[compress]
             try:
-                answer = input(
-                    f'OUT “{out}” 与 compress={compress} 的理论后缀'
-                    f'“{suffix}” 不符。自动追加后缀写为'
-                    f'“{output_path}{suffix}”？[Y/n] ')
+                answer = input(i18n.t(
+                    'backup.out.confirm', out=out, compress=compress,
+                    suffix=suffix, path=output_path))
             except EOFError:
                 answer = 'n'
             if (answer or 'y').strip().lower() not in ('n', 'no'):
                 output_path += suffix
 
     env = dict(os.environ)
+    i18n.export(env)
     device = _resolve_device(adb, settings, log_level)
     env['ANDROID_SERIAL'] = device
 
     result = _run_adb(adb, ('get-state',), env)
     if result.returncode:
         raise RuntimeError(_display_error(
-            f'adb 不可用，请检查调试授权和 ADB 路径（serial {device}）', result))
+            i18n.t('backup.err.adb_unavailable', serial=device), result))
 
     parent = os.path.dirname(output_path) or os.curdir
     os.makedirs(parent, exist_ok=True)
@@ -1047,8 +1068,8 @@ def run(settings):
     published = False
     try:
         if log_level not in ('quiet', 'error'):
-            print('[1/3] checking ADB and source directory...')
-            print('[2/3] streaming Android source through PAX tar and compressor...')
+            print('[1/3] ' + i18n.t('backup.step.check'))
+            print('[2/3] ' + i18n.t('backup.step.stream'))
         with open(partial, 'wb') as fh:
             if source_mode == 'host-adb':
                 _stream_android_archive(source, adb, compress, fh, env,
@@ -1061,20 +1082,22 @@ def run(settings):
                     log_level, progress_interval, show_rate)
 
         if log_level not in ('quiet', 'error'):
-            print('[3/3] verifying archive...')
+            print('[3/3] ' + i18n.t('backup.step.verify'))
         verify = subprocess.run(
             [sys.executable, os.path.join(_script_dir(), 'paxck.py'),
              'verify', partial], env=env, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, check=False)
         if verify.returncode:
             detail = verify.stderr.decode('utf-8', 'replace').strip()
-            raise RuntimeError('归档校验未通过' + (f'：{detail}' if detail else ''))
+            raise RuntimeError(i18n.t('backup.err.verify_failed', detail=detail))
         os.replace(partial, output_path)
         partial = None
         published = True
         if log_level not in ('quiet', 'error'):
-            print(f'[完成] {output_path}')
-            print(f'       大小: {os.path.getsize(output_path)} 字节')
+            print(i18n.tag('done') + ' '
+                  + i18n.t('backup.done.archive', path=output_path))
+            print('       ' + i18n.t('backup.info.size',
+                                    size=os.path.getsize(output_path)))
         # After a successful, verified run, ask whether to keep the env (or
         # honour keep_android_env / the non-interactive default).
         _finish_device_env(adb, env, settings, device_env, log_level)
@@ -1102,46 +1125,52 @@ def cmd_clean(settings, clean_device, clean_host):
         root = android_python.cache_root()
         shutil.rmtree(root, ignore_errors=True)
         if log_level not in ('quiet', 'error'):
-            print(f'[清理] 已删除主机下载缓存：{root}')
+            print(i18n.tag('clean') + ' '
+                  + i18n.t('backup.info.cleaned_host_cache', dir=root))
     if clean_device:
         adb = settings['ADB']
         env = dict(os.environ)
+        i18n.export(env)
         device = _resolve_device(adb, settings, log_level)
         env['ANDROID_SERIAL'] = device
         result = _run_adb(adb, ('get-state',), env)
         if result.returncode:
             raise RuntimeError(_display_error(
-                f'adb 不可用，请检查调试授权和 ADB 路径（serial {device}）', result))
+                i18n.t('backup.err.adb_unavailable', serial=device), result))
         _clean_device_python_env(adb, env)
         if log_level not in ('quiet', 'error'):
-            print(f'[清理] 已删除设备端 Python 环境：{ANDROID_ENV_DIR}')
+            print(i18n.tag('clean') + ' '
+                  + i18n.t('backup.info.cleaned_device_env',
+                           dir=ANDROID_ENV_DIR))
     return 0
 
 
 def main(argv=None):
     paxck.configure_stdio_utf8()
+    i18n.set_language(i18n.resolve(cli=i18n.prescan_lang(argv)))
     try:
         parser = argparse.ArgumentParser(
-            description='AndBackup 主控：读取 YAML 并执行 ADB 流式归档')
+            description=i18n.t('backup.cli.description'))
         parser.add_argument(
             '--version', action='version', version=f'%(prog)s {paxck.VERSION}')
+        parser.add_argument('--lang', choices=i18n.LANGUAGES + (i18n.AUTO,),
+                            default=None, help=i18n.lang_help())
         parser.add_argument(
-            '--config', metavar='PATH',
-            help='配置文件路径（默认脚本目录中的 backup-android.yaml；覆盖 BACKUP_CONFIG_FILE）')
+            '--config', metavar='PATH', help=i18n.t('backup.cli.config_help'))
         parser.add_argument('--log-level', choices=('quiet', 'error', 'warn', 'info', 'debug', 'trace'),
-                            help='日志级别，覆盖配置中的 log_level')
+                            help=i18n.t('backup.cli.log_level_help'))
         parser.add_argument('--progress-interval', metavar='SECONDS',
-                            help='进度输出最小间隔秒数，覆盖配置中的 progress_interval')
+                            help=i18n.t('backup.cli.progress_help'))
         parser.add_argument('--show-rate', action='store_true',
-                            help='显示 ADB 有效载荷速率，覆盖配置中的 show_rate')
+                            help=i18n.t('backup.cli.show_rate_help'))
         parser.add_argument('--clean-env', action='store_true',
-                            help='删除设备端缓存的 Android Python 环境后退出（不执行备份）')
+                            help=i18n.t('backup.cli.clean_env_help'))
         parser.add_argument('--clean-host-cache', action='store_true',
-                            help='删除主机端 Android Python 下载/解压缓存后退出（不执行备份）')
+                            help=i18n.t('backup.cli.clean_host_cache_help'))
         parser.add_argument('--list-tree', action='store_true',
-                            help='列出源目录的详细信息树后退出（不备份）')
+                            help=i18n.t('backup.cli.list_tree_help'))
         parser.add_argument('--tree-out', metavar='PATH',
-                            help='配合 --list-tree：把目录树写入文件（默认写 stdout）')
+                            help=i18n.t('backup.cli.tree_out_help'))
         args = parser.parse_args(argv)
         settings, _config = _settings(args.config)
         if args.log_level is not None:
@@ -1156,7 +1185,8 @@ def main(argv=None):
             return cmd_clean(settings, args.clean_env, args.clean_host_cache)
         return run(settings)
     except (RuntimeError, OSError) as e:
-        print(f'[错误] {e}', file=sys.stderr)
+        print(i18n.tag('error') + ' ' + i18n.t('backup.err.fatal', err=e),
+              file=sys.stderr)
         return 1
 
 

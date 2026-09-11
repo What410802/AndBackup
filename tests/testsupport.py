@@ -24,19 +24,28 @@ REPO_ROOT = os.path.dirname(TESTS_DIR)
 SRC_DIR = os.path.join(REPO_ROOT, 'src')
 PAXCK = os.path.join(SRC_DIR, 'paxck.py')
 ADB_SOURCE = os.path.join(SRC_DIR, 'adb_source.py')
+BACKUP = os.path.join(SRC_DIR, 'backup.py')
 BACKUP_SH = os.path.join(SRC_DIR, 'backup-android.sh')
 BACKUP_BAT = os.path.join(SRC_DIR, 'backup-android.bat')
 
 PAX_KEY = 'PAXCK.checksum.sha256'
 
+# The suite asserts Chinese messages; pin the language instead of letting the
+# runner's locale decide. Tests that care about English set --lang explicitly.
+os.environ.setdefault('ANDROBACKUP_LANG', 'zh')
+
 
 def load_paxck():
-    """按模块方式加载 paxck.py（它没有 .py 后缀之外的依赖）。"""
+    """按模块方式加载 paxck.py（含它依赖的同目录 i18n）。"""
     import importlib.util
-    spec = importlib.util.spec_from_file_location('paxck_under_test', PAXCK)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    sys.path.insert(0, SRC_DIR)
+    try:
+        spec = importlib.util.spec_from_file_location('paxck_under_test', PAXCK)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        sys.path.pop(0)
 
 
 def load_adb_source():

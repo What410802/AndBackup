@@ -6,10 +6,25 @@ All notable changes to this project are recorded in this file.
 
 ### Added
 
+- Message localization (Chinese/English) for every command-line entry point:
+  `--lang zh|en|auto` on `paxck.py`, `adb_source.py` and `backup.py`, plus the
+  `ANDROBACKUP_LANG` environment variable. The order is CLI flag, environment,
+  `LC_ALL`/`LC_MESSAGES`/`LANGUAGE`/`LANG`, OS locale, then English. `backup.py`
+  exports its choice to the child tools it spawns, so one run prints one
+  language. Help text, interactive prompts, progress and errors are all
+  translated; `src/i18n.py` holds the catalog and `device-python` mode uploads
+  it next to `paxck.py` (the device cache stamp covers both files).
 - `backup.py --list-tree [--tree-out PATH]`: lists the detailed tree of the
   source directory (type, mode, numeric owner/group UID/GID, size, mtime,
   symlink target) without writing an archive, so permissions can be checked
   before a backup. Requires one `adb` call per entry; large trees are slow.
+
+### Changed
+
+- Status tags are now language-neutral (`[ERROR]`, `[WARN]`, `[DONE]`,
+  `[INFO]`, `[PROGRESS]`, `[DEBUG]`, `[CACHE]`, `[CLEAN]`, `[DOWNLOAD]` and the
+  existing `[FAIL]`) instead of the localized `[错误]`/`[完成]`/`[进度]`/`[缓存]`/
+  `[清理]`/`[调试]`, so logs, tests and scripts match them in any language.
 
 ### Changed
 

@@ -123,7 +123,7 @@ sequenceDiagram
     SH->>BP: 读取 YAML + 环境覆盖
     BP->>ADB: get-state / 可选 connect
     BP->>ADB: shell mkdir /data/local/tmp/andbackup-<随机>
-    BP->>ADB: push DEVICE_PYTHON 与 paxck.py
+    BP->>ADB: push DEVICE_PYTHON、paxck.py 与 i18n.py
     ADB->>DEV: 写入 Python 二进制与脚本
     BP->>ADB: exec-out sh -c "python paxck.py create SOURCE_DIR"
     ADB->>PYD: 设备端遍历目录并生成裸 PAX tar
@@ -139,6 +139,8 @@ sequenceDiagram
 - 设备端只临时写入 `DEVICE_PYTHON`（单文件解释器，或含 `bin/`+`lib/` 的 prefix
   目录——目录会被主机打包为一个 tar 上传并在设备端解压，使解释器能找到其标准库）与
   `paxck.py`，不生成 tar 文件或压缩包；运行结束由主控 `rm -rf` 清理。
+  设备端脚本与其文案目录（`paxck.py` + `i18n.py`）一起上传，`stamp` 覆盖两者的
+  SHA-256，所以升级任一文件都会使旧缓存失效并重新上传。
 - 设备端 `paxck.py create` 的 stdout 是唯一数据通道；诊断写到设备端 stderr 文件，主控
   在结束后读回并转交主机 stderr。
 - 主机在接收 tar 流时统计已接收字节并可按 `progress_interval`/`show_rate` 显示进度与

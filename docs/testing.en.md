@@ -71,6 +71,7 @@ cause `more than one device/emulator` failures.
 | Local integration | `create | compress | verify`, system tar interoperability, restoration fidelity, and non-UTF-8 names where supported. |
 | POSIX/CMD controllers | Fake ADB plus real `.sh` or `cmd.exe`/`.bat`, USB and TCP selection, binary bytes, temporary-output cleanup, configuration selection, `--list-tree` (modes, owner/group, indentation, symlink targets, `--tree-out`, no archive written), truncated-content skip-and-publish, and `device-python` upload/round-trip/cleanup without fallback. |
 | Device integration | Opt-in real ADB transport and source-byte checks. |
+| Messages/language (`tests/test_i18n_unit.py`) | Catalog parity (keys, placeholders, non-empty), every template formats, unknown-key fallback, language-neutral tags, every key used by the source exists, no CJK literals left in the command modules, `normalize`/`resolve` precedence and fallback, `--lang` parsing, localized `--help`, and rejection of an invalid `--lang`. |
 
 The `--list-tree` fake ADB answers the requested `stat -c` format, including
 `%u`/`%g` (the Windows substitute reports `st_uid`/`st_gid`, normally 0), so the

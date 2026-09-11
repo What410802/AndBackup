@@ -15,7 +15,8 @@ The project separates source acquisition from archive handling:
   performs an optional TCP `adb connect`, selects the source mode, runs the
   source and compressor, verifies a unique host-side partial archive, then
   atomically replaces the requested output. With `source_mode: device-python`
-  it uploads a user-provided Android Python binary and `paxck.py`, then runs
+  it uploads a user-provided Android Python binary plus the device scripts
+  `paxck.py` and `i18n.py`, then runs
   `paxck.py create` on the device. `backup.py --list-tree [--tree-out PATH]`
   bypasses the pipeline and only prints the detailed source tree (mode,
   owner/group, size, time, symlink targets) for pre-backup permission checks.
@@ -68,7 +69,7 @@ sequenceDiagram
     participant PX as host paxck.py compress
 
     BP->>ADB: shell mkdir /data/local/tmp/andbackup-<random>
-    BP->>ADB: push DEVICE_PYTHON and paxck.py
+    BP->>ADB: push DEVICE_PYTHON, paxck.py and i18n.py
     ADB->>DEV: write Python binary and script
     BP->>ADB: exec-out sh -c "python paxck.py create SOURCE_DIR"
     ADB->>PYD: enumerate and stream raw PAX tar
@@ -81,7 +82,8 @@ Because the device runs the same `paxck.py create` writer, `device-python`
 keeps the two-pass read and `PAXCK.checksum.sha256` semantics. It is useful
 When many small files make `host-adb` round trips too slow, or when directory
 walking is faster on the device. The device temporarily holds only the Python
-and `paxck.py`; it does not create an archive or compressed file, and
+plus the device scripts `paxck.py` and `i18n.py`; it does not create an archive
+or compressed file, and
 the controller removes the temporary directory when done. A missing or
 incompatible Python is a hard error — the controller does not fall back to
 `host-adb`.

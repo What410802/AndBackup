@@ -557,7 +557,7 @@ class TestCreateArgumentErrors(T.BaseCase):
     def test_missing_directory(self):
         rc, out, err = T.run_cli(['create', os.path.join(self.tmp, 'nope')])
         self.assertNotEqual(rc, 0)
-        self.assertIn('错误', err.decode('utf-8', 'replace'))
+        self.assertIn('源目录不存在', err.decode('utf-8', 'replace'))
 
     def test_file_instead_of_directory(self):
         rc, out, err = T.run_cli(
