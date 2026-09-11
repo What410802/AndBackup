@@ -9,7 +9,7 @@
 1. 命令行 `--config PATH`（优先级最高）
 2. 环境变量 `BACKUP_CONFIG_FILE`
 3. 脚本同目录默认 `src/backup-android.yaml`（存在时）
-4. 业务环境变量（`ADB`、`SOURCE_DIR`、`OUT`、`COMPRESS`、`SOURCE_MODE`、`DEVICE_PYTHON`、
+4. 业务环境变量（`ADB`、`DEVICE`、`SOURCE_DIR`、`OUT`、`COMPRESS`、`SOURCE_MODE`、`DEVICE_PYTHON`、
    `DOWNLOAD_DEVICE_PYTHON`、`DEVICE_PYTHON_URL`、`KEEP_ANDROID_ENV`、`LOG_LEVEL`、
    `PROGRESS_INTERVAL`、`SHOW_RATE`）始终优先于 YAML 内的同名键
 5. 内置默认值
@@ -28,11 +28,10 @@
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `adb` | `adb` | `adb` 可执行文件或绝对路径 |
-| `adb_serial` | 空 | USB serial 或无线 `host:port`；空则由 ADB 自动选择 |
-| `adb_connect` | `false` | 仅当需要先执行 `adb connect`（TCP serial）时为 `true`；USB 应关闭 |
+| `device` | 空 → 自动选择 | USB serial 或无线 `host:port`；留空自动选（单设备直连；多设备交互选择，非交互报错）。`host:port` 会自动 `adb connect`；旧名 `adb_serial` 仍兼容 |
 | `source_dir` | `/sdcard/DCIM` | 设备上要备份的绝对目录 |
 | `out` | 空 → 当前目录 `backup.tar.<后缀>` | 输出目标：目录（自动按 source_dir 尾部命名）或文件名，见下方“OUT 语义” |
-| `compress` | `xz` | `xz`、`gzip`、`zstd` 或 `none` |
+| `compress` | 空/缺省 → `none` | `xz`、`gzip`、`zstd` 或 `none`；为空/不存在时视为 `none`（不压缩） |
 | `source_mode` | `host-adb` | `host-adb`（主机逐条读）或 `device-python`（设备端打包） |
 | `device_python` | 未设置 | `device-python` 用：本机 Android ARM64 Python——单文件解释器，或含 `bin/`+`lib/` 的 prefix 目录 |
 | `download_device_python` | `false` | `device-python` 且无可用的 `DEVICE_PYTHON` 时自动下载到缓存/目标路径 |
@@ -50,6 +49,11 @@
 TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互终端询问一次是否自动
 追加该后缀（回车 = 追加，输入 `n`/`no` 则按原名写入）。
 
+**设备选择（`device`）**：留空 → 枚举 `adb devices`，在线设备恰一台则直接使用；多台在交互
+终端列出并让用户选择序号（非交互或 `log_level` 为 `quiet`/`error` 时报错退出）；0 台报错。
+显式设置时，`host:port` 先执行 `adb connect`，随后用 `ANDROID_SERIAL` 固定该设备执行后续
+命令；设备不存在或离线时在 `get-state` 阶段明确报错退出（不会静默换设备）。
+
 ## 环境变量
 
 与 YAML 键同名、语义相同（`DEVICE_PYTHON_URL`↔`device_python_url` 等）。另有两个选择类变量：
@@ -58,6 +62,8 @@ TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互
 |---|---|
 | `PYTHON` | Windows 上包装脚本使用的 Python 解释器完整路径（可选） |
 | `BACKUP_CONFIG_FILE` | UTF-8 配置文件路径；空值/不存在则不加载 YAML |
+
+旧环境变量 `ADB_SERIAL` 仍视为 `DEVICE` 的别名；`ADB_CONNECT` 已废弃、被忽略。
 
 ## 命令行
 

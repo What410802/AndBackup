@@ -103,7 +103,18 @@ def main(args):
     _log(args)
     if os.environ.get('FAKE_ADB_FAIL'):
         return 1
+    if args == ['devices']:
+        sys.stdout.write('List of devices attached\n')
+        listing = os.environ.get('FAKE_ADB_DEVICES', 'FAKE-1 device')
+        for line in listing.splitlines():
+            if line.strip():
+                sys.stdout.write(line.rstrip() + '\n')
+        return 0
     if args == ['get-state']:
+        missing = os.environ.get('FAKE_ADB_DEVICE_NOT_FOUND')
+        if missing and os.environ.get('ANDROID_SERIAL', '') == missing:
+            sys.stderr.write('error: device %r not found\n' % missing)
+            return 1
         sys.stdout.write('device\n')
         return 0
     if len(args) == 2 and args[0] == 'connect':

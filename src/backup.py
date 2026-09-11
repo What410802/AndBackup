@@ -24,11 +24,11 @@ import paxck
 import android_python
 
 
-ENV_KEYS = ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'SOURCE_DIR', 'OUT', 'COMPRESS',
+ENV_KEYS = ('ADB', 'DEVICE', 'ADB_SERIAL', 'SOURCE_DIR', 'OUT', 'COMPRESS',
             'SOURCE_MODE', 'DEVICE_PYTHON', 'DOWNLOAD_DEVICE_PYTHON',
             'DEVICE_PYTHON_URL', 'KEEP_ANDROID_ENV',
             'LOG_LEVEL', 'PROGRESS_INTERVAL', 'SHOW_RATE')
-DEFAULTS = {'ADB': 'adb', 'SOURCE_DIR': '/sdcard/DCIM', 'COMPRESS': 'xz',
+DEFAULTS = {'ADB': 'adb', 'SOURCE_DIR': '/sdcard/DCIM',
             'SOURCE_MODE': 'host-adb', 'LOG_LEVEL': 'info',
             'PROGRESS_INTERVAL': '5', 'SHOW_RATE': '0'}
 
@@ -43,8 +43,9 @@ def _script_dir():
 def read_config(path):
     """Read the deliberately small top-level YAML subset used by this tool."""
     aliases = {
-        'adb': 'ADB', 'adb_serial': 'ADB_SERIAL', 'serial': 'ADB_SERIAL',
-        'adb_connect': 'ADB_CONNECT', 'connect': 'ADB_CONNECT',
+        'adb': 'ADB',
+        'device': 'DEVICE', 'device_id': 'DEVICE', 'device-id': 'DEVICE',
+        'adb_serial': 'DEVICE', 'serial': 'DEVICE',
         'source_dir': 'SOURCE_DIR', 'source': 'SOURCE_DIR',
         'out': 'OUT', 'compress': 'COMPRESS',
         'source_mode': 'SOURCE_MODE', 'source-mode': 'SOURCE_MODE',
@@ -115,6 +116,9 @@ def _settings(config_path=None):
     for key in ENV_KEYS:
         if key in os.environ:
             values[key] = os.environ[key]
+    # Legacy: ADB_SERIAL is the old name for the DEVICE selector.
+    if not values.get('DEVICE') and values.get('ADB_SERIAL'):
+        values['DEVICE'] = values['ADB_SERIAL']
     for key, value in DEFAULTS.items():
         values.setdefault(key, value)
     return values, config_path
@@ -132,6 +136,77 @@ def _run_adb(adb, args, env):
 def _display_error(prefix, result):
     detail = result.stderr.decode('utf-8', 'replace').strip()
     return f'{prefix}: {detail or "exit " + str(result.returncode)}'
+
+
+def _base_adb_env():
+    env = dict(os.environ)
+    env.pop('ANDROID_SERIAL', None)
+    return env
+
+
+def _adb_devices(adb):
+    """Parse `adb devices` into [(serial, state), ...]."""
+    result = _run_adb(adb, ('devices',), _base_adb_env())
+    if result.returncode:
+        raise RuntimeError(_display_error('无法枚举 ADB 设备', result))
+    devices = []
+    for line in result.stdout.decode('utf-8', 'replace').splitlines()[1:]:
+        line = line.strip()
+        if not line:
+            continue
+        if '\t' in line:
+            serial, state = line.split('\t', 1)
+        else:
+            serial, state = line.split(None, 1)
+        devices.append((serial.strip(), state.strip()))
+    return devices
+
+
+def _resolve_device(adb, settings, log_level):
+    """Pick the ADB device to use; returns its serial or host:port.
+
+    * Explicit ``DEVICE`` (config or env) wins; a ``host:port`` value is
+      connected first. A missing/offline device surfaces as a later
+      ``get-state`` failure.
+    * Otherwise auto-select: exactly one online device is used; more than one
+      is resolved interactively (or errors out when non-interactive); zero is
+      an error.
+    """
+    device = (settings.get('DEVICE', '') or '').strip()
+    if device:
+        if ':' in device:
+            result = _run_adb(adb, ('connect', device), _base_adb_env())
+            if result.returncode:
+                raise RuntimeError(_display_error(
+                    f'无法连接 ADB 设备 {device}', result))
+        return device
+
+    online = [serial for serial, state in _adb_devices(adb)
+              if state == 'device']
+    if not online:
+        raise RuntimeError(
+            'adb 未发现已授权的设备。请确认已开启 USB 调试并在设备上授权，'
+            '或在配置中设置 device（USB serial 或 host:port）。')
+    if len(online) == 1:
+        return online[0]
+    if not sys.stdin.isatty() or log_level in ('quiet', 'error'):
+        raise RuntimeError(
+            '检测到多台 ADB 设备（' + '、'.join(online) +
+            '），无法自动选择。请在配置中设置 device 字段，或在交互终端中选择。')
+    print('检测到多台 ADB 设备：')
+    for index, serial in enumerate(online, 1):
+        print(f'  [{index}] {serial}')
+    try:
+        answer = input('请输入要备份的设备序号：')
+    except EOFError:
+        raise RuntimeError('未选择设备，已退出。')
+    try:
+        choice = int(answer.strip())
+    except ValueError:
+        raise RuntimeError(f'无效的序号：{answer!r}')
+    if not 1 <= choice <= len(online):
+        raise RuntimeError(f'序号超出范围：{choice}')
+    return online[choice - 1]
 
 
 def _stream_android_archive(source, adb, compress, output, env,
@@ -680,15 +755,13 @@ def _plan_out(out, source, compress):
 def run(settings):
     adb = settings['ADB']
     source = settings['SOURCE_DIR']
-    compress = settings['COMPRESS'].lower()
+    compress = (settings.get('COMPRESS', '') or 'none').strip().lower()
     source_mode = str(settings.get('SOURCE_MODE', 'host-adb')).lower()
     device_python = settings.get('DEVICE_PYTHON', '').strip()
     download_device_python = str(
         settings.get('DOWNLOAD_DEVICE_PYTHON', '')).lower() in (
             '1', 'true', 'yes', 'on')
     device_python_url = settings.get('DEVICE_PYTHON_URL', '').strip()
-    serial = settings.get('ADB_SERIAL', '').strip()
-    connect = str(settings.get('ADB_CONNECT', '')).lower() in ('1', 'true', 'yes', 'on')
     out = settings.get('OUT', '').strip()
     log_level = str(settings.get('LOG_LEVEL', 'info')).lower()
     progress_interval = settings.get('PROGRESS_INTERVAL', '5')
@@ -737,19 +810,13 @@ def run(settings):
                 output_path += suffix
 
     env = dict(os.environ)
-    if serial:
-        env['ANDROID_SERIAL'] = serial
-    if connect:
-        if not serial:
-            raise RuntimeError('ADB_CONNECT 需要同时设置 ADB_SERIAL=host:port')
-        result = _run_adb(adb, ('connect', serial), env)
-        if result.returncode:
-            raise RuntimeError(_display_error(f'无法连接无线 ADB {serial}', result))
+    device = _resolve_device(adb, settings, log_level)
+    env['ANDROID_SERIAL'] = device
 
     result = _run_adb(adb, ('get-state',), env)
     if result.returncode:
         raise RuntimeError(_display_error(
-            'adb 不可用，请检查调试授权和 ADB 路径', result))
+            f'adb 不可用，请检查调试授权和 ADB 路径（设备 {device}）', result))
 
     parent = os.path.dirname(output_path) or os.curdir
     os.makedirs(parent, exist_ok=True)
@@ -818,23 +885,13 @@ def cmd_clean(settings, clean_device, clean_host):
             print(f'[清理] 已删除主机下载缓存：{root}')
     if clean_device:
         adb = settings['ADB']
-        serial = settings.get('ADB_SERIAL', '').strip()
-        connect = str(settings.get('ADB_CONNECT', '')).lower() in (
-            '1', 'true', 'yes', 'on')
         env = dict(os.environ)
-        if serial:
-            env['ANDROID_SERIAL'] = serial
-        if connect:
-            if not serial:
-                raise RuntimeError('ADB_CONNECT 需要同时设置 ADB_SERIAL=host:port')
-            result = _run_adb(adb, ('connect', serial), env)
-            if result.returncode:
-                raise RuntimeError(_display_error(
-                    f'无法连接无线 ADB {serial}', result))
+        device = _resolve_device(adb, settings, log_level)
+        env['ANDROID_SERIAL'] = device
         result = _run_adb(adb, ('get-state',), env)
         if result.returncode:
             raise RuntimeError(_display_error(
-                'adb 不可用，请检查调试授权和 ADB 路径', result))
+                f'adb 不可用，请检查调试授权和 ADB 路径（设备 {device}）', result))
         _clean_device_python_env(adb, env)
         if log_level not in ('quiet', 'error'):
             print(f'[清理] 已删除设备端 Python 环境：{ANDROID_ENV_DIR}')

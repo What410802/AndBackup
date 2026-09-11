@@ -11,7 +11,7 @@ command-line and cache-cleanup reference.
 2. `BACKUP_CONFIG_FILE` environment variable
 3. the sibling `src/backup-android.yaml` (when present)
 4. operational environment variables override the YAML values
-   (`ADB`, `SOURCE_DIR`, `OUT`, `COMPRESS`, `SOURCE_MODE`, `DEVICE_PYTHON`,
+   (`ADB`, `DEVICE`, `SOURCE_DIR`, `OUT`, `COMPRESS`, `SOURCE_MODE`, `DEVICE_PYTHON`,
    `DOWNLOAD_DEVICE_PYTHON`, `DEVICE_PYTHON_URL`, `KEEP_ANDROID_ENV`,
    `LOG_LEVEL`, `PROGRESS_INTERVAL`, `SHOW_RATE`)
 5. built-in defaults
@@ -34,11 +34,10 @@ is a tiny top-level `key: value` subset (single/double-quoted strings,
 | Key | Default | Meaning |
 |---|---|---|
 | `adb` | `adb` | ADB executable or absolute path |
-| `adb_serial` | empty | USB serial or wireless `host:port`; empty lets ADB choose |
-| `adb_connect` | `false` | `true` only to run `adb connect` first for a TCP serial |
+| `device` | empty → auto | USB serial or wireless `host:port`; empty auto-selects (one device directly; multiple listed for an interactive choice, error when non-interactive). `host:port` is `adb connect`-ed automatically. The legacy `adb_serial` name still maps here. |
 | `source_dir` | `/sdcard/DCIM` | absolute device directory to back up |
 | `out` | empty → `backup.tar.<suffix>` in cwd | output target: a directory (auto-named from the source_dir tail) or a file; see “OUT semantics” |
-| `compress` | `xz` | `xz`, `gzip`, `zstd`, or `none` |
+| `compress` | empty/absent → `none` | `xz`, `gzip`, `zstd`, or `none`; empty/absent means `none` (uncompressed) |
 | `source_mode` | `host-adb` | `host-adb` (host reads) or `device-python` (device packs) |
 | `device_python` | unset | `device-python`: local Android ARM64 Python, a single file or a prefix dir (`bin/`+`lib/`) |
 | `download_device_python` | `false` | fetch the interpreter when no usable `device_python` exists |
@@ -59,6 +58,13 @@ non-interactive runs (no TTY, or `log_level` `quiet`/`error`) write verbatim,
 while an interactive terminal is asked once whether to append the suffix
 (Enter = append, `n`/`no` = keep the name).
 
+**Device selection (`device`)**: empty → enumerate `adb devices`; exactly one
+online device is used directly, several are listed for an interactive choice
+(an error when non-interactive or `log_level` `quiet`/`error`), and zero is an
+error. When set explicitly, a `host:port` is `adb connect`-ed first and every
+later command is pinned with `ANDROID_SERIAL`; a missing/offline device fails
+loudly at `get-state` (no silent device switching).
+
 ## Environment Variables
 
 The operational variables map 1:1 to the YAML keys above (e.g.
@@ -68,6 +74,9 @@ The operational variables map 1:1 to the YAML keys above (e.g.
 |---|---|
 | `PYTHON` | full path of the Python interpreter used by the wrappers (Windows) |
 | `BACKUP_CONFIG_FILE` | UTF-8 config path; empty/missing disables YAML |
+
+The legacy `ADB_SERIAL` environment variable still maps to `DEVICE`;
+`ADB_CONNECT` is deprecated and ignored.
 
 ## Command Line
 

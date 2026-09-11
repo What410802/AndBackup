@@ -36,8 +36,7 @@ class TestBackupBatch(unittest.TestCase):
         with open(self.config, 'w', encoding='utf-8', newline='\n') as fh:
             fh.write('# values deliberately loaded through the shared YAML path\n')
             fh.write('adb: "' + self.adb.replace('\\', '/') + '"\n')
-            fh.write('adb_serial: 192.0.2.1:5555\n')
-            fh.write('adb_connect: false\n')
+            fh.write('device: ""\n')
             fh.write('source_dir: "' + self.source + '"\n')
             fh.write('out: "' + self.out.replace('\\', '/') + '"\n')
             fh.write('compress: gzip\n')
@@ -76,8 +75,11 @@ class TestBackupBatch(unittest.TestCase):
         env.pop('ADB_SERIAL', None)
         env.pop('ADB_CONNECT', None)
         env.pop('ANDROID_SERIAL', None)
+        env.pop('DEVICE', None)
         env.pop('FAKE_ADB_FAIL', None)
         env.pop('FAKE_ADB_TRUNCATE', None)
+        env.pop('FAKE_ADB_DEVICES', None)
+        env.pop('FAKE_ADB_DEVICE_NOT_FOUND', None)
         # Operational keys a developer may have exported in their shell must not
         # leak into tests that do not set them explicitly (e.g. SOURCE_MODE).
         env.pop('SOURCE_MODE', None)
@@ -115,7 +117,7 @@ class TestBackupBatch(unittest.TestCase):
 
     def test_shared_yaml_config_drives_batch_launcher(self):
         env = self.env(BACKUP_CONFIG_FILE=self.config)
-        for key in ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'SOURCE_DIR', 'OUT', 'COMPRESS'):
+        for key in ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'DEVICE', 'SOURCE_DIR', 'OUT', 'COMPRESS'):
             env.pop(key, None)
         result = subprocess.run(
             [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', T.BACKUP_BAT],
@@ -128,7 +130,7 @@ class TestBackupBatch(unittest.TestCase):
 
     def test_command_line_config_path_overrides_environment(self):
         env = self.env(BACKUP_CONFIG_FILE=os.path.join(self.case, 'missing.yaml'))
-        for key in ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'SOURCE_DIR', 'OUT', 'COMPRESS'):
+        for key in ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'DEVICE', 'SOURCE_DIR', 'OUT', 'COMPRESS'):
             env.pop(key, None)
         result = subprocess.run(
             [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', T.BACKUP_BAT,
@@ -183,7 +185,7 @@ class TestBackupBatch(unittest.TestCase):
 
     def test_tcp_serial_is_forwarded_to_adb_children(self):
         serial = '192.0.2.1:5555'
-        result = self.run_script(ADB_SERIAL=serial, ADB_CONNECT='1')
+        result = self.run_script(DEVICE=serial)
         self.assertEqual(result.returncode, 0, result.stdout.decode('utf-8', 'replace'))
         log = self.log_text()
         self.assertIn('connect ' + serial, log)
@@ -192,12 +194,43 @@ class TestBackupBatch(unittest.TestCase):
     def test_usb_serial_is_forwarded_without_tcp_connect(self):
         """USB 设备可显式选择 serial，但不能触发无线 adb connect。"""
         serial = 'USB-SERIAL-001'
-        result = self.run_script(ADB_SERIAL=serial, ADB_CONNECT='0')
+        result = self.run_script(DEVICE=serial)
         self.assertEqual(result.returncode, 0,
                          result.stdout.decode('utf-8', 'replace'))
         log = self.log_text()
         self.assertIn('serial=' + serial, log)
         self.assertNotIn('connect ' + serial, log)
+
+    def test_legacy_adb_serial_env_maps_to_device(self):
+        """旧环境变量 ADB_SERIAL 仍等价于新的 DEVICE 选择器。"""
+        serial = 'USB-SERIAL-001'
+        result = self.run_script(ADB_SERIAL=serial)
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        log = self.log_text()
+        self.assertIn('serial=' + serial, log)
+        self.assertNotIn('connect ', log)
+
+    def test_single_device_is_auto_selected(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        self.assertIn('serial=FAKE-1', self.log_text())
+
+    def test_multiple_devices_non_interactive_fails(self):
+        result = self.run_script(
+            FAKE_ADB_DEVICES='SERIAL-A device\nSERIAL-B device')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('多台', result.stdout.decode('utf-8', 'replace'))
+        self.assertFalse(os.path.isfile(self.out))
+
+    def test_configured_device_missing_fails(self):
+        result = self.run_script(DEVICE='MISSING-DEVICE',
+                                 FAKE_ADB_DEVICE_NOT_FOUND='MISSING-DEVICE')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('MISSING-DEVICE',
+                      result.stdout.decode('utf-8', 'replace'))
+        self.assertFalse(os.path.isfile(self.out))
 
     def test_failed_transfer_keeps_target_and_removes_partial(self):
         original = b'previous verified backup'
@@ -348,8 +381,9 @@ class TestDeviceEnvCaching(unittest.TestCase):
             'FAKE_ADB_LOG': log,
             'BACKUP_CONFIG_FILE': os.path.join(case, 'no-config.yaml'),
         })
-        for key in ('ADB_SERIAL', 'ADB_CONNECT', 'ANDROID_SERIAL',
-                    'FAKE_ADB_FAIL', 'FAKE_ADB_TRUNCATE',
+        for key in ('ADB_SERIAL', 'ADB_CONNECT', 'ANDROID_SERIAL', 'DEVICE',
+                    'FAKE_ADB_FAIL', 'FAKE_ADB_TRUNCATE', 'FAKE_ADB_DEVICES',
+                    'FAKE_ADB_DEVICE_NOT_FOUND',
                     'DOWNLOAD_DEVICE_PYTHON', 'DEVICE_PYTHON_URL',
                     'KEEP_ANDROID_ENV', 'LOG_LEVEL', 'PROGRESS_INTERVAL',
                     'SHOW_RATE'):

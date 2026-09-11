@@ -62,13 +62,11 @@ class TestConfig(unittest.TestCase):
         try:
             with open(path, 'w', encoding='utf-8') as fh:
                 fh.write('# comment\n')
-                fh.write('adb_serial: 192.0.2.1:5555\n')
-                fh.write('adb_connect: true\n')
+                fh.write('device: 192.0.2.1:5555\n')
                 fh.write('source_dir: "/storage/emulated/0/测试.d"\n')
                 fh.write('compress: gzip # inline comment\n')
             values = backup.read_config(path)
-            self.assertEqual(values['ADB_SERIAL'], '192.0.2.1:5555')
-            self.assertEqual(values['ADB_CONNECT'], '1')
+            self.assertEqual(values['DEVICE'], '192.0.2.1:5555')
             self.assertEqual(values['SOURCE_DIR'], '/storage/emulated/0/测试.d')
             self.assertEqual(values['COMPRESS'], 'gzip')
         finally:

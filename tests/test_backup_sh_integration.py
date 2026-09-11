@@ -26,6 +26,14 @@ echo "serial=${ANDROID_SERIAL:-}" >> "$FAKE_ADB_LOG"
 echo "adb $*" >> "$FAKE_ADB_LOG"
 [ -n "${FAKE_ADB_FAIL:-}" ] && exit 1
 case "$1" in
+    devices)
+        echo "List of devices attached"
+        if [ -n "${FAKE_ADB_DEVICES:-}" ]; then
+            printf '%b\n' "$FAKE_ADB_DEVICES"
+        else
+            printf 'FAKE-1 device\n'
+        fi
+        ;;
     connect)
         echo "connected to $2"
         ;;
@@ -125,8 +133,10 @@ class HarnessMixin:
         base.pop('ADB_SERIAL', None)
         base.pop('ADB_CONNECT', None)
         base.pop('ANDROID_SERIAL', None)
+        base.pop('DEVICE', None)
         base.pop('FAKE_ADB_FAIL', None)
         base.pop('FAKE_ADB_TRUNCATE', None)
+        base.pop('FAKE_ADB_DEVICES', None)
         base.pop('SOURCE_MODE', None)
         base.pop('DEVICE_PYTHON', None)
         base.pop('DOWNLOAD_DEVICE_PYTHON', None)
@@ -186,7 +196,7 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
         config = os.path.join(self.case, 'backup.yaml')
         with open(config, 'w', encoding='utf-8') as fh:
             fh.write('adb: adb\n')
-            fh.write('adb_connect: false\n')
+            fh.write('device: ""\n')
             fh.write('source_dir: "' + self.source + '"\n')
             fh.write('out: "' + self.out + '"\n')
             fh.write('compress: gzip\n')
@@ -203,7 +213,7 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
         config = os.path.join(self.case, 'backup-cli.yaml')
         with open(config, 'w', encoding='utf-8') as fh:
             fh.write('adb: adb\n')
-            fh.write('adb_connect: false\n')
+            fh.write('device: ""\n')
             fh.write('source_dir: "' + self.source + '"\n')
             fh.write('out: "' + self.out + '"\n')
             fh.write('compress: gzip\n')
@@ -220,7 +230,7 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
     def test_usb_serial_is_forwarded_without_tcp_connect(self):
         """USB 设备可显式选择 serial，但不能触发无线 adb connect。"""
         serial = 'USB-SERIAL-001'
-        result = self.run_script(ADB_SERIAL=serial, ADB_CONNECT='0')
+        result = self.run_script(DEVICE=serial)
         self.assertEqual(result.returncode, 0,
                          result.stdout.decode('utf-8', 'replace'))
         log = self.adb_log_text()
@@ -229,7 +239,7 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
 
     def test_wireless_tcp_serial_is_connected_and_forwarded(self):
         serial = '192.0.2.1:5555'
-        result = self.run_script(ADB_SERIAL=serial, ADB_CONNECT='1')
+        result = self.run_script(DEVICE=serial)
         self.assertEqual(result.returncode, 0,
                          result.stdout.decode('utf-8', 'replace'))
         log = self.adb_log_text()

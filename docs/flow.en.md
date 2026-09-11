@@ -98,11 +98,13 @@ and `show_rate`), without altering archive bytes.
 
 ## ADB Transports
 
-USB and wireless debugging use the same data protocol. For USB, set
-`adb_serial` empty for one device or to the USB serial when several devices are
-attached; leave `adb_connect` false. For wireless debugging, pair first, then
-set `adb_serial` to the currently displayed `host:connection-port`; set
-`adb_connect` true only when the controller should run `adb connect` first.
+USB and wireless debugging use the same data protocol. For USB, leave `device`
+empty for one device or set it to the USB serial when several devices are
+attached. For wireless debugging, pair first, then set `device` to the currently
+displayed `host:connection-port`; the controller runs `adb connect` first only
+for `host:port` values. With `device` empty, the controller enumerates
+`adb devices`: one online device is used directly, several are listed for an
+interactive choice (non-interactive runs error out), and zero is an error.
 
 The controller exports the selected serial as `ANDROID_SERIAL` for every ADB
 subprocess. `exec-out` is kept as a binary subprocess pipe. In particular,

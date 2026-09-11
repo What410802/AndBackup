@@ -9,8 +9,7 @@
 # download_device_python 行。键值完整说明见 README.md 与 docs/configuration.md
 # （English: docs/configuration.en.md）。
 adb: adb
-adb_serial: ""
-adb_connect: false
+device: ""
 source_dir: "/storage/emulated/0/DCIM"
 out: "./backups/"
 compress: xz
