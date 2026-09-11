@@ -27,9 +27,9 @@ cp src/backup-android.example.yaml src/backup-android.yaml
 copy src\backup-android.example.yaml src\backup-android.yaml
 ```
 
-随仓库模板（`backup-android.example.yaml`）默认采用 `device-python` + `download_device_python: true`
-（推荐：首跑联网下载并缓存解释器）。下表“内置默认”指该键未出现在配置中时的保守值；模板的
-示例值已按推荐覆盖 `source_mode` 与 `download_device_python` 两项。
+随仓库模板（`backup-android.example.yaml`）默认采用 `device-python`（推荐）；此时
+`download_device_python` 缺省即为 `true`，首跑联网下载并缓存解释器。下表“内置默认”指该键未
+出现在配置中时的值；“模板”列为示例配置的取值。
 
 | 键 | 内置默认 | 模板 | 作用 |
 |---|---|---|---|
@@ -38,10 +38,11 @@ copy src\backup-android.example.yaml src\backup-android.yaml
 | `compress` | 空/缺省 → `none`（不压缩） | `xz` | `xz`/`gzip`/`zstd`/`none` |
 | `source_mode` | `host-adb` | `device-python` | 主机逐条读，或设备端打包（见上） |
 | `device_python` | 未设置 | 未设置 | `device-python` 用：本机 Android ARM64 Python（单文件或含 `bin/`+`lib/` 的 prefix 目录）；模板留空以便自动下载 |
-| `download_device_python` | `false` | `true` | 无可用解释器时自动下载到主机缓存 |
+| `download_device_python` | `host-adb` 时 `false` | `device-python` 时默认 `true` | 无可用解释器时自动下载到主机缓存 |
 | `device_python_url` | 固定上游 | 同内置 | 覆盖下载地址；也可填本地 `.tar.zst` 离线复用 |
 | `keep_android_env` | 未设置→交互询问 | 同内置 | `device-python` 打包后是否保留设备端缓存（非交互默认删除） |
-| `device` | 空 → 自动选择 | 空 → 自动选择 | USB serial 或 `host:port`；留空自动选（单设备直连；多设备交互选择或报错） |
+| `host` | 空 → 不走无线 | 空 → 不走无线 | 无线端点：`IP` 或 `IP:端口`；非空即自动 `adb connect`（别名 `address`/`ip`） |
+| `device_id` | 空 → 自动选择 | 空 → 自动选择 | ADB 设备 ID（`adb devices` 第一列，如 `AERF6R4517018096`、`adb-…._adb-tls-connect._tcp`）；留空自动选（单设备直连；多设备交互选择或报错）。旧名 `device`/`adb_serial`/`serial` 兼容 |
 | `log_level` / `progress_interval` / `show_rate` | `info` / `5` / `false` | 同内置 | 输出控制 |
 
 `out` 语义：留空写当前目录的 `backup.tar.<后缀>`；**指向目录**（已存在，或以 `/`、`\`
@@ -50,19 +51,20 @@ copy src\backup-android.example.yaml src\backup-android.yaml
 （`.tar.xz`/`.tar.gz`/`.tar.zst`/`.tar`）不一致，交互终端会询问是否自动追加后缀，
 非交互环境按原文件名直接写入。完整键表见 [docs/configuration.md](docs/configuration.md)。
 
-设备选择（`device`）：留空则自动——单设备直接使用，多设备在交互终端列出选择（非交互报错）；
-显式填 USB serial 或 `host:port`（无线端点会自动执行 `adb connect`）。
+设备选择：`host` 管无线端点（`IP` 或 `IP:端口`，非空即自动 `adb connect`）；`device_id`
+固定 ADB 设备 ID（USB serial 或 mDNS ID）。两者留空则自动——单设备直接使用，多设备在交互
+终端列出选择（非交互报错）。
 
-USB 有线 ADB（单设备时可留空 `device`）：
+USB 有线 ADB（单设备时 `host`/`device_id` 都可留空）：
 
 ```yaml
 adb: adb
-device: ""
+host: ""
+device_id: ""
 source_dir: "/storage/emulated/0/DCIM"
 out: android-backup.tar.xz
 compress: xz
 source_mode: device-python
-download_device_python: true
 log_level: info
 progress_interval: 5
 show_rate: false
@@ -80,19 +82,20 @@ src/backup-android.sh
 adb devices
 ```
 
-多台设备同时在线时，可在交互终端按列表选择；或把 `device` 填为 `adb devices` 第一列的
-USB serial。单台设备留空即可自动选择。
+多台设备同时在线时，可在交互终端按列表选择；或把 `device_id` 填为 `adb devices` 第一列的
+设备 ID。单台设备两者留空即可自动选择。
 
 无线 ADB（TCP serial）：
 
 1. 在 Android“无线调试”页面完成 `adb pair <主机>:<配对端口>`。
-2. 将 YAML 中的 `device` 填为设备显示的连接地址 `设备IP:连接端口`。
+2. 将 YAML 中的 `host` 填为设备显示的连接地址 `设备IP:连接端口`（只填 `IP` 也可以，
+   `adb` 会用默认端口并自动连接）。
 3. 运行同一个 `backup-android.sh` 或 `backup-android.bat`；脚本会先执行 `adb connect`。
 
 无线连接配置示例：
 
 ```yaml
-device: 设备IP:连接端口
+host: 设备IP:连接端口
 ```
 
 示例 2：Windows CMD
@@ -102,8 +105,8 @@ cd src
 backup-android.bat
 ```
 
-Android 每次显示新的无线连接端口时，只需更新 YAML 的 `device` 行；USB 配置将 `device`
-留空即可（只有 `host:port` 形式才会触发 `adb connect`）。
+Android 每次显示新的无线连接端口时，只需更新 YAML 的 `host` 行；USB 配置将 `host`
+留空即可（只有 `host` 非空才会触发 `adb connect`）。
 
 YAML 可以放在任意路径。`.bat`/`.sh` 会把参数原样交给 `backup.py`：
 
@@ -118,8 +121,8 @@ src\backup-android.bat --config D:\backup-config\site-backup.yaml
 配置文件选择优先级为 `--config PATH`、`BACKUP_CONFIG_FILE`、脚本目录中默认的
 `src/backup-android.yaml`（存在时）。显式传入但不存在的 `--config` 会报错；将
 `BACKUP_CONFIG_FILE` 设为空或设为不存在路径，则不加载默认 YAML，适合自动化测试或完全使用
-环境变量的场景。同名业务环境变量（如 `OUT`、`DEVICE`）始终优先于 YAML 内的值（旧名
-`ADB_SERIAL` 仍兼容）。
+环境变量的场景。同名业务环境变量（如 `OUT`、`HOST`、`DEVICE_ID`）始终优先于 YAML 内的值
+（旧名 `device`/`ADB_SERIAL` 仍兼容）。
 
 完整的 YAML 键、环境变量、命令行（含 `--clean-env`/`--clean-host-cache`）、缓存与清理、
 压缩/zstd 说明见 **[docs/configuration.md](docs/configuration.md)**；数据流与元数据边界见

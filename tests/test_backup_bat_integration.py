@@ -36,7 +36,7 @@ class TestBackupBatch(unittest.TestCase):
         with open(self.config, 'w', encoding='utf-8', newline='\n') as fh:
             fh.write('# values deliberately loaded through the shared YAML path\n')
             fh.write('adb: "' + self.adb.replace('\\', '/') + '"\n')
-            fh.write('device: ""\n')
+            fh.write('device_id: ""\n')
             fh.write('source_dir: "' + self.source + '"\n')
             fh.write('out: "' + self.out.replace('\\', '/') + '"\n')
             fh.write('compress: gzip\n')
@@ -76,6 +76,8 @@ class TestBackupBatch(unittest.TestCase):
         env.pop('ADB_CONNECT', None)
         env.pop('ANDROID_SERIAL', None)
         env.pop('DEVICE', None)
+        env.pop('HOST', None)
+        env.pop('DEVICE_ID', None)
         env.pop('FAKE_ADB_FAIL', None)
         env.pop('FAKE_ADB_TRUNCATE', None)
         env.pop('FAKE_ADB_DEVICES', None)
@@ -117,7 +119,7 @@ class TestBackupBatch(unittest.TestCase):
 
     def test_shared_yaml_config_drives_batch_launcher(self):
         env = self.env(BACKUP_CONFIG_FILE=self.config)
-        for key in ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'DEVICE', 'SOURCE_DIR', 'OUT', 'COMPRESS'):
+        for key in ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'DEVICE', 'HOST', 'DEVICE_ID', 'SOURCE_DIR', 'OUT', 'COMPRESS'):
             env.pop(key, None)
         result = subprocess.run(
             [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', T.BACKUP_BAT],
@@ -130,7 +132,7 @@ class TestBackupBatch(unittest.TestCase):
 
     def test_command_line_config_path_overrides_environment(self):
         env = self.env(BACKUP_CONFIG_FILE=os.path.join(self.case, 'missing.yaml'))
-        for key in ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'DEVICE', 'SOURCE_DIR', 'OUT', 'COMPRESS'):
+        for key in ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'DEVICE', 'HOST', 'DEVICE_ID', 'SOURCE_DIR', 'OUT', 'COMPRESS'):
             env.pop(key, None)
         result = subprocess.run(
             [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', T.BACKUP_BAT,
@@ -183,26 +185,42 @@ class TestBackupBatch(unittest.TestCase):
         self.assertFalse(os.path.isfile(target + '.tar.xz'))
         self.assertEqual(T.run_cli(['verify', target])[0], 0)
 
-    def test_tcp_serial_is_forwarded_to_adb_children(self):
+    def test_host_connects_and_pins_matching_device(self):
         serial = '192.0.2.1:5555'
-        result = self.run_script(DEVICE=serial)
+        result = self.run_script(HOST=serial,
+                                 FAKE_ADB_DEVICES=serial + ' device')
         self.assertEqual(result.returncode, 0, result.stdout.decode('utf-8', 'replace'))
         log = self.log_text()
         self.assertIn('connect ' + serial, log)
         self.assertIn('serial=' + serial, log)
 
-    def test_usb_serial_is_forwarded_without_tcp_connect(self):
-        """USB 设备可显式选择 serial，但不能触发无线 adb connect。"""
-        serial = 'USB-SERIAL-001'
-        result = self.run_script(DEVICE=serial)
+    def test_host_ip_only_matches_connected_serial(self):
+        """只给 IP 也应可用：adb connect 后串口变成 IP:port，按前缀匹配。"""
+        result = self.run_script(HOST='192.0.2.1',
+                                 FAKE_ADB_DEVICES='192.0.2.1:5555 device')
+        self.assertEqual(result.returncode, 0, result.stdout.decode('utf-8', 'replace'))
+        log = self.log_text()
+        self.assertIn('connect 192.0.2.1', log)
+        self.assertIn('serial=192.0.2.1:5555', log)
+
+    def test_host_without_matching_device_fails(self):
+        result = self.run_script(HOST='192.0.2.1:5555')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('未找到对应设备', result.stdout.decode('utf-8', 'replace'))
+        self.assertFalse(os.path.isfile(self.out))
+
+    def test_device_id_is_pinned_without_connect(self):
+        """device_id 只固定 adb 设备，不触发无线 adb connect。"""
+        serial = 'AERF6R4517018096'
+        result = self.run_script(DEVICE_ID=serial)
         self.assertEqual(result.returncode, 0,
                          result.stdout.decode('utf-8', 'replace'))
         log = self.log_text()
         self.assertIn('serial=' + serial, log)
-        self.assertNotIn('connect ' + serial, log)
+        self.assertNotIn('connect ', log)
 
-    def test_legacy_adb_serial_env_maps_to_device(self):
-        """旧环境变量 ADB_SERIAL 仍等价于新的 DEVICE 选择器。"""
+    def test_legacy_adb_serial_env_maps_to_device_id(self):
+        """旧环境变量 ADB_SERIAL 仍等价于 device_id 选择器。"""
         serial = 'USB-SERIAL-001'
         result = self.run_script(ADB_SERIAL=serial)
         self.assertEqual(result.returncode, 0,
@@ -225,7 +243,7 @@ class TestBackupBatch(unittest.TestCase):
         self.assertFalse(os.path.isfile(self.out))
 
     def test_configured_device_missing_fails(self):
-        result = self.run_script(DEVICE='MISSING-DEVICE',
+        result = self.run_script(DEVICE_ID='MISSING-DEVICE',
                                  FAKE_ADB_DEVICE_NOT_FOUND='MISSING-DEVICE')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('MISSING-DEVICE',
@@ -258,8 +276,9 @@ class TestBackupBatch(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(os.path.exists(self.out))
 
-    def test_device_python_requires_device_python_path(self):
-        result = self.run_script(SOURCE_MODE='device-python')
+    def test_device_python_without_interpreter_and_download_fails(self):
+        result = self.run_script(SOURCE_MODE='device-python',
+                                 DOWNLOAD_DEVICE_PYTHON='0')
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(os.path.exists(self.out))
         leftovers = [name for name in os.listdir(self.case)
@@ -382,6 +401,7 @@ class TestDeviceEnvCaching(unittest.TestCase):
             'BACKUP_CONFIG_FILE': os.path.join(case, 'no-config.yaml'),
         })
         for key in ('ADB_SERIAL', 'ADB_CONNECT', 'ANDROID_SERIAL', 'DEVICE',
+                    'HOST', 'DEVICE_ID',
                     'FAKE_ADB_FAIL', 'FAKE_ADB_TRUNCATE', 'FAKE_ADB_DEVICES',
                     'FAKE_ADB_DEVICE_NOT_FOUND',
                     'DOWNLOAD_DEVICE_PYTHON', 'DEVICE_PYTHON_URL',

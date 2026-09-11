@@ -62,11 +62,13 @@ class TestConfig(unittest.TestCase):
         try:
             with open(path, 'w', encoding='utf-8') as fh:
                 fh.write('# comment\n')
-                fh.write('device: 192.0.2.1:5555\n')
+                fh.write('host: 192.0.2.1:5555\n')
+                fh.write('device_id: AERF6R4517018096\n')
                 fh.write('source_dir: "/storage/emulated/0/测试.d"\n')
                 fh.write('compress: gzip # inline comment\n')
             values = backup.read_config(path)
-            self.assertEqual(values['DEVICE'], '192.0.2.1:5555')
+            self.assertEqual(values['HOST'], '192.0.2.1:5555')
+            self.assertEqual(values['DEVICE_ID'], 'AERF6R4517018096')
             self.assertEqual(values['SOURCE_DIR'], '/storage/emulated/0/测试.d')
             self.assertEqual(values['COMPRESS'], 'gzip')
         finally:

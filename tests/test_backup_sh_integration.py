@@ -134,6 +134,8 @@ class HarnessMixin:
         base.pop('ADB_CONNECT', None)
         base.pop('ANDROID_SERIAL', None)
         base.pop('DEVICE', None)
+        base.pop('HOST', None)
+        base.pop('DEVICE_ID', None)
         base.pop('FAKE_ADB_FAIL', None)
         base.pop('FAKE_ADB_TRUNCATE', None)
         base.pop('FAKE_ADB_DEVICES', None)
@@ -196,7 +198,7 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
         config = os.path.join(self.case, 'backup.yaml')
         with open(config, 'w', encoding='utf-8') as fh:
             fh.write('adb: adb\n')
-            fh.write('device: ""\n')
+            fh.write('device_id: ""\n')
             fh.write('source_dir: "' + self.source + '"\n')
             fh.write('out: "' + self.out + '"\n')
             fh.write('compress: gzip\n')
@@ -213,7 +215,7 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
         config = os.path.join(self.case, 'backup-cli.yaml')
         with open(config, 'w', encoding='utf-8') as fh:
             fh.write('adb: adb\n')
-            fh.write('device: ""\n')
+            fh.write('device_id: ""\n')
             fh.write('source_dir: "' + self.source + '"\n')
             fh.write('out: "' + self.out + '"\n')
             fh.write('compress: gzip\n')
@@ -228,18 +230,19 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
         self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
 
     def test_usb_serial_is_forwarded_without_tcp_connect(self):
-        """USB 设备可显式选择 serial，但不能触发无线 adb connect。"""
+        """device_id 用于固定 ADB 设备，不应触发无线 adb connect。"""
         serial = 'USB-SERIAL-001'
-        result = self.run_script(DEVICE=serial)
+        result = self.run_script(DEVICE_ID=serial)
         self.assertEqual(result.returncode, 0,
                          result.stdout.decode('utf-8', 'replace'))
         log = self.adb_log_text()
         self.assertIn('serial=' + serial, log)
         self.assertNotIn('adb connect ', log)
 
-    def test_wireless_tcp_serial_is_connected_and_forwarded(self):
+    def test_wireless_tcp_host_is_connected_and_forwarded(self):
         serial = '192.0.2.1:5555'
-        result = self.run_script(DEVICE=serial)
+        result = self.run_script(HOST=serial,
+                                 FAKE_ADB_DEVICES=serial + ' device')
         self.assertEqual(result.returncode, 0,
                          result.stdout.decode('utf-8', 'replace'))
         log = self.adb_log_text()

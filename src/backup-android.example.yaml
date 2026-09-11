@@ -3,18 +3,20 @@
 # 开箱即可试用：只需把 source_dir 改成要备份的设备目录；out 指向一个目录时会自动
 # 以“<source_dir 尾部名>.<压缩后缀>”命名（此处为 ./backups/DCIM.tar.xz），留空则写
 # 当前目录的 backup.tar.xz，直接写文件名亦可（后缀与 compress 不符时交互询问是否补全）。
-# 推荐模式 device-python：download_device_python: true 会在首跑联网下载与设备 ABI
-# 匹配的解释器并缓存到 /data/local/tmp/andbackup-pyenv，之后自动复用。device-python
-# 失败只会明确报错，不会自动退回 host-adb；完全离线时改 source_mode: host-adb 并删掉
-# download_device_python 行。键值完整说明见 README.md 与 docs/configuration.md
+# 设备选择：host 管无线端点（IP 或 IP:端口，会自动 adb connect）；device_id 管 ADB
+# 设备 ID（如 AERF6R4517018096 或 adb-…._adb-tls-connect._tcp）。两者留空则自动选择：
+# 单设备直连，多设备在交互终端列出选择（非交互报错）。
+# 推荐模式 device-python：缺省 download_device_python 即为 true，首跑联网下载与设备
+# ABI 匹配的解释器并缓存到 /data/local/tmp/andbackup-pyenv，之后自动复用；失败只会
+# 明确报错，不会自动退回 host-adb。键值完整说明见 README.md 与 docs/configuration.md
 # （English: docs/configuration.en.md）。
 adb: adb
-device: ""
+host: ""
+device_id: ""
 source_dir: "/storage/emulated/0/DCIM"
 out: "./backups/"
 compress: xz
 source_mode: device-python
-download_device_python: true
 log_level: info
 progress_interval: 5
 show_rate: false

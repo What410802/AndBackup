@@ -11,7 +11,7 @@ command-line and cache-cleanup reference.
 2. `BACKUP_CONFIG_FILE` environment variable
 3. the sibling `src/backup-android.yaml` (when present)
 4. operational environment variables override the YAML values
-   (`ADB`, `DEVICE`, `SOURCE_DIR`, `OUT`, `COMPRESS`, `SOURCE_MODE`, `DEVICE_PYTHON`,
+   (`ADB`, `HOST`, `DEVICE_ID`, `SOURCE_DIR`, `OUT`, `COMPRESS`, `SOURCE_MODE`, `DEVICE_PYTHON`,
    `DOWNLOAD_DEVICE_PYTHON`, `DEVICE_PYTHON_URL`, `KEEP_ANDROID_ENV`,
    `LOG_LEVEL`, `PROGRESS_INTERVAL`, `SHOW_RATE`)
 5. built-in defaults
@@ -23,24 +23,24 @@ is a tiny top-level `key: value` subset (single/double-quoted strings,
 
 ## YAML Keys
 
-> The shipped template `backup-android.example.yaml` defaults (recommended) to
-> `source_mode: device-python` with `download_device_python: true` (first run
-> downloads and caches the interpreter). “Default” below is the conservative
+> The shipped template `backup-android.example.yaml` recommends
+> `source_mode: device-python`; `download_device_python` then defaults to `true`
+> (the first run downloads and caches the interpreter). “Default” below is the
 > built-in value used when a key is absent (built-in `source_mode` is
-> `host-adb`, built-in `download_device_python` is `false`, no auto-download);
-> the template overrides only those two, and no mode ever auto-switches to the
-> other.
+> `host-adb`; `download_device_python` defaults to `true` only for
+> `device-python`, otherwise `false`).
 
 | Key | Default | Meaning |
 |---|---|---|
 | `adb` | `adb` | ADB executable or absolute path |
-| `device` | empty → auto | USB serial or wireless `host:port`; empty auto-selects (one device directly; multiple listed for an interactive choice, error when non-interactive). `host:port` is `adb connect`-ed automatically. The legacy `adb_serial` name still maps here. |
+| `host` | empty → no wireless | wireless endpoint: `IP` or `IP:port`; non-empty runs `adb connect` automatically (aliases `address`/`ip`) |
+| `device_id` | empty → auto | ADB device id (`adb devices` first column, e.g. `AERF6R4517018096`, `adb-…._adb-tls-connect._tcp`); empty auto-selects (one device directly; multiple listed for an interactive choice, error when non-interactive). Legacy `device`/`adb_serial`/`serial` still map here. |
 | `source_dir` | `/sdcard/DCIM` | absolute device directory to back up |
 | `out` | empty → `backup.tar.<suffix>` in cwd | output target: a directory (auto-named from the source_dir tail) or a file; see “OUT semantics” |
 | `compress` | empty/absent → `none` | `xz`, `gzip`, `zstd`, or `none`; empty/absent means `none` (uncompressed) |
 | `source_mode` | `host-adb` | `host-adb` (host reads) or `device-python` (device packs) |
 | `device_python` | unset | `device-python`: local Android ARM64 Python, a single file or a prefix dir (`bin/`+`lib/`) |
-| `download_device_python` | `false` | fetch the interpreter when no usable `device_python` exists |
+| `download_device_python` | `true` for `device-python` (else `false`) | fetch the interpreter when no usable `device_python` exists |
 | `device_python_url` | pinned upstream `.tar.zst` | override the download URL; may be a local `.tar.zst` |
 | `keep_android_env` | unset | keep the device interpreter cache: `true`/`false`, else ask (remove when non-interactive) |
 | `log_level` | `info` | `quiet`, `error`, `warn`, `info`, `debug`, `trace` |
@@ -58,12 +58,15 @@ non-interactive runs (no TTY, or `log_level` `quiet`/`error`) write verbatim,
 while an interactive terminal is asked once whether to append the suffix
 (Enter = append, `n`/`no` = keep the name).
 
-**Device selection (`device`)**: empty → enumerate `adb devices`; exactly one
-online device is used directly, several are listed for an interactive choice
-(an error when non-interactive or `log_level` `quiet`/`error`), and zero is an
-error. When set explicitly, a `host:port` is `adb connect`-ed first and every
-later command is pinned with `ANDROID_SERIAL`; a missing/offline device fails
-loudly at `get-state` (no silent device switching).
+**Device selection**: `host` is the wireless endpoint (`IP` or `IP:port`);
+non-empty runs `adb connect` first. Afterwards `device_id` pins the device when
+given; otherwise the controller matches `adb devices` against `host` (exact, or
+an `IP:` prefix so an IP-only value works) and errors out when nothing matches
+(never silently switching to another device). A non-empty `device_id` with an
+empty `host` pins that adb device id directly (USB serial or mDNS id) without
+`adb connect`. With both empty, `adb devices` is enumerated: exactly one online
+device is used, several are listed for an interactive choice (an error when
+non-interactive or `log_level` `quiet`/`error`), and zero is an error.
 
 ## Environment Variables
 
@@ -75,7 +78,7 @@ The operational variables map 1:1 to the YAML keys above (e.g.
 | `PYTHON` | full path of the Python interpreter used by the wrappers (Windows) |
 | `BACKUP_CONFIG_FILE` | UTF-8 config path; empty/missing disables YAML |
 
-The legacy `ADB_SERIAL` environment variable still maps to `DEVICE`;
+The legacy `DEVICE`/`ADB_SERIAL` environment variables still map to `DEVICE_ID`;
 `ADB_CONNECT` is deprecated and ignored.
 
 ## Command Line

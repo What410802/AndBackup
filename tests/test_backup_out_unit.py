@@ -71,5 +71,41 @@ class TestOutPlanning(unittest.TestCase):
         self.assertTrue(confirm)
 
 
+class TestDownloadDefault(unittest.TestCase):
+    def test_device_python_defaults_to_true(self):
+        self.assertTrue(
+            backup._download_device_python_setting({}, 'device-python'))
+
+    def test_host_adb_defaults_to_false(self):
+        self.assertFalse(
+            backup._download_device_python_setting({}, 'host-adb'))
+
+    def test_explicit_value_wins(self):
+        self.assertFalse(backup._download_device_python_setting(
+            {'DOWNLOAD_DEVICE_PYTHON': 'false'}, 'device-python'))
+        self.assertTrue(backup._download_device_python_setting(
+            {'DOWNLOAD_DEVICE_PYTHON': 'true'}, 'host-adb'))
+
+
+class TestMatchHost(unittest.TestCase):
+    def test_exact_ip_prefix_and_mdns_matching(self):
+        devices = [('192.0.2.1:5555', 'device'),
+                   ('USB-1', 'device'),
+                   ('adb-X-._adb-tls-connect._tcp', 'device')]
+        self.assertEqual(backup._match_host(devices, '192.0.2.1'),
+                         ['192.0.2.1:5555'])
+        self.assertEqual(backup._match_host(devices, '192.0.2.1:5555'),
+                         ['192.0.2.1:5555'])
+        self.assertEqual(
+            backup._match_host(devices, 'adb-X-._adb-tls-connect._tcp'),
+            ['adb-X-._adb-tls-connect._tcp'])
+        self.assertEqual(backup._match_host(devices, '10.0.0.9'), [])
+
+    def test_offline_entries_are_ignored(self):
+        self.assertEqual(
+            backup._match_host([('192.0.2.1:5555', 'offline')], '192.0.2.1'),
+            [])
+
+
 if __name__ == '__main__':
     unittest.main()

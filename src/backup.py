@@ -24,7 +24,8 @@ import paxck
 import android_python
 
 
-ENV_KEYS = ('ADB', 'DEVICE', 'ADB_SERIAL', 'SOURCE_DIR', 'OUT', 'COMPRESS',
+ENV_KEYS = ('ADB', 'HOST', 'DEVICE_ID', 'DEVICE', 'ADB_SERIAL',
+            'SOURCE_DIR', 'OUT', 'COMPRESS',
             'SOURCE_MODE', 'DEVICE_PYTHON', 'DOWNLOAD_DEVICE_PYTHON',
             'DEVICE_PYTHON_URL', 'KEEP_ANDROID_ENV',
             'LOG_LEVEL', 'PROGRESS_INTERVAL', 'SHOW_RATE')
@@ -44,8 +45,9 @@ def read_config(path):
     """Read the deliberately small top-level YAML subset used by this tool."""
     aliases = {
         'adb': 'ADB',
-        'device': 'DEVICE', 'device_id': 'DEVICE', 'device-id': 'DEVICE',
-        'adb_serial': 'DEVICE', 'serial': 'DEVICE',
+        'host': 'HOST', 'address': 'HOST', 'ip': 'HOST',
+        'device_id': 'DEVICE_ID', 'device': 'DEVICE_ID',
+        'adb_serial': 'DEVICE_ID', 'serial': 'DEVICE_ID',
         'source_dir': 'SOURCE_DIR', 'source': 'SOURCE_DIR',
         'out': 'OUT', 'compress': 'COMPRESS',
         'source_mode': 'SOURCE_MODE', 'source-mode': 'SOURCE_MODE',
@@ -116,9 +118,11 @@ def _settings(config_path=None):
     for key in ENV_KEYS:
         if key in os.environ:
             values[key] = os.environ[key]
-    # Legacy: ADB_SERIAL is the old name for the DEVICE selector.
-    if not values.get('DEVICE') and values.get('ADB_SERIAL'):
-        values['DEVICE'] = values['ADB_SERIAL']
+    # Legacy aliases for the device-id selector (newest name first).
+    if not values.get('DEVICE_ID'):
+        legacy = values.get('DEVICE') or values.get('ADB_SERIAL')
+        if legacy:
+            values['DEVICE_ID'] = legacy
     for key, value in DEFAULTS.items():
         values.setdefault(key, value)
     return values, config_path
@@ -162,39 +166,17 @@ def _adb_devices(adb):
     return devices
 
 
-def _resolve_device(adb, settings, log_level):
-    """Pick the ADB device to use; returns its serial or host:port.
-
-    * Explicit ``DEVICE`` (config or env) wins; a ``host:port`` value is
-      connected first. A missing/offline device surfaces as a later
-      ``get-state`` failure.
-    * Otherwise auto-select: exactly one online device is used; more than one
-      is resolved interactively (or errors out when non-interactive); zero is
-      an error.
-    """
-    device = (settings.get('DEVICE', '') or '').strip()
-    if device:
-        if ':' in device:
-            result = _run_adb(adb, ('connect', device), _base_adb_env())
-            if result.returncode:
-                raise RuntimeError(_display_error(
-                    f'无法连接 ADB 设备 {device}', result))
-        return device
-
-    online = [serial for serial, state in _adb_devices(adb)
-              if state == 'device']
-    if not online:
-        raise RuntimeError(
-            'adb 未发现已授权的设备。请确认已开启 USB 调试并在设备上授权，'
-            '或在配置中设置 device（USB serial 或 host:port）。')
-    if len(online) == 1:
-        return online[0]
+def _choose_device(devices, log_level, hint=None):
+    """Pick one device from several, interactively when possible."""
+    if len(devices) == 1:
+        return devices[0]
     if not sys.stdin.isatty() or log_level in ('quiet', 'error'):
         raise RuntimeError(
-            '检测到多台 ADB 设备（' + '、'.join(online) +
-            '），无法自动选择。请在配置中设置 device 字段，或在交互终端中选择。')
-    print('检测到多台 ADB 设备：')
-    for index, serial in enumerate(online, 1):
+            (hint + '：' if hint else '') +
+            '检测到多台 ADB 设备（' + '、'.join(devices) +
+            '），无法自动选择。请在配置中设置 device_id，或在交互终端中选择。')
+    print(hint or '检测到多台 ADB 设备：')
+    for index, serial in enumerate(devices, 1):
         print(f'  [{index}] {serial}')
     try:
         answer = input('请输入要备份的设备序号：')
@@ -204,9 +186,62 @@ def _resolve_device(adb, settings, log_level):
         choice = int(answer.strip())
     except ValueError:
         raise RuntimeError(f'无效的序号：{answer!r}')
-    if not 1 <= choice <= len(online):
+    if not 1 <= choice <= len(devices):
         raise RuntimeError(f'序号超出范围：{choice}')
-    return online[choice - 1]
+    return devices[choice - 1]
+
+
+def _match_host(devices, host):
+    """Online serials that correspond to a wireless ``host`` target.
+
+    ``adb connect 192.0.2.1`` yields the serial ``192.0.2.1:5555``, so an
+    IP-only ``host`` also matches by prefix; an mDNS id matches exactly.
+    """
+    host = host.lower()
+    return [serial for serial, state in devices
+            if state == 'device'
+            and (serial.lower() == host
+                 or serial.lower().startswith(host + ':'))]
+
+
+def _resolve_device(adb, settings, log_level):
+    """Pick the ADB device to use; returns its serial as shown by adb.
+
+    * ``host`` selects the wireless endpoint (``IP`` or ``IP:port``); the
+      controller runs ``adb connect`` first, then pins the matching device.
+    * ``device_id`` pins a specific adb device id (USB serial or mDNS id).
+    * With neither set, exactly one online device is used; several are
+      resolved interactively (or error when non-interactive); zero is an error.
+    """
+    host = (settings.get('HOST', '') or '').strip()
+    device_id = (settings.get('DEVICE_ID', '') or '').strip()
+    if host:
+        result = _run_adb(adb, ('connect', host), _base_adb_env())
+        if result.returncode:
+            raise RuntimeError(_display_error(
+                f'无法连接 ADB 设备 {host}', result))
+        if device_id:
+            return device_id
+        matched = _match_host(_adb_devices(adb), host)
+        if len(matched) == 1:
+            return matched[0]
+        if not matched:
+            raise RuntimeError(
+                f'已连接 {host}，但 adb devices 中未找到对应设备。'
+                '请确认无线调试端口未变化，或在配置中设置 device_id。')
+        return _choose_device(matched, log_level,
+                              hint=f'已连接 {host}，但匹配到多台设备')
+
+    if device_id:
+        return device_id
+
+    online = [serial for serial, state in _adb_devices(adb)
+              if state == 'device']
+    if not online:
+        raise RuntimeError(
+            'adb 未发现已授权的设备。请确认已开启 USB 调试并在设备上授权，'
+            '或在配置中设置 device_id（或 host）。')
+    return _choose_device(online, log_level)
 
 
 def _stream_android_archive(source, adb, compress, output, env,
@@ -563,13 +598,23 @@ def _clean_device_python_env(adb, env):
         raise RuntimeError(f'清理设备端 Python 环境失败：{e}') from e
 
 
-def _keep_env_explicit(value):
+def _explicit_bool(value):
     text = (value or '').strip().lower()
     if text in ('1', 'true', 'yes', 'on'):
         return True
     if text in ('0', 'false', 'no', 'off'):
         return False
     return None
+
+
+def _keep_env_explicit(value):
+    return _explicit_bool(value)
+
+
+def _download_device_python_setting(settings, source_mode):
+    """`download_device_python` defaults to true for device-python mode."""
+    flag = _explicit_bool(settings.get('DOWNLOAD_DEVICE_PYTHON', ''))
+    return (source_mode == 'device-python') if flag is None else flag
 
 
 def _decide_keep_device_env(settings, log_level):
@@ -764,9 +809,8 @@ def run(settings):
     compress = (settings.get('COMPRESS', '') or 'none').strip().lower()
     source_mode = str(settings.get('SOURCE_MODE', 'host-adb')).lower()
     device_python = settings.get('DEVICE_PYTHON', '').strip()
-    download_device_python = str(
-        settings.get('DOWNLOAD_DEVICE_PYTHON', '')).lower() in (
-            '1', 'true', 'yes', 'on')
+    download_device_python = _download_device_python_setting(
+        settings, source_mode)
     device_python_url = settings.get('DEVICE_PYTHON_URL', '').strip()
     out = settings.get('OUT', '').strip()
     log_level = str(settings.get('LOG_LEVEL', 'info')).lower()

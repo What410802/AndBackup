@@ -9,7 +9,7 @@
 1. 命令行 `--config PATH`（优先级最高）
 2. 环境变量 `BACKUP_CONFIG_FILE`
 3. 脚本同目录默认 `src/backup-android.yaml`（存在时）
-4. 业务环境变量（`ADB`、`DEVICE`、`SOURCE_DIR`、`OUT`、`COMPRESS`、`SOURCE_MODE`、`DEVICE_PYTHON`、
+4. 业务环境变量（`ADB`、`HOST`、`DEVICE_ID`、`SOURCE_DIR`、`OUT`、`COMPRESS`、`SOURCE_MODE`、`DEVICE_PYTHON`、
    `DOWNLOAD_DEVICE_PYTHON`、`DEVICE_PYTHON_URL`、`KEEP_ANDROID_ENV`、`LOG_LEVEL`、
    `PROGRESS_INTERVAL`、`SHOW_RATE`）始终优先于 YAML 内的同名键
 5. 内置默认值
@@ -20,21 +20,22 @@
 
 ## YAML 键
 
-> 随仓库模板 `backup-android.example.yaml` 的推荐/示例默认是 `source_mode: device-python` +
-> `download_device_python: true`（首跑联网下载并缓存解释器）。下表“默认”是键未配置时的内置
-> 保守值（内置 `source_mode` 为 `host-adb`、`download_device_python` 为 `false`，不自动联网）；
-> 模板仅对这两项给出推荐覆盖，其余键模板与内置默认一致。
+> 随仓库模板 `backup-android.example.yaml` 的推荐默认是 `source_mode: device-python`；此时
+> `download_device_python` 缺省即为 `true`（首跑联网下载并缓存解释器）。下表“默认”是键未
+> 配置时的内置值（内置 `source_mode` 为 `host-adb`；`download_device_python` 仅在
+> `device-python` 模式下默认 `true`，否则 `false`）。
 
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `adb` | `adb` | `adb` 可执行文件或绝对路径 |
-| `device` | 空 → 自动选择 | USB serial 或无线 `host:port`；留空自动选（单设备直连；多设备交互选择，非交互报错）。`host:port` 会自动 `adb connect`；旧名 `adb_serial` 仍兼容 |
+| `host` | 空 → 不走无线 | 无线端点：`IP` 或 `IP:端口`；非空即自动 `adb connect`（别名 `address`/`ip`） |
+| `device_id` | 空 → 自动选择 | ADB 设备 ID（`adb devices` 第一列，如 `AERF6R4517018096`、`adb-…._adb-tls-connect._tcp`）；留空自动选（单设备直连；多设备交互选择，非交互报错）。旧名 `device`/`adb_serial`/`serial` 兼容 |
 | `source_dir` | `/sdcard/DCIM` | 设备上要备份的绝对目录 |
 | `out` | 空 → 当前目录 `backup.tar.<后缀>` | 输出目标：目录（自动按 source_dir 尾部命名）或文件名，见下方“OUT 语义” |
 | `compress` | 空/缺省 → `none` | `xz`、`gzip`、`zstd` 或 `none`；为空/不存在时视为 `none`（不压缩） |
 | `source_mode` | `host-adb` | `host-adb`（主机逐条读）或 `device-python`（设备端打包） |
 | `device_python` | 未设置 | `device-python` 用：本机 Android ARM64 Python——单文件解释器，或含 `bin/`+`lib/` 的 prefix 目录 |
-| `download_device_python` | `false` | `device-python` 且无可用的 `DEVICE_PYTHON` 时自动下载到缓存/目标路径 |
+| `download_device_python` | `device-python` 时 `true`（否则 `false`） | 无可用 `DEVICE_PYTHON` 时自动下载到主机缓存 |
 | `device_python_url` | 固定上游 `.tar.zst` | 覆盖下载地址；可为本地 `.tar.zst` 文件路径（离线复用） |
 | `keep_android_env` | 未设置 | `device-python` 保留设备端解释器缓存：`true`/`false`，未设置则交互询问、非交互删除 |
 | `log_level` | `info` | `quiet`、`error`、`warn`、`info`、`debug`、`trace` |
@@ -49,10 +50,12 @@
 TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互终端询问一次是否自动
 追加该后缀（回车 = 追加，输入 `n`/`no` 则按原名写入）。
 
-**设备选择（`device`）**：留空 → 枚举 `adb devices`，在线设备恰一台则直接使用；多台在交互
-终端列出并让用户选择序号（非交互或 `log_level` 为 `quiet`/`error` 时报错退出）；0 台报错。
-显式设置时，`host:port` 先执行 `adb connect`，随后用 `ANDROID_SERIAL` 固定该设备执行后续
-命令；设备不存在或离线时在 `get-state` 阶段明确报错退出（不会静默换设备）。
+**设备选择**：`host` 管无线端点（`IP` 或 `IP:端口`），非空即先执行 `adb connect`；随后优先
+用 `device_id` 固定设备，未给出 `device_id` 时按 `adb devices` 中与 `host` 匹配（相同，或
+`IP:` 前缀，兼容只填 IP）的在线设备，匹配不到则报错退出（不会静默改用其他设备）。
+`device_id` 非空且 `host` 为空时直接固定该 ADB 设备 ID（USB serial 或 mDNS ID），不触发
+`adb connect`。两者都留空 → 枚举 `adb devices`：恰一台在线设备直接使用；多台在交互终端
+列出并让用户选择序号（非交互或 `log_level` 为 `quiet`/`error` 时报错退出）；0 台报错。
 
 ## 环境变量
 
@@ -63,7 +66,7 @@ TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互
 | `PYTHON` | Windows 上包装脚本使用的 Python 解释器完整路径（可选） |
 | `BACKUP_CONFIG_FILE` | UTF-8 配置文件路径；空值/不存在则不加载 YAML |
 
-旧环境变量 `ADB_SERIAL` 仍视为 `DEVICE` 的别名；`ADB_CONNECT` 已废弃、被忽略。
+旧环境变量 `DEVICE`/`ADB_SERIAL` 仍视为 `DEVICE_ID` 的别名；`ADB_CONNECT` 已废弃、被忽略。
 
 ## 命令行
 

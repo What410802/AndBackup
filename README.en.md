@@ -54,54 +54,57 @@ copy src\backup-android.example.yaml src\backup-android.yaml
 Edit the copied file. Its supported top-level YAML keys are:
 
 The shipped template (`backup-android.example.yaml`) defaults to
-`source_mode: device-python` with `download_device_python: true` (recommended;
-the first run downloads and caches the interpreter). Where a key is absent the
-conservative built-in applies (built-in `source_mode` is `host-adb`, built-in
-`download_device_python` is `false`; no mode ever auto-switches to the other).
+`source_mode: device-python` (recommended); `download_device_python` then
+defaults to `true`, so the first run downloads and caches the interpreter.
+Where a key is absent the conservative built-in applies (built-in `source_mode`
+is `host-adb`, and `download_device_python` is `false` unless the mode is
+`device-python`; no mode ever auto-switches to the other).
 
 | Key | Meaning |
 |---|---|
 | `adb` | ADB executable, default `adb`. |
-| `device` | USB serial or wireless `host:port`; empty auto-selects (one device directly; multiple are listed for an interactive choice). |
+| `host` | Wireless endpoint: `IP` or `IP:port`; non-empty runs `adb connect` automatically (aliases `address`/`ip`). |
+| `device_id` | ADB device id as shown by `adb devices` (e.g. `AERF6R4517018096`, `adb-…._adb-tls-connect._tcp`); empty auto-selects (one device directly; multiple are listed for an interactive choice). Legacy `device`/`adb_serial`/`serial` still map here. |
 | `source_dir` | Android absolute directory to back up. |
 | `out` | Host output archive path. |
 | `compress` | `xz`, `gzip`, `zstd`, or `none`; empty/absent means `none` (uncompressed). |
 | `source_mode` | `host-adb` (host reads entries) or `device-python` (device packs via an uploaded Python). The shipped template sets `device-python`. |
 | `device_python` | Used by `device-python`: a local path to an Android ARM64 Python — a standalone interpreter file or a python install prefix directory (`bin/` + `lib/`). |
-| `download_device_python` | `true` lets `device-python` fetch the pinned upstream interpreter when `device_python` is empty or points to a missing path. The shipped template sets `true`. |
+| `download_device_python` | Fetch the pinned upstream interpreter when `device_python` is empty. Defaults to `true` when `source_mode: device-python`, otherwise `false`. |
 | `device_python_url` | Overrides the pinned `device_python_url` download URL; may be a local `.tar.zst` path for offline reuse. |
 | `keep_android_env` | `device-python`: `true` keeps the device interpreter cache after the run, `false` removes it, unset asks (remove when non-interactive). |
 
-Device selection (`device`): empty auto-selects — one device is used directly,
-multiple are listed for an interactive choice (an error when non-interactive);
-set a USB serial or a `host:port` (wireless endpoints are connected
-automatically).
+Device selection: `host` is the wireless endpoint (`IP` or `IP:port`; non-empty
+connects automatically), and `device_id` pins a specific adb device id (USB
+serial or mDNS id). With both empty, one online device is used directly and
+several are listed for an interactive choice (an error when non-interactive).
 
-USB configuration normally has an empty `device` for one connected device,
-or its USB serial for a multi-device host:
+USB configuration normally leaves both `host` and `device_id` empty for one
+connected device, or sets `device_id` to the USB serial for a multi-device host:
 
 ```yaml
 adb: adb
-device: ""
+host: ""
+device_id: ""
 source_dir: "/storage/emulated/0/DCIM"
 out: android-backup.tar.xz
 compress: xz
 source_mode: device-python
-download_device_python: true
 log_level: info
 progress_interval: 5
 ```
 
 For wireless debugging, first pair the host in Android's Wireless debugging
-screen, then set the separately displayed *connection* endpoint, not the
-pairing endpoint:
+screen, then put the separately displayed *connection* endpoint, not the
+pairing endpoint, into `host` (an IP alone also works; adb uses its default
+port):
 
 ```yaml
-device: "192.0.2.1:5555"
+host: "192.0.2.1:5555"
 ```
 
-When Android changes its wireless connection port, update only `device`. Only
-`host:port` values trigger `adb connect`; leave `device` empty for USB.
+When Android changes its wireless connection port, update only `host`. Only a
+non-empty `host` triggers `adb connect`; leave it empty for USB.
 
 Run the matching thin wrapper:
 
@@ -126,11 +129,11 @@ src\backup-android.bat --config D:\backup-config\site-backup.yaml
 
 Configuration precedence is `--config PATH`, `BACKUP_CONFIG_FILE`, then an
 existing sibling `src/backup-android.yaml`. The operational environment
-variables `ADB`, `DEVICE`, `SOURCE_DIR`, `OUT`, `COMPRESS`,
+variables `ADB`, `HOST`, `DEVICE_ID`, `SOURCE_DIR`, `OUT`, `COMPRESS`,
 `SOURCE_MODE`, `DEVICE_PYTHON`, `DOWNLOAD_DEVICE_PYTHON`, `DEVICE_PYTHON_URL`,
 `KEEP_ANDROID_ENV`, `LOG_LEVEL`, `PROGRESS_INTERVAL`, and `SHOW_RATE` override
-YAML values (the legacy `ADB_SERIAL` name still maps to `DEVICE`). `PYTHON`
-selects the interpreter for the wrappers.
+YAML values (the legacy `DEVICE`/`ADB_SERIAL` names still map to `DEVICE_ID`).
+`PYTHON` selects the interpreter for the wrappers.
 
 `out` interpretation: empty writes `backup.tar.<suffix>` in the current
 directory; pointing it at a directory (existing, or ending in `/` or `\`) writes

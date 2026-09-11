@@ -50,9 +50,9 @@ Python `tarfile`，可写入已有目录，不校验 PAX SHA-256，不保证原�
 | Android 主控 | `backup.py [--config PATH]` | 读取 YAML/环境，完成 ADB 管道、校验和原子输出。 |
 | 平台包装 | `backup-android.sh [ARGS...]` / `backup-android.bat [ARGS...]` | 将参数转发给同目录 `backup.py`。 |
 
-三个 Python 入口都支持 `--version`。`backup.py` 识别 YAML 键 `adb`、`device`、
+三个 Python 入口都支持 `--version`。`backup.py` 识别 YAML 键 `adb`、`host`、`device_id`、
 `source_dir`、`out`、`compress`、`log_level`、`progress_interval`，并由同名环境变量覆盖（旧键
-`adb_serial` 视为 `device` 的别名）；配置选择顺序为
+`device`/`adb_serial` 视为 `device_id` 的别名）；配置选择顺序为
 `--config`、`BACKUP_CONFIG_FILE`、存在的同目录 `backup-android.yaml`。应从
 `backup-android.example.yaml` 复制并编辑本地 YAML；实际 YAML 已忽略，不能提交端点或本机路径。
 未列出的 Python 函数、类和常量均为实现细节，不是稳定公开 API。
@@ -156,12 +156,13 @@ sequenceDiagram
 
 | 连接方式 | 设备选择 | 连接准备 | YAML 关键设置 |
 |---|---|---|---|
-| USB 有线 | `adb devices` 输出的 USB serial；单设备可不指定 | 打开 USB 调试、接线并在设备上授权主机 | `device: ""`（自动）或 USB serial |
-| TCP 无线 | `host:port` | 先 `adb pair host:pair-port`，再使用无线调试页显示的连接端口 | `device: host:port` |
+| USB 有线 | `adb devices` 输出的设备 ID；单设备可不指定 | 打开 USB 调试、接线并在设备上授权主机 | `host: ""`、`device_id: ""`（自动）或 `device_id: <USB serial>` |
+| TCP 无线 | `host`（`IP` 或 `IP:port`） | 先 `adb pair host:pair-port`，再使用无线调试页显示的连接端口 | `host: <IP:port>`（可再配 `device_id`） |
 
-`device` 为空时主控枚举 `adb devices`：恰一台在线设备直接使用；多台在交互终端列出选择，
-非交互则报错。`device` 为 `host:port` 时主控先执行 `adb connect`，然后通过 `ANDROID_SERIAL`
-让 `get-state`、目录枚举和两遍 `exec-out cat` 都指向同一设备；USB serial 不会触发 `adb connect`。
+`host` 非空时主控先执行 `adb connect`，随后按 `adb devices` 与 `host` 匹配（相同，或 `IP:`
+前缀，兼容只填 IP）；`device_id` 非空时固定该 ADB 设备 ID（USB serial 或 mDNS ID），不触发
+`adb connect`。两者都为空则枚举 `adb devices`：恰一台在线设备直接使用；多台在交互终端列出
+选择，非交互则报错。
 
 数据通道必须保持为 `adb exec-out -> Python subprocess.PIPE -> Python binary stdout`。不能用
 `adb shell ... > file` 或把 `exec-out` 接到 PowerShell 的文本管道；前者可能分配终端，后者会
