@@ -58,11 +58,16 @@ class ProgressReporter:
         self._last = 0.0
         self._rate_at = time.monotonic()
         self._rate_bytes = 0
+        self._live = paxck.LiveLine()
 
     def emit(self, level, message):
-        if self.level >= _LOG_LEVELS[level]:
-            sys.stderr.write(message + '\n')
-            sys.stderr.flush()
+        if self.level < _LOG_LEVELS[level]:
+            return
+        if level == 'info' and self._live.live:
+            self._live.update(message)
+            return
+        sys.stderr.write(message + '\n')
+        sys.stderr.flush()
 
     def start(self):
         self.emit('info', f'[进度] 已发现 {self.total} 个条目')
@@ -129,6 +134,9 @@ class ProgressReporter:
             amount /= 1024
 
     def finish(self):
+        if self._live.live:
+            self._live.clear()
+            return
         self.emit('info', '[进度] 完成：%d/%d 个条目，ADB 有效载荷 %s（清单 %s，文件内容 %s）' % (
             self.done, self.total, self._format_bytes(self.total_bytes),
             self._format_bytes(self.list_bytes), self._format_bytes(self.file_bytes)))

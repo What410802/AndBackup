@@ -298,6 +298,7 @@ class _DeviceProgress:
         self._last = 0.0
         self._rate_at = time.monotonic()
         self._rate_bytes = 0
+        self._live = paxck.LiveLine()
 
     def emit(self, level, message):
         if self.level >= _DEVICE_LOG_LEVELS[level]:
@@ -316,12 +317,17 @@ class _DeviceProgress:
             self._rate_at = now
             self._rate_bytes = self.received
             rate_text = f'，速率 {_format_size(rate)}/s' if self.show_rate else ''
-            self.emit(
-                'info',
-                f'[进度] 设备端打包中，已接收 {_format_size(self.received)}'
-                f'{rate_text}')
+            line = (f'[进度] 设备端打包中，已接收 {_format_size(self.received)}'
+                    f'{rate_text}')
+            if self._live.live:
+                self._live.update(line)
+            else:
+                self.emit('info', line)
 
     def finish(self):
+        if self._live.live:
+            self._live.clear()
+            return
         self.emit(
             'info',
             f'[进度] 设备端打包完成，共接收 {_format_size(self.received)}')

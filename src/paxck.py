@@ -91,6 +91,33 @@ def configure_stdio_utf8():
             pass
 
 
+class LiveLine:
+    """One overwritten status line on a TTY; plain newline lines otherwise.
+
+    Progress/rate output uses this so it stays at a fixed position instead of
+    scrolling, and ``clear()`` makes it disappear once the step is done.
+    """
+
+    def __init__(self, stream=None):
+        self.stream = stream if stream is not None else sys.stderr
+        try:
+            self.live = bool(self.stream.isatty())
+        except (AttributeError, OSError):
+            self.live = False
+
+    def update(self, text):
+        if self.live:
+            self.stream.write('\r\x1b[K' + text)
+        else:
+            self.stream.write(text + '\n')
+        self.stream.flush()
+
+    def clear(self):
+        if self.live:
+            self.stream.write('\r\x1b[K')
+            self.stream.flush()
+
+
 def _bin_in():
     buf = getattr(sys.stdin, 'buffer', None)
     return buf if buf is not None else sys.stdin
