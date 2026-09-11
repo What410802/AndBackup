@@ -2,6 +2,36 @@
 
 All notable changes to this project are recorded in this file.
 
+## [Unreleased]
+
+### Added
+
+- `backup.py --list-tree [--tree-out PATH]`: lists the detailed tree of the
+  source directory (type, mode, numeric owner/group UID/GID, size, mtime,
+  symlink target) without writing an archive, so permissions can be checked
+  before a backup. Requires one `adb` call per entry; large trees are slow.
+
+### Changed
+
+- ADB device selectors are now named after adb itself: the YAML key and
+  environment variable are `serial`/`SERIAL` (equivalent to `adb -s SERIAL`,
+  plus the ambient `ANDROID_SERIAL`), while `device_id`, `DEVICE_ID`, `device`,
+  `DEVICE` and `ADB_SERIAL` remain accepted as legacy aliases. `-t` transport
+  ids are only needed when serials repeat, so they are no longer mentioned as
+  the primary selector.
+- Entries that cannot be read (permissions, scoped storage) or that changed
+  size before their first read are skipped with `[WARN]` and the archive is
+  still verified and published; only a run that can enumerate no archivable
+  entry at all produces no file. A two-pass mismatch while a file is being
+  written still fails hard with exit code `3`.
+
+### Fixed
+
+- `--list-tree` and `adb_source.py` share one exec-out protocol: remote stderr
+  is discarded on the device and a NUL status trailer is stripped on the host,
+  so `adb.exe` builds that merge stderr into `exec-out` stdout cannot inject
+  text into the listing, the `stat` output, or the archive.
+
 ## [0.2.0] - 2026-09-09
 
 ### Added

@@ -64,7 +64,7 @@ is `host-adb`, and `download_device_python` is `false` unless the mode is
 |---|---|
 | `adb` | ADB executable, default `adb`. |
 | `host` | Wireless endpoint: `IP` or `IP:port`; non-empty runs `adb connect` automatically (aliases `address`/`ip`). |
-| `device_id` | ADB device id as shown by `adb devices` (e.g. `AERF6R4517018096`, `adb-…._adb-tls-connect._tcp`); empty auto-selects (one device directly; multiple are listed for an interactive choice). Legacy `device`/`adb_serial`/`serial` still map here. |
+| `serial` | ADB serial as shown by `adb devices` (first column, equivalent to `adb -s SERIAL`; e.g. `AERF6R4517018096`, `adb-…._adb-tls-connect._tcp`); empty auto-selects (one device directly; multiple are listed for an interactive choice, error when non-interactive). The `-t` transport id is only needed when serials repeat. Legacy `device_id`/`device`/`adb_serial` still map here. |
 | `source_dir` | Android absolute directory to back up. |
 | `out` | Host output archive path. |
 | `compress` | `xz`, `gzip`, `zstd`, or `none`; empty/absent means `none` (uncompressed). |
@@ -75,17 +75,18 @@ is `host-adb`, and `download_device_python` is `false` unless the mode is
 | `keep_android_env` | `device-python`: `true` keeps the device interpreter cache after the run, `false` removes it, unset asks (remove when non-interactive). |
 
 Device selection: `host` is the wireless endpoint (`IP` or `IP:port`; non-empty
-connects automatically), and `device_id` pins a specific adb device id (USB
-serial or mDNS id). With both empty, one online device is used directly and
-several are listed for an interactive choice (an error when non-interactive).
+connects automatically), and `serial` pins a specific adb device (USB serial or
+mDNS id; equivalent to `adb -s SERIAL`). With both empty, one online device is
+used directly and several are listed for an interactive choice (an error when
+non-interactive).
 
-USB configuration normally leaves both `host` and `device_id` empty for one
-connected device, or sets `device_id` to the USB serial for a multi-device host:
+USB configuration normally leaves both `host` and `serial` empty for one
+connected device, or sets `serial` to the USB serial for a multi-device host:
 
 ```yaml
 adb: adb
 host: ""
-device_id: ""
+serial: ""
 source_dir: "/storage/emulated/0/DCIM"
 out: android-backup.tar.xz
 compress: xz
@@ -129,10 +130,11 @@ src\backup-android.bat --config D:\backup-config\site-backup.yaml
 
 Configuration precedence is `--config PATH`, `BACKUP_CONFIG_FILE`, then an
 existing sibling `src/backup-android.yaml`. The operational environment
-variables `ADB`, `HOST`, `DEVICE_ID`, `SOURCE_DIR`, `OUT`, `COMPRESS`,
+variables `ADB`, `HOST`, `SERIAL`, `ANDROID_SERIAL`, `SOURCE_DIR`, `OUT`, `COMPRESS`,
 `SOURCE_MODE`, `DEVICE_PYTHON`, `DOWNLOAD_DEVICE_PYTHON`, `DEVICE_PYTHON_URL`,
 `KEEP_ANDROID_ENV`, `LOG_LEVEL`, `PROGRESS_INTERVAL`, and `SHOW_RATE` override
-YAML values (the legacy `DEVICE`/`ADB_SERIAL` names still map to `DEVICE_ID`).
+YAML values (the legacy `DEVICE_ID`/`DEVICE`/`ADB_SERIAL` names still map to
+`SERIAL`; `ANDROID_SERIAL` is accepted, matching adb itself).
 `PYTHON` selects the interpreter for the wrappers.
 
 `out` interpretation: empty writes `backup.tar.<suffix>` in the current
@@ -256,8 +258,10 @@ cleanup rules (`keep_android_env`, `--clean-env`, `--clean-host-cache`), and
 compression notes live in [docs/configuration.en.md](docs/configuration.en.md).
 Archive metadata fields, time precision, Android permission boundaries, and the
 comparison against uploading an independent tar binary to the device live in
-[docs/flow.en.md](docs/flow.en.md). Archive semantics, security rules, and the
-exit-code table follow below.
+[docs/flow.en.md](docs/flow.en.md). `backup.py --list-tree [--tree-out PATH]`
+lists just the detailed tree of the source directory (mode, owner/group, size,
+time, symlink targets) and is useful for checking permissions before a backup.
+Archive semantics, security rules, and the exit-code table follow below.
 
 ## Archive Semantics and Security
 
@@ -276,14 +280,28 @@ Android shell permissions and scoped-storage boundaries can also prevent
 access to some metadata and directories. Those are platform boundaries, not a
 claim that a different compression format could recover unavailable metadata.
 
+Readability of app directories depends entirely on the permissions other apps
+set when creating files. `adb shell` (uid 2000) can read an entry only when it
+is readable by the `ext_data_rw` group or by `other`. Files owned by another
+app's uid with mode `0600`/`0660` — typically PDFs written by a document
+service such as Honor Docs Service — cannot be read and are skipped with
+`[WARN]` (measured: 81 of 1259 entries in one QQ receive directory, owner uid
+`10203`, mode `0660`, while QQ's own files are uid `10183`, mode `0766` and
+readable); re-save or share them from an app that can reach them into
+`/sdcard/Download/` and back that up instead. The target app's temporary
+directories (e.g. `.TbsReaderTemp`, grouped to the app itself) may not even be
+enterable. Use `backup.py --list-tree` to inspect first (owner/group appear as
+numeric UIDs/GIDs; one adb round trip per entry, so large trees are slow).
+
 Some Windows `adb.exe` transports merge remote shell stderr into `exec-out`
 stdout. `adb_source.py` discards that remote stderr and removes an internal
 NUL-delimited status trailer before writing the tar stream, so diagnostics
 cannot become path or file bytes. When `find` reports inaccessible descendants,
-the source emits `[WARN]`, skips unreadable entries, writes a valid partial
-archive, and returns exit code `3`; the controller consequently keeps the
-partial file unpublished. Missing roots, protocol corruption, compression
-errors, and files changing between the two reads remain hard failures.
+the source emits `[WARN]`, skips the unreadable entries, and the archive is
+**still verified and published**. Only a run that can enumerate nothing at all
+(no archiveable entry) produces no file. Missing roots, protocol corruption,
+compression errors, and files changing between the two reads remain hard
+failures.
 
 Default extraction accepts only directory, regular-file, symlink, and hardlink
 members. It rejects empty, duplicate, absolute, backslash, dot, parent, NUL,

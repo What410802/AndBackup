@@ -136,6 +136,7 @@ class HarnessMixin:
         base.pop('DEVICE', None)
         base.pop('HOST', None)
         base.pop('DEVICE_ID', None)
+        base.pop('SERIAL', None)
         base.pop('FAKE_ADB_FAIL', None)
         base.pop('FAKE_ADB_TRUNCATE', None)
         base.pop('FAKE_ADB_DEVICES', None)
@@ -151,7 +152,8 @@ class HarnessMixin:
         return base
 
     def run_script(self, **over):
-        return subprocess.run([T.BACKUP_SH], env=self.env(**over),
+        args = over.pop('_args', ())
+        return subprocess.run([T.BACKUP_SH, *args], env=self.env(**over),
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
     def adb_log_text(self):
@@ -184,6 +186,33 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
         self.assertEqual(self.run_script().returncode, 0)
         self.assertIn('exec-out sh -c find', self.adb_log_text())
 
+    def test_list_tree_reports_details_and_symlink_targets(self):
+        """--list-tree 只列目录树：模式、属主/组、大小、符号链接目标。"""
+        r = self.run_script(_args=('--list-tree',))
+        text = r.stdout.decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 0, text)
+        self.assertIn('# source: ' + self.source, text)
+        self.assertIn('# serial: FAKE-1', text)
+        self.assertIn('# entries: ', text)
+        self.assertRegex(text, r'(?m)^-[0-7]{3,4} ')
+        self.assertRegex(text, r'(?m)^l[0-7]{3,4} ')
+        self.assertIn('-> readme.txt', text)
+        self.assertIn('a-fifo', text)
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_list_tree_writes_a_file_and_keeps_the_archive_untouched(self):
+        target = os.path.join(self.case, 'tree.txt')
+        r = self.run_script(_args=('--list-tree', '--tree-out', target))
+        self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
+        with open(target, encoding='utf-8') as fh:
+            text = fh.read()
+        deep = [line for line in text.splitlines()
+                if line.strip().endswith('deep.txt')]
+        self.assertTrue(deep, text)
+        self.assertTrue(deep[0].startswith('    '), deep[0])
+        self.assertIn('已写出目录树', r.stdout.decode('utf-8', 'replace'))
+        self.assertFalse(os.path.exists(self.out))
+
     def test_nasty_path_survives_two_layers_of_shell(self):
         """回归：目录名含空格和单引号时，ADB shell 参数仍得到正确转义。"""
         with open(os.path.join(self.source, 'space name.txt'), 'wb') as fh:
@@ -198,7 +227,7 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
         config = os.path.join(self.case, 'backup.yaml')
         with open(config, 'w', encoding='utf-8') as fh:
             fh.write('adb: adb\n')
-            fh.write('device_id: ""\n')
+            fh.write('serial: ""\n')
             fh.write('source_dir: "' + self.source + '"\n')
             fh.write('out: "' + self.out + '"\n')
             fh.write('compress: gzip\n')
@@ -215,7 +244,7 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
         config = os.path.join(self.case, 'backup-cli.yaml')
         with open(config, 'w', encoding='utf-8') as fh:
             fh.write('adb: adb\n')
-            fh.write('device_id: ""\n')
+            fh.write('serial: ""\n')
             fh.write('source_dir: "' + self.source + '"\n')
             fh.write('out: "' + self.out + '"\n')
             fh.write('compress: gzip\n')
@@ -230,9 +259,9 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
         self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
 
     def test_usb_serial_is_forwarded_without_tcp_connect(self):
-        """device_id 用于固定 ADB 设备，不应触发无线 adb connect。"""
+        """serial 用于固定 ADB 设备，不应触发无线 adb connect。"""
         serial = 'USB-SERIAL-001'
-        result = self.run_script(DEVICE_ID=serial)
+        result = self.run_script(SERIAL=serial)
         self.assertEqual(result.returncode, 0,
                          result.stdout.decode('utf-8', 'replace'))
         log = self.adb_log_text()
@@ -335,16 +364,25 @@ class TestBackupScriptFailurePaths(HarnessMixin, unittest.TestCase):
         # With device auto-selection, an unavailable adb fails at enumeration.
         self.assertIn('无法枚举 ADB 设备', text)
 
-    def test_truncated_adb_read_fails_loudly(self):
+    def test_truncated_content_is_skipped_and_archive_is_still_published(self):
+        """内容读不完整只 WARN 跳过；仍有可归档条目就照常发布（退出码 0）。"""
         size_hint = 120
         r = self.run_script(FAKE_ADB_TRUNCATE=str(size_hint))
-        self.assertEqual(r.returncode, 1)
         text = r.stdout.decode('utf-8', 'replace')
-        self.assertIn('传输失败', text)
-        self.assertFalse(os.path.exists(self.out), '失败传输不能替换最终归档')
+        self.assertEqual(r.returncode, 0, text)
+        self.assertIn('[WARN]', text)
+        self.assertIn('跳过', text)
+        self.assertTrue(os.path.isfile(self.out))
+        self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
+        members = T.list_members(T.read_bytes(self.out))
+        # 大于截断长度的条目被跳过，其余条目照常归档。
+        self.assertNotIn(self.root_name + '/binary.bin', members)
+        self.assertNotIn(self.root_name + '/big.bin', members)
+        self.assertEqual(members[self.root_name + '/readme.txt'][2], b'hello\n')
+        self.assertIn(self.root_name + '/link-to-file', members)
         leftovers = [name for name in os.listdir(self.case)
-                     if name.startswith(os.path.basename(self.out) + '.partial.')]
-        self.assertEqual(leftovers, [], '失败传输应清理主机端 partial 文件')
+                     if '.partial.' in name]
+        self.assertEqual(leftovers, [], '成功发布后不应残留 partial 文件')
 
     def test_file_instead_of_source_directory_fails_loudly(self):
         """

@@ -42,7 +42,7 @@ copy src\backup-android.example.yaml src\backup-android.yaml
 | `device_python_url` | 固定上游 | 同内置 | 覆盖下载地址；也可填本地 `.tar.zst` 离线复用 |
 | `keep_android_env` | 未设置→交互询问 | 同内置 | `device-python` 打包后是否保留设备端缓存（非交互默认删除） |
 | `host` | 空 → 不走无线 | 空 → 不走无线 | 无线端点：`IP` 或 `IP:端口`；非空即自动 `adb connect`（别名 `address`/`ip`） |
-| `device_id` | 空 → 自动选择 | 空 → 自动选择 | ADB 设备 ID（`adb devices` 第一列，如 `AERF6R4517018096`、`adb-…._adb-tls-connect._tcp`）；留空自动选（单设备直连；多设备交互选择或报错）。旧名 `device`/`adb_serial`/`serial` 兼容 |
+| `serial` | 空 → 自动选择 | 空 → 自动选择 | ADB 序列号（`adb devices` 第一列，等价 `adb -s SERIAL`），如 `AERF6R4517018096`、`adb-…._adb-tls-connect._tcp`；留空自动选（单设备直连；多设备交互选择或报错）。旧名 `device_id`/`device`/`adb_serial` 兼容 |
 | `log_level` / `progress_interval` / `show_rate` | `info` / `5` / `false` | 同内置 | 输出控制 |
 
 `out` 语义：留空写当前目录的 `backup.tar.<后缀>`；**指向目录**（已存在，或以 `/`、`\`
@@ -51,16 +51,16 @@ copy src\backup-android.example.yaml src\backup-android.yaml
 （`.tar.xz`/`.tar.gz`/`.tar.zst`/`.tar`）不一致，交互终端会询问是否自动追加后缀，
 非交互环境按原文件名直接写入。完整键表见 [docs/configuration.md](docs/configuration.md)。
 
-设备选择：`host` 管无线端点（`IP` 或 `IP:端口`，非空即自动 `adb connect`）；`device_id`
-固定 ADB 设备 ID（USB serial 或 mDNS ID）。两者留空则自动——单设备直接使用，多设备在交互
-终端列出选择（非交互报错）。
+设备选择：`host` 管无线端点（`IP` 或 `IP:端口`，非空即自动 `adb connect`）；`serial` 是
+ADB 序列号（`adb devices` 第一列，等价 `adb -s SERIAL`；`-t` 传输 ID 仅在序列号重复时才需要）。
+两者留空则自动——单设备直接使用，多设备在交互终端列出选择（非交互报错）。
 
-USB 有线 ADB（单设备时 `host`/`device_id` 都可留空）：
+USB 有线 ADB（单设备时 `host`/`serial` 都可留空）：
 
 ```yaml
 adb: adb
 host: ""
-device_id: ""
+serial: ""
 source_dir: "/storage/emulated/0/DCIM"
 out: android-backup.tar.xz
 compress: xz
@@ -82,8 +82,8 @@ src/backup-android.sh
 adb devices
 ```
 
-多台设备同时在线时，可在交互终端按列表选择；或把 `device_id` 填为 `adb devices` 第一列的
-设备 ID。单台设备两者留空即可自动选择。
+多台设备同时在线时，可在交互终端按列表选择；或把 `serial` 填为 `adb devices` 第一列的
+序列号。单台设备两者留空即可自动选择。
 
 无线 ADB（TCP serial）：
 
@@ -121,8 +121,8 @@ src\backup-android.bat --config D:\backup-config\site-backup.yaml
 配置文件选择优先级为 `--config PATH`、`BACKUP_CONFIG_FILE`、脚本目录中默认的
 `src/backup-android.yaml`（存在时）。显式传入但不存在的 `--config` 会报错；将
 `BACKUP_CONFIG_FILE` 设为空或设为不存在路径，则不加载默认 YAML，适合自动化测试或完全使用
-环境变量的场景。同名业务环境变量（如 `OUT`、`HOST`、`DEVICE_ID`）始终优先于 YAML 内的值
-（旧名 `device`/`ADB_SERIAL` 仍兼容）。
+环境变量的场景。同名业务环境变量（如 `OUT`、`HOST`、`SERIAL`）始终优先于 YAML 内的值
+（旧名 `device_id`/`device`/`ADB_SERIAL` 仍兼容）。
 
 完整的 YAML 键、环境变量、命令行（含 `--clean-env`/`--clean-host-cache`）、缓存与清理、
 压缩/zstd 说明见 **[docs/configuration.md](docs/configuration.md)**；数据流与元数据边界见
@@ -271,8 +271,9 @@ Python 3.14+ 用标准库 `compression.zstd`，否则用外部 `zstd`，否则�
 
 每个普通文件经 ADB 通道（USB 或 TCP）读取两遍：第一遍取得 SHA-256 与长度，第二遍直接写入 tar。若文件
 在两遍之间变更、短读或 ADB 返回错误，整个命令退出非零，主控不会把部分备份报告为成功。若目录中只有
-部分条目受 scoped storage/权限限制，适配器会警告并跳过它们，生成可校验的部分归档后返回 `3`；主控仍
-不会替换最终备份。详见[错误流与权限语义](docs/flow.md#adb-错误流与权限错误)。
+部分条目受 scoped storage/权限限制时，适配器会 `[WARN]` 跳过它们并继续，归档**仍会照常校验并
+发布**；只有“完全无法枚举、没有任何可归档条目”才不生成文件。详见
+[错误流与权限语义](docs/flow.md#adb-错误流与权限错误)。
 
 `paxck.py verify` 自动识别裸 tar、xz 与 gzip；它检查：
 
@@ -286,7 +287,9 @@ Python 3.14+ 用标准库 `compression.zstd`，否则用外部 `zstd`，否则�
 
 `paxck.py`/`adb_source.py`/`backup.py` 的完整命令行表、退出码与校验/提取语义见
 [docs/configuration.md](docs/configuration.md)；归档元信息字段、时间精度与 Android 权限边界、
-以及与“上传独立 tar 二进制到设备端”的差异对比见 [docs/flow.md](docs/flow.md)。
+以及与“上传独立 tar 二进制到设备端”的差异对比见 [docs/flow.md](docs/flow.md)。此外
+`backup.py --list-tree [--tree-out PATH]` 可只列出源目录的详细信息树（模式、属主/组、大小、
+时间、符号链接目标），用于备份前检查权限。
 
 ## 项目结构
 
@@ -316,7 +319,17 @@ tests/                     单元、离线集成和真机集成测试
   `adb shell ls -la <SOURCE_DIR>` 确认可读。
 - 本工具不读取受 Android 应用私有沙箱保护的 `/data/user/*`；它针对外部存储上的
   `Android/data/*` 与其他 ADB shell 可读目录。
-- 源文件在备份中持续变化时，工具会失败而非产生不完整的“成功”备份；暂停相关应用后重试。
+- **可读性完全取决于其他应用创建文件时给出的权限**：`adb shell`（uid 2000）只在目标条目对
+  `ext_data_rw` 组或 `other` 可读时才能读取。属主是别的应用 uid、模式为 `0600/0660` 的文件
+  （常见于下载/文档服务（如荣耀文档）写入的 PDF）无法读取，只会被 `[WARN]` 跳过（实测某 QQ
+  接收目录 1259 个条目里有 81 个如此，属主 uid `10203`、模式 `0660`）；QQ 自己写的文件属主是
+  `10183`、模式多为 `0766`，可以读取。这类文件需在设备上用能访问它的应用“另存/分享”到
+  `/sdcard/Download/` 等位置再备份。同时，目标应用的临时目录（如 `.TbsReaderTemp`，组为该
+  应用自身）可能连进入都不允许。可先用 `backup.py --list-tree` 检查（树里属主/组为数字
+  UID/GID）。
+- 归档写入过程中两遍读取不一致（文件正在被改）会硬失败（退出码 `3`），不会发布“成功”的
+  不完整归档；条目在选择与首次读取之间已改变大小、或元数据/内容不可读时只 `[WARN]` 跳过，
+  只要仍有可归档条目就照常发布。备份期间最好暂停相关应用。
 - `paxck.py extract` 默认只接受由本项目写出的、普通文件带 SHA-256 记录的安全归档，并且目标
   目录不得已存在；使用 `--direct-tarfile` 即明确放弃这两项保护，不能对不可信输入使用。
 - Windows `.bat` 及其 `cmd.exe` 二进制重定向已有离线自动化覆盖；仍建议在首次使用的

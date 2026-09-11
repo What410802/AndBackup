@@ -9,7 +9,7 @@
 1. 命令行 `--config PATH`（优先级最高）
 2. 环境变量 `BACKUP_CONFIG_FILE`
 3. 脚本同目录默认 `src/backup-android.yaml`（存在时）
-4. 业务环境变量（`ADB`、`HOST`、`DEVICE_ID`、`SOURCE_DIR`、`OUT`、`COMPRESS`、`SOURCE_MODE`、`DEVICE_PYTHON`、
+4. 业务环境变量（`ADB`、`HOST`、`SERIAL`、`ANDROID_SERIAL`、`SOURCE_DIR`、`OUT`、`COMPRESS`、`SOURCE_MODE`、`DEVICE_PYTHON`、
    `DOWNLOAD_DEVICE_PYTHON`、`DEVICE_PYTHON_URL`、`KEEP_ANDROID_ENV`、`LOG_LEVEL`、
    `PROGRESS_INTERVAL`、`SHOW_RATE`）始终优先于 YAML 内的同名键
 5. 内置默认值
@@ -29,7 +29,7 @@
 |---|---|---|
 | `adb` | `adb` | `adb` 可执行文件或绝对路径 |
 | `host` | 空 → 不走无线 | 无线端点：`IP` 或 `IP:端口`；非空即自动 `adb connect`（别名 `address`/`ip`） |
-| `device_id` | 空 → 自动选择 | ADB 设备 ID（`adb devices` 第一列，如 `AERF6R4517018096`、`adb-…._adb-tls-connect._tcp`）；留空自动选（单设备直连；多设备交互选择，非交互报错）。旧名 `device`/`adb_serial`/`serial` 兼容 |
+| `serial` | 空 → 自动选择 | ADB 序列号（`adb devices` 第一列，等价 `adb -s SERIAL`），如 `AERF6R4517018096`、`adb-…._adb-tls-connect._tcp`；留空自动选（单设备直连；多设备交互选择，非交互报错）。`-t` 传输 ID 仅在序列号重复时才需要。旧名 `device_id`/`device`/`adb_serial` 兼容 |
 | `source_dir` | `/sdcard/DCIM` | 设备上要备份的绝对目录 |
 | `out` | 空 → 当前目录 `backup.tar.<后缀>` | 输出目标：目录（自动按 source_dir 尾部命名）或文件名，见下方“OUT 语义” |
 | `compress` | 空/缺省 → `none` | `xz`、`gzip`、`zstd` 或 `none`；为空/不存在时视为 `none`（不压缩） |
@@ -51,9 +51,9 @@ TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互
 追加该后缀（回车 = 追加，输入 `n`/`no` 则按原名写入）。
 
 **设备选择**：`host` 管无线端点（`IP` 或 `IP:端口`），非空即先执行 `adb connect`；随后优先
-用 `device_id` 固定设备，未给出 `device_id` 时按 `adb devices` 中与 `host` 匹配（相同，或
+用 `serial` 固定设备，未给出 `serial` 时按 `adb devices` 中与 `host` 匹配（相同，或
 `IP:` 前缀，兼容只填 IP）的在线设备，匹配不到则报错退出（不会静默改用其他设备）。
-`device_id` 非空且 `host` 为空时直接固定该 ADB 设备 ID（USB serial 或 mDNS ID），不触发
+`serial` 非空且 `host` 为空时直接固定该 ADB 序列号（USB serial 或 mDNS id），不触发
 `adb connect`。两者都留空 → 枚举 `adb devices`：恰一台在线设备直接使用；多台在交互终端
 列出并让用户选择序号（非交互或 `log_level` 为 `quiet`/`error` 时报错退出）；0 台报错。
 
@@ -66,7 +66,7 @@ TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互
 | `PYTHON` | Windows 上包装脚本使用的 Python 解释器完整路径（可选） |
 | `BACKUP_CONFIG_FILE` | UTF-8 配置文件路径；空值/不存在则不加载 YAML |
 
-旧环境变量 `DEVICE`/`ADB_SERIAL` 仍视为 `DEVICE_ID` 的别名；`ADB_CONNECT` 已废弃、被忽略。
+旧环境变量 `DEVICE_ID`/`DEVICE`/`ADB_SERIAL` 仍视为 `SERIAL` 的别名（`ANDROID_SERIAL` 也接受，与 adb 官方一致）；`ADB_CONNECT` 已废弃、被忽略。
 
 ## 命令行
 
@@ -80,7 +80,7 @@ TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互
 | 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别裸 tar/xz/gzip/zstd，逐普通文件校验 PAX SHA-256 |
 | 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | 默认：校验后暂存原子发布，`DEST` 须不存在；`--direct-tarfile` 为可信归档直接模式 |
 | Android 源适配器 | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | `host-adb`：经 `adb exec-out` 写裸 PAX tar 到 stdout |
-| Android 主控 | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [--clean-env] [--clean-host-cache]` | 读取配置、组合源与压缩器、校验 `.partial` 后原子替换；`--clean-*` 只清理缓存后退出 |
+| Android 主控 | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [--clean-env] [--clean-host-cache] [--list-tree] [--tree-out PATH]` | 读取配置、组合源与压缩器、校验 `.partial` 后原子替换；`--clean-*` 只清理缓存后退出；`--list-tree` 只列出源目录的详细信息树（模式、属主/组（数字 UID/GID）、大小、时间、符号链接目标），默认写 stdout，`--tree-out PATH` 写入文件。每个条目一次 adb 调用，大树较慢；它是诊断命令，不写入归档 |
 | 平台包装 | `backup-android.sh [ARGS...]`；`backup-android.bat [ARGS...]` | 把所有参数转发给同目录 `backup.py` |
 
 ### stdout / stderr 职责

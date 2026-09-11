@@ -16,7 +16,9 @@ The project separates source acquisition from archive handling:
   source and compressor, verifies a unique host-side partial archive, then
   atomically replaces the requested output. With `source_mode: device-python`
   it uploads a user-provided Android Python binary and `paxck.py`, then runs
-  `paxck.py create` on the device.
+  `paxck.py create` on the device. `backup.py --list-tree [--tree-out PATH]`
+  bypasses the pipeline and only prints the detailed source tree (mode,
+  owner/group, size, time, symlink targets) for pre-backup permission checks.
 - `backup-android.sh` and `backup-android.bat` are deliberately thin POSIX and
   CMD forwarding wrappers.
 
@@ -100,7 +102,8 @@ and `show_rate`), without altering archive bytes.
 
 USB and wireless debugging use the same data protocol. `host` selects the
 wireless endpoint (`IP` or `IP:port`; non-empty runs `adb connect`), while
-`device_id` pins a specific adb device id (USB serial or mDNS id). With neither
+`serial` pins a specific adb serial (equivalent to `adb -s SERIAL`; the `-t`
+transport id is only needed when serials repeat). With neither
 set, the controller enumerates `adb devices`: one online device is used
 directly, several are listed for an interactive choice (non-interactive runs
 error out), and zero is an error.
@@ -114,8 +117,9 @@ Some Windows `adb.exe` versions/transports merge remote shell stderr into
 `exec-out` stdout. The adapter discards remote stderr and appends an internal
 NUL-delimited status trailer to each command, removing that trailer before PAX
 writing. If scoped storage, permissions, or the shell UID prevent access to a
-descendant, it emits `[WARN]`, skips unreadable entries, writes a valid partial
-archive, and exits `3` to report incompleteness. Missing roots, protocol
+descendant, it emits `[WARN]`, skips the unreadable entries, and the archive is
+**still verified and published**; only a run that can enumerate no archiveable
+entry at all produces no file. Missing roots, protocol
 corruption, compressor failures, and files changing between the two reads
 remain hard failures, matching common tar behavior.
 
@@ -161,6 +165,26 @@ Android scoped storage, Unix permissions, and the ADB shell UID can deny or
 synthesize metadata. The absence of unsupported fields is an explicit archive
 scope decision; changing compression cannot recover data that was not readable
 or collected.
+
+The ability to back up `Android/data/<pkg>` depends entirely on the permissions
+other apps set when they create files. `/storage/emulated/0` is served by FUSE,
+so an entry's recorded owner is the UID that created the entry through that
+path, and `adb shell` (uid 2000) can read it only when it is readable by the
+`ext_data_rw` group or by `other`. Inside one QQ directory, QQ's own files are
+owned by `u0_a183` (uid `10183`) and usually `0777`/`0666` (measured `-0766`, so
+`other` can read), so they are readable; a file
+re-saved by an external document provider (e.g. Honor Docs Service,
+`u0_a203`, uid `10203`) is `-rw-rw---- u0_a203:u0_a203` (umask `0660`), leaving
+the shell neither owner nor group member — 81 of 1259 entries in one measured QQ
+receive directory were of this kind, and such entries are skipped with
+`[WARN]`.
+Directories behave the same way: an app's private scratch directory (e.g.
+`.TbsReaderTemp`, `drwxrwx---`, grouped to that app) cannot even be entered.
+This is not something the tool can fix and is unrelated to device state such as
+a sleeping screen. The workaround is to re-save or share the file from an app
+that can reach it into a shell-readable location such as `/sdcard/Download/`,
+and to check readability with `backup.py --list-tree` (owner/group appear there
+as numeric UIDs/GIDs).
 
 ## Extraction Modes
 

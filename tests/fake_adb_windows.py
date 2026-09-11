@@ -72,14 +72,17 @@ def _find(source):
         b''.join(path.encode('utf-8', 'surrogateescape') + b'\0' for path in paths))
 
 
-def _stat(device_path):
+def _stat(device_path, fmt):
     item = os.lstat(_local_path(device_path))
     seconds, nanos = divmod(item.st_mtime_ns, 1000000000)
     human = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(seconds))
-    text = '%x|%d|%d|%s.%09d +0000|%o\n' % (
+    text = '%x|%d|%d|%s.%09d +0000|%o' % (
         item.st_mode, item.st_size, seconds, human, nanos,
         stat.S_IMODE(item.st_mode))
-    sys.stdout.buffer.write(text.encode('ascii'))
+    if '%u' in fmt:
+        # Mirrors toybox `%u|%g`; Windows reports 0 for both.
+        text += '|%d|%d' % (item.st_uid, item.st_gid)
+    sys.stdout.buffer.write((text + '\n').encode('ascii'))
 
 
 def _cat(device_path):
@@ -192,7 +195,7 @@ def main(args):
         if words[:1] == ['find'] and words[-1:] == ['-print0']:
             _find(words[1])
         elif words[:2] == ['stat', '-c'] and len(words) == 5 and words[3] == '--':
-            _stat(words[4])
+            _stat(words[4], words[2])
         elif words[:2] == ['readlink', '-n'] and len(words) == 4 and words[2] == '--':
             sys.stdout.buffer.write(os.readlink(_local_path(words[3])).encode(
                 'utf-8', 'surrogateescape'))

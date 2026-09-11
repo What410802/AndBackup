@@ -11,7 +11,7 @@ command-line and cache-cleanup reference.
 2. `BACKUP_CONFIG_FILE` environment variable
 3. the sibling `src/backup-android.yaml` (when present)
 4. operational environment variables override the YAML values
-   (`ADB`, `HOST`, `DEVICE_ID`, `SOURCE_DIR`, `OUT`, `COMPRESS`, `SOURCE_MODE`, `DEVICE_PYTHON`,
+   (`ADB`, `HOST`, `SERIAL`, `ANDROID_SERIAL`, `SOURCE_DIR`, `OUT`, `COMPRESS`, `SOURCE_MODE`, `DEVICE_PYTHON`,
    `DOWNLOAD_DEVICE_PYTHON`, `DEVICE_PYTHON_URL`, `KEEP_ANDROID_ENV`,
    `LOG_LEVEL`, `PROGRESS_INTERVAL`, `SHOW_RATE`)
 5. built-in defaults
@@ -34,7 +34,7 @@ is a tiny top-level `key: value` subset (single/double-quoted strings,
 |---|---|---|
 | `adb` | `adb` | ADB executable or absolute path |
 | `host` | empty → no wireless | wireless endpoint: `IP` or `IP:port`; non-empty runs `adb connect` automatically (aliases `address`/`ip`) |
-| `device_id` | empty → auto | ADB device id (`adb devices` first column, e.g. `AERF6R4517018096`, `adb-…._adb-tls-connect._tcp`); empty auto-selects (one device directly; multiple listed for an interactive choice, error when non-interactive). Legacy `device`/`adb_serial`/`serial` still map here. |
+| `serial` | empty → auto | ADB serial (`adb devices` first column, equivalent to `adb -s SERIAL`; e.g. `AERF6R4517018096`, `adb-…._adb-tls-connect._tcp`); empty auto-selects (one device directly; multiple listed for an interactive choice, error when non-interactive). The `-t` transport id is only needed when serials repeat. Legacy `device_id`/`device`/`adb_serial` still map here. |
 | `source_dir` | `/sdcard/DCIM` | absolute device directory to back up |
 | `out` | empty → `backup.tar.<suffix>` in cwd | output target: a directory (auto-named from the source_dir tail) or a file; see “OUT semantics” |
 | `compress` | empty/absent → `none` | `xz`, `gzip`, `zstd`, or `none`; empty/absent means `none` (uncompressed) |
@@ -59,11 +59,11 @@ while an interactive terminal is asked once whether to append the suffix
 (Enter = append, `n`/`no` = keep the name).
 
 **Device selection**: `host` is the wireless endpoint (`IP` or `IP:port`);
-non-empty runs `adb connect` first. Afterwards `device_id` pins the device when
+non-empty runs `adb connect` first. Afterwards `serial` pins the device when
 given; otherwise the controller matches `adb devices` against `host` (exact, or
 an `IP:` prefix so an IP-only value works) and errors out when nothing matches
-(never silently switching to another device). A non-empty `device_id` with an
-empty `host` pins that adb device id directly (USB serial or mDNS id) without
+(never silently switching to another device). A non-empty `serial` with an
+empty `host` pins that ADB serial directly (USB serial or mDNS id) without
 `adb connect`. With both empty, `adb devices` is enumerated: exactly one online
 device is used, several are listed for an interactive choice (an error when
 non-interactive or `log_level` `quiet`/`error`), and zero is an error.
@@ -78,8 +78,9 @@ The operational variables map 1:1 to the YAML keys above (e.g.
 | `PYTHON` | full path of the Python interpreter used by the wrappers (Windows) |
 | `BACKUP_CONFIG_FILE` | UTF-8 config path; empty/missing disables YAML |
 
-The legacy `DEVICE`/`ADB_SERIAL` environment variables still map to `DEVICE_ID`;
-`ADB_CONNECT` is deprecated and ignored.
+The legacy `DEVICE_ID`/`DEVICE`/`ADB_SERIAL` environment variables still map to
+`SERIAL` (`ANDROID_SERIAL` is accepted too, matching adb itself); `ADB_CONNECT`
+is deprecated and ignored.
 
 ## Command Line
 
@@ -93,7 +94,7 @@ All three Python entry points support `--version`.
 | Verifier | `paxck.py verify [ARCHIVE]` or `-i ARCHIVE`, optional `-q` | auto-detect tar/xz/gzip/zstd; verify each PAX SHA-256 |
 | Extractor | `paxck.py extract [ARCHIVE] -C DEST` | default verified/staged/atomic; `--direct-tarfile` for trusted archives |
 | Android source | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | `host-adb`: raw PAX tar to stdout |
-| Android controller | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [--clean-env] [--clean-host-cache]` | run + verify + atomic replace; `--clean-*` clean caches and exit |
+| Android controller | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [--clean-env] [--clean-host-cache] [--list-tree] [--tree-out PATH]` | run + verify + atomic replace; `--clean-*` clean caches and exit; `--list-tree` only lists the detailed tree of the source directory (mode, numeric owner/group UID/GID, size, time, symlink targets) to stdout, or to `--tree-out PATH`. One adb round trip per entry, so large trees are slow; it is a diagnostic and writes no archive |
 | Wrappers | `backup-android.sh [ARGS…]` / `backup-android.bat [ARGS…]` | forward all args to `backup.py` |
 
 ### stdout/stderr responsibilities

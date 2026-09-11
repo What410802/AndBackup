@@ -63,12 +63,12 @@ class TestConfig(unittest.TestCase):
             with open(path, 'w', encoding='utf-8') as fh:
                 fh.write('# comment\n')
                 fh.write('host: 192.0.2.1:5555\n')
-                fh.write('device_id: AERF6R4517018096\n')
+                fh.write('serial: AERF6R4517018096\n')
                 fh.write('source_dir: "/storage/emulated/0/测试.d"\n')
                 fh.write('compress: gzip # inline comment\n')
             values = backup.read_config(path)
             self.assertEqual(values['HOST'], '192.0.2.1:5555')
-            self.assertEqual(values['DEVICE_ID'], 'AERF6R4517018096')
+            self.assertEqual(values['SERIAL'], 'AERF6R4517018096')
             self.assertEqual(values['SOURCE_DIR'], '/storage/emulated/0/测试.d')
             self.assertEqual(values['COMPRESS'], 'gzip')
         finally:
@@ -184,7 +184,7 @@ class TestAdbSourceMetadata(unittest.TestCase):
         self.assertEqual(members['tree/link'][0], tarfile.SYMTYPE)
         self.assertEqual(members['tree/link'][1], 'file.txt')
 
-    def test_source_adapter_skips_entry_metadata_failure_and_reports_incomplete(self):
+    def test_source_adapter_skips_unreadable_entry_and_still_succeeds(self):
         root = '/storage/emulated/0/tree'
         good = root + '/ok.txt'
         denied = root + '/denied.txt'
@@ -202,7 +202,9 @@ class TestAdbSourceMetadata(unittest.TestCase):
              mock.patch.object(adb_source, '_hash_file', return_value=(T.sha256_of(b'ok'), 2)), \
              mock.patch.object(adb_source, '_open_stream', return_value=(io.BytesIO(b'ok'), lambda: 0)):
             with mock.patch('sys.stderr', new_callable=io.StringIO) as err:
-                self.assertEqual(adb_source.write_tar(root, 'fake-adb', out), 3)
+                # Unreadable entries are skipped with a warning; the archive is
+                # still produced (only "nothing archivable" is a failure).
+                self.assertEqual(adb_source.write_tar(root, 'fake-adb', out), 0)
         self.assertIn('跳过', err.getvalue())
         self.assertIn('tree/ok.txt', T.list_members(out.getvalue()))
 

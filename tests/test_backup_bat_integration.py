@@ -36,6 +36,7 @@ class TestBackupBatch(unittest.TestCase):
         with open(self.config, 'w', encoding='utf-8', newline='\n') as fh:
             fh.write('# values deliberately loaded through the shared YAML path\n')
             fh.write('adb: "' + self.adb.replace('\\', '/') + '"\n')
+            # 故意用旧名，顺带覆盖 device_id → serial 的兼容别名。
             fh.write('device_id: ""\n')
             fh.write('source_dir: "' + self.source + '"\n')
             fh.write('out: "' + self.out.replace('\\', '/') + '"\n')
@@ -78,6 +79,7 @@ class TestBackupBatch(unittest.TestCase):
         env.pop('DEVICE', None)
         env.pop('HOST', None)
         env.pop('DEVICE_ID', None)
+        env.pop('SERIAL', None)
         env.pop('FAKE_ADB_FAIL', None)
         env.pop('FAKE_ADB_TRUNCATE', None)
         env.pop('FAKE_ADB_DEVICES', None)
@@ -119,7 +121,7 @@ class TestBackupBatch(unittest.TestCase):
 
     def test_shared_yaml_config_drives_batch_launcher(self):
         env = self.env(BACKUP_CONFIG_FILE=self.config)
-        for key in ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'DEVICE', 'HOST', 'DEVICE_ID', 'SOURCE_DIR', 'OUT', 'COMPRESS'):
+        for key in ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'DEVICE', 'HOST', 'DEVICE_ID', 'SERIAL', 'SOURCE_DIR', 'OUT', 'COMPRESS'):
             env.pop(key, None)
         result = subprocess.run(
             [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', T.BACKUP_BAT],
@@ -132,7 +134,7 @@ class TestBackupBatch(unittest.TestCase):
 
     def test_command_line_config_path_overrides_environment(self):
         env = self.env(BACKUP_CONFIG_FILE=os.path.join(self.case, 'missing.yaml'))
-        for key in ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'DEVICE', 'HOST', 'DEVICE_ID', 'SOURCE_DIR', 'OUT', 'COMPRESS'):
+        for key in ('ADB', 'ADB_SERIAL', 'ADB_CONNECT', 'DEVICE', 'HOST', 'DEVICE_ID', 'SERIAL', 'SOURCE_DIR', 'OUT', 'COMPRESS'):
             env.pop(key, None)
         result = subprocess.run(
             [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', T.BACKUP_BAT,
@@ -209,18 +211,18 @@ class TestBackupBatch(unittest.TestCase):
         self.assertIn('未找到对应设备', result.stdout.decode('utf-8', 'replace'))
         self.assertFalse(os.path.isfile(self.out))
 
-    def test_device_id_is_pinned_without_connect(self):
-        """device_id 只固定 adb 设备，不触发无线 adb connect。"""
+    def test_serial_is_pinned_without_connect(self):
+        """serial 只固定 adb 设备，不触发无线 adb connect。"""
         serial = 'AERF6R4517018096'
-        result = self.run_script(DEVICE_ID=serial)
+        result = self.run_script(SERIAL=serial)
         self.assertEqual(result.returncode, 0,
                          result.stdout.decode('utf-8', 'replace'))
         log = self.log_text()
         self.assertIn('serial=' + serial, log)
         self.assertNotIn('connect ', log)
 
-    def test_legacy_adb_serial_env_maps_to_device_id(self):
-        """旧环境变量 ADB_SERIAL 仍等价于 device_id 选择器。"""
+    def test_legacy_adb_serial_env_maps_to_serial(self):
+        """旧环境变量 ADB_SERIAL 仍等价于 serial 选择器。"""
         serial = 'USB-SERIAL-001'
         result = self.run_script(ADB_SERIAL=serial)
         self.assertEqual(result.returncode, 0,
@@ -235,6 +237,30 @@ class TestBackupBatch(unittest.TestCase):
                          result.stdout.decode('utf-8', 'replace'))
         self.assertIn('serial=FAKE-1', self.log_text())
 
+    def test_list_tree_prints_a_detailed_listing_without_backing_up(self):
+        result = self.run_script(_args=('--list-tree',))
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 0, text)
+        self.assertIn('# source: ' + self.source, text)
+        self.assertIn('# serial: FAKE-1', text)
+        self.assertIn('# entries: ', text)
+        self.assertRegex(text, r'(?m)^-[0-7]{3,4} ')
+        self.assertTrue(any(line.startswith('d') for line in text.splitlines()),
+                        text)
+        self.assertIn('readme.txt', text)
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_list_tree_can_write_to_a_named_file(self):
+        target = os.path.join(self.case, 'tree.txt')
+        result = self.run_script(_args=('--list-tree', '--tree-out', target))
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        with open(target, encoding='utf-8') as fh:
+            text = fh.read()
+        self.assertIn('# source: ' + self.source, text)
+        self.assertIn('binary-crlf.bin', text)
+        self.assertFalse(os.path.exists(self.out))
+
     def test_multiple_devices_non_interactive_fails(self):
         result = self.run_script(
             FAKE_ADB_DEVICES='SERIAL-A device\nSERIAL-B device')
@@ -243,22 +269,39 @@ class TestBackupBatch(unittest.TestCase):
         self.assertFalse(os.path.isfile(self.out))
 
     def test_configured_device_missing_fails(self):
-        result = self.run_script(DEVICE_ID='MISSING-DEVICE',
+        result = self.run_script(SERIAL='MISSING-DEVICE',
                                  FAKE_ADB_DEVICE_NOT_FOUND='MISSING-DEVICE')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('MISSING-DEVICE',
                       result.stdout.decode('utf-8', 'replace'))
         self.assertFalse(os.path.isfile(self.out))
 
-    def test_failed_transfer_keeps_target_and_removes_partial(self):
+    def test_unreadable_content_is_skipped_and_archive_is_still_published(self):
+        """条目不完整只 WARN 跳过；只要还有可归档条目就照常发布（退出码 0）。"""
         original = b'previous verified backup'
         with open(self.out, 'wb') as fh:
             fh.write(original)
         result = self.run_script(FAKE_ADB_TRUNCATE='3')
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 0, text)
+        self.assertIn('[WARN]', text)
+        self.assertNotEqual(T.read_bytes(self.out), original)
+        self.assertEqual(T.run_cli(['verify', self.out])[0], 0)
+        members = T.list_members(T.read_bytes(self.out))
+        self.assertNotIn(posix_basename(self.source) + '/readme.txt', members)
+        leftovers = [name for name in os.listdir(self.case)
+                     if '.partial.' in name]
+        self.assertEqual(leftovers, [])
+
+    def test_unavailable_adb_keeps_existing_target_and_removes_partial(self):
+        original = b'previous verified backup'
+        with open(self.out, 'wb') as fh:
+            fh.write(original)
+        result = self.run_script(FAKE_ADB_FAIL='1')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(T.read_bytes(self.out), original)
         leftovers = [name for name in os.listdir(self.case)
-                     if name.startswith('out.tar.xz.partial.')]
+                     if '.partial.' in name]
         self.assertEqual(leftovers, [])
 
     def test_unavailable_adb_fails_before_creating_output(self):
@@ -401,7 +444,7 @@ class TestDeviceEnvCaching(unittest.TestCase):
             'BACKUP_CONFIG_FILE': os.path.join(case, 'no-config.yaml'),
         })
         for key in ('ADB_SERIAL', 'ADB_CONNECT', 'ANDROID_SERIAL', 'DEVICE',
-                    'HOST', 'DEVICE_ID',
+                    'HOST', 'DEVICE_ID', 'SERIAL',
                     'FAKE_ADB_FAIL', 'FAKE_ADB_TRUNCATE', 'FAKE_ADB_DEVICES',
                     'FAKE_ADB_DEVICE_NOT_FOUND',
                     'DOWNLOAD_DEVICE_PYTHON', 'DEVICE_PYTHON_URL',

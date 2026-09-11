@@ -47,12 +47,12 @@ Python `tarfile`，可写入已有目录，不校验 PAX SHA-256，不保证原�
 | 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别压缩，校验普通文件的 PAX SHA-256。 |
 | 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | 默认已验证、暂存、原子发布；可加 `--direct-tarfile` 改为可信归档直接模式。 |
 | Android 数据源 | `adb_source.py [--adb ADB] DIRECTORY` | 设备目录写为 stdout 裸 PAX tar。 |
-| Android 主控 | `backup.py [--config PATH]` | 读取 YAML/环境，完成 ADB 管道、校验和原子输出。 |
+| Android 主控 | `backup.py [--config PATH]`、`backup.py --list-tree [--tree-out PATH]` | 读取 YAML/环境，完成 ADB 管道、校验和原子输出；`--list-tree` 只输出源目录详细信息树（模式、属主/组、大小、时间、符号链接目标）。 |
 | 平台包装 | `backup-android.sh [ARGS...]` / `backup-android.bat [ARGS...]` | 将参数转发给同目录 `backup.py`。 |
 
-三个 Python 入口都支持 `--version`。`backup.py` 识别 YAML 键 `adb`、`host`、`device_id`、
+三个 Python 入口都支持 `--version`。`backup.py` 识别 YAML 键 `adb`、`host`、`serial`、
 `source_dir`、`out`、`compress`、`log_level`、`progress_interval`，并由同名环境变量覆盖（旧键
-`device`/`adb_serial` 视为 `device_id` 的别名）；配置选择顺序为
+`device_id`/`device`/`adb_serial` 视为 `serial` 的别名）；配置选择顺序为
 `--config`、`BACKUP_CONFIG_FILE`、存在的同目录 `backup-android.yaml`。应从
 `backup-android.example.yaml` 复制并编辑本地 YAML；实际 YAML 已忽略，不能提交端点或本机路径。
 未列出的 Python 函数、类和常量均为实现细节，不是稳定公开 API。
@@ -156,11 +156,12 @@ sequenceDiagram
 
 | 连接方式 | 设备选择 | 连接准备 | YAML 关键设置 |
 |---|---|---|---|
-| USB 有线 | `adb devices` 输出的设备 ID；单设备可不指定 | 打开 USB 调试、接线并在设备上授权主机 | `host: ""`、`device_id: ""`（自动）或 `device_id: <USB serial>` |
-| TCP 无线 | `host`（`IP` 或 `IP:port`） | 先 `adb pair host:pair-port`，再使用无线调试页显示的连接端口 | `host: <IP:port>`（可再配 `device_id`） |
+| USB 有线 | `adb devices` 第一列的序列号；单设备可不指定 | 打开 USB 调试、接线并在设备上授权主机 | `host: ""`、`serial: ""`（自动）或 `serial: <USB serial>` |
+| TCP 无线 | `host`（`IP` 或 `IP:port`） | 先 `adb pair host:pair-port`，再使用无线调试页显示的连接端口 | `host: <IP:port>`（可再配 `serial`） |
 
 `host` 非空时主控先执行 `adb connect`，随后按 `adb devices` 与 `host` 匹配（相同，或 `IP:`
-前缀，兼容只填 IP）；`device_id` 非空时固定该 ADB 设备 ID（USB serial 或 mDNS ID），不触发
+前缀，兼容只填 IP）；`serial` 非空时固定该 ADB 序列号（等价 `adb -s SERIAL`，USB serial 或
+mDNS ID，仅当序列号重复时才需要 `-t` 传输 ID），不触发
 `adb connect`。两者都为空则枚举 `adb devices`：恰一台在线设备直接使用；多台在交互终端列出
 选择，非交互则报错。
 
@@ -173,9 +174,9 @@ sequenceDiagram
 部分 Windows `adb.exe` 版本/传输模式会把 Android shell 的 stderr 混入 `exec-out` stdout。
 适配器在设备端丢弃 stderr，并在每条命令末尾附加内部 NUL 状态标记，再在主机移除该标记，
 因此诊断文本不会污染路径清单或文件字节流。目录遍历遇到 scoped storage、权限或 shell UID
-限制时，适配器输出 `[WARN]`、跳过不可读取条目，写出可校验的部分归档并以退出码 `3`
-表示不完整；根目录错误、协议损坏、压缩失败或文件两遍读取不一致仍为硬失败。这与常见
-tar 的“尽量归档、最终报告非零”语义一致。
+限制时，适配器输出 `[WARN]`、跳过不可读取条目，归档**仍会照常校验并发布**；只有完全无法
+枚举、没有任何可归档条目时才不生成文件。根目录错误、协议损坏、压缩失败或文件两遍读取
+不一致仍为硬失败。这与常见 tar 的“尽量归档、尽量发布”语义一致。
 
 主机临时文件为 `OUT.partial.<unique>`。它通过校验后才替换 `OUT`；失败时 Linux 与
 Windows 脚本都会清除它，因此已有的有效备份不会被失败传输覆盖，并发运行也不会互删临时
@@ -333,7 +334,7 @@ PAX SHA-256 语义；而上传独立 tar 二进制则通常没有这些保证。
 | `0` | 打包或校验成功 |
 | `1` | 参数、ADB 根路径或校验失败 |
 | `2` | 缺少 zstd 支持 |
-| `3` | 条目不可读而产生部分归档、源文件变更或压缩写入中断；主控不会发布为最终备份 |
+| `3` | 打包期间源文件变更、压缩/写入中断等无法恢复的 I/O 失败；结果不能视为备份。条目不可读只会 `[WARN]` 跳过并继续（仅当完全无法枚举时才不生成文件） |
 
 校验器拒绝空归档、损坏/截断的流，以及普通文件全都没有 PAX 哈希的第三方 tar。只有目录
 的归档会明确提示“没有做内容校验”，但该情况不适合作为有内容目录的备份结果。
@@ -341,10 +342,21 @@ PAX SHA-256 语义；而上传独立 tar 二进制则通常没有这些保证。
 ## 平台边界
 
 - ADB shell 的外部存储权限取决于 ROM、设备策略与调试授权。主控先执行 `adb get-state`，
-  真机测试会实际读取目标目录。USB 设备可省略 `ADB_SERIAL`（单设备）或填写
-  `adb devices` 的 USB serial；无线设备填写 `ADB_SERIAL=host:port`，再设
-  `ADB_CONNECT=1` 会在检查前运行 `adb connect`。脚本将 serial 导出为 `ANDROID_SERIAL`，
+  真机测试会实际读取目标目录。USB 设备可省略 `serial`（单设备）或填写
+  `adb devices` 的 USB 序列号；无线设备填写 `host=IP:port`，再设
+  `serial=IP:port` 并启用 `ADB_CONNECT=1` 会在检查前运行 `adb connect`。脚本将 serial 导出为 `ANDROID_SERIAL`，
   所以主机 Python 后续启动的每一个 `adb exec-out` 也会指向同一设备。
 - `/data/user/*` 等应用私有沙箱仍受 Android UID 隔离保护，不在本项目范围。
+- **`Android/data/<pkg>` 的可备份能力完全取决于其他应用创建文件时给出的权限。**
+  `/storage/emulated/0` 由 FUSE 提供，目录项的属主是“通过该路径创建条目的 UID”。
+  `adb shell`（uid 2000）能否读取，只取决于该条目对 `ext_data_rw` 组或 `other` 是否可读：
+  同一个 QQ 目录下，QQ 自己写的文件属主是 `u0_a183`（uid `10183`）且通常 `0777`/`0666`
+  （实测 `-0766`，`other` 可读），可以读；
+  而由外部文档服务（如荣耀文档 Honor Docs Service，`u0_a203`，uid `10203`）另存进去的文件是
+  `-rw-rw---- u0_a203:u0_a203`（umask `0660`），shell 既非属主也不在其组内，只能被
+  `[WARN]` 跳过（实测某 QQ 接收目录 1259 个条目中 81 个属于此类）。目录同理：应用自带临时目录（如 `.TbsReaderTemp`，`drwxrwx---`，
+  组为该应用自身）连进入都不允许。这不是本工具能解决的问题，且与息屏等状态无关；
+  可行办法是在设备上用能访问它的应用“另存/分享”到 `/sdcard/Download/` 等 shell 可读位置，
+  再用 `backup.py --list-tree` 确认可读性（树里的属主/组是数字 UID/GID）。
 - Windows 必须使用 `cmd.exe` 执行 `.bat`。cmd 的重定向按字节写入；PowerShell 会把随机
   二进制流经文本编码转换，可能永久损坏归档。

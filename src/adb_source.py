@@ -472,7 +472,9 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
     finally:
         tf.close()
     reporter.finish()
-    return 3 if incomplete else 0
+    if incomplete:
+        warn('部分条目无法读取，已跳过；归档仍会照常校验并发布')
+    return 0
 
 
 def main(argv=None):

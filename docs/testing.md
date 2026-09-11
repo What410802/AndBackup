@@ -69,7 +69,7 @@ py -m unittest -v tests.test_device_integration
 ```
 
 Windows 与 Linux 主控的本地现场变量应先从 UTF-8 `src/backup-android.example.yaml` 复制为
-`src/backup-android.yaml`；后者已忽略，无线调试端点更新时只改其中的 `adb_serial` 行。也可以在
+`src/backup-android.yaml`；后者已忽略，无线调试端点更新时只改其中的 `host`（或 `serial`）行。也可以在
 包装命令后追加 `--config PATH` 选择任意位置的 YAML，
 其优先级高于 `BACKUP_CONFIG_FILE` 和默认文件。离线测试通过将 `BACKUP_CONFIG_FILE` 指向不存在
 的文件来隔离现场配置。`.bat` 与 `.sh` 只是调用同一个 `backup.py` 的薄包装。
@@ -94,8 +94,8 @@ flowchart LR
 | `tests/test_paxck_unit.py` | 单元 | 通用 PAX writer、魔术字节、流读取器、PAX 哈希、符号链接、硬链接、变化文件、压缩、校验/提取退出码、默认安全提取与 `tarfile` 直接提取，以及 `adb_source` 的 Android `%Y/%y` 元数据解析 |
 | `tests/test_android_python.py` | 单元 | `device-python` 解释器引导：已有路径/缓存复用（不联网）、缺失报错、本地 `.tar.zst` 下载+解压（含离线 fixture），覆盖 stdlib `compression.zstd`/外部 `zstd`/系统 `tar` 三种解压路径 |
 | `tests/test_pipeline_local.py` | 离线集成 | 独立本机 `create | compress | verify`、系统 tar 互操作、还原保真、非 UTF-8 文件名 |
-| `tests/test_backup_sh_integration.py` | 离线集成 | 真实 `.sh` + 替身 ADB；`backup.py -> adb_source.py -> paxck.py` 组合、USB serial（不 connect）与 TCP serial（connect）、中文/空格/单引号路径、二进制安全、截断、错误退出、Android/data 路径 |
-| `tests/test_backup_bat_integration.py` | Windows 离线集成 | 真实 `cmd.exe` + `.bat` + `.cmd` 替身 ADB；`backup.py -> adb_source.py -> paxck.py` 组合、USB serial（不 connect）与 TCP serial（connect）、UTF-8 路径、二进制重定向、gzip/裸 tar、失败清理、命令行 YAML 路径，以及 `device-python` 上传/回读/清理、缺少 `DEVICE_PYTHON` 报错与不自动回退 |
+| `tests/test_backup_sh_integration.py` | 离线集成 | 真实 `.sh` + 替身 ADB；`backup.py -> adb_source.py -> paxck.py` 组合、USB serial（不 connect）与 TCP serial（connect）、中文/空格/单引号路径、二进制安全、截断条目只 WARN 跳过且照常发布、错误退出、`--list-tree`（含符号链接目标与 `--tree-out`）、Android/data 路径 |
+| `tests/test_backup_bat_integration.py` | Windows 离线集成 | 真实 `cmd.exe` + `.bat` + `.cmd` 替身 ADB；`backup.py -> adb_source.py -> paxck.py` 组合、USB serial（不 connect）与 TCP serial（connect）、UTF-8 路径、二进制重定向、gzip/裸 tar、失败清理、命令行 YAML 路径、`--list-tree`、以及 `device-python` 上传/回读/清理、缺少 `DEVICE_PYTHON` 报错与不自动回退 |
 | `tests/test_device_integration.py` | 真机集成 | ADB 授权、目标目录读取、双遍字节一致性、平台对应主控备份、设备空间不生成中间文件 |
 
 ## 单元测试要点
@@ -106,6 +106,10 @@ flowchart LR
 `TestAdbSourceMetadata` 用 toybox 风格的 `%Y`/`%y` 输出验证 `adb_source.py` 保留 Android
 亚秒 `mtime`，并直接验证其目录、普通文件和符号链接均经通用 PAX writer 写入，避免回归为
 只读取整数秒或把 ADB 打包逻辑重新耦合回 `paxck.py`。
+
+目录树（`--list-tree`）的离线覆盖在两个主控集成套件里：替身 ADB 会按请求的 `stat -c`
+格式返回 `%u`/`%g`（Windows 替身用 `st_uid`/`st_gid`，通常为 0），测试断言模式位、
+属主/组、缩进层级、符号链接目标、`--tree-out` 写文件，以及不产生归档文件。
 
 发布验证应在 Python 3.12、3.13 和 3.14 至少各运行一次离线测试：3.12/3.13 的 zstd
 用例需要 PATH 中的 `zstd`，3.14 可验证标准库 `compression.zstd` 路径。xz、gzip 和裸 tar

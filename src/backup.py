@@ -10,8 +10,10 @@ import ast
 import argparse
 import hashlib
 import os
+import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -24,7 +26,8 @@ import paxck
 import android_python
 
 
-ENV_KEYS = ('ADB', 'HOST', 'DEVICE_ID', 'DEVICE', 'ADB_SERIAL',
+ENV_KEYS = ('ADB', 'HOST', 'SERIAL', 'ANDROID_SERIAL',
+            'DEVICE_ID', 'DEVICE', 'ADB_SERIAL',
             'SOURCE_DIR', 'OUT', 'COMPRESS',
             'SOURCE_MODE', 'DEVICE_PYTHON', 'DOWNLOAD_DEVICE_PYTHON',
             'DEVICE_PYTHON_URL', 'KEEP_ANDROID_ENV',
@@ -46,8 +49,8 @@ def read_config(path):
     aliases = {
         'adb': 'ADB',
         'host': 'HOST', 'address': 'HOST', 'ip': 'HOST',
-        'device_id': 'DEVICE_ID', 'device': 'DEVICE_ID',
-        'adb_serial': 'DEVICE_ID', 'serial': 'DEVICE_ID',
+        'serial': 'SERIAL', 'device_id': 'SERIAL', 'device': 'SERIAL',
+        'adb_serial': 'SERIAL', 'android_serial': 'SERIAL',
         'source_dir': 'SOURCE_DIR', 'source': 'SOURCE_DIR',
         'out': 'OUT', 'compress': 'COMPRESS',
         'source_mode': 'SOURCE_MODE', 'source-mode': 'SOURCE_MODE',
@@ -118,11 +121,12 @@ def _settings(config_path=None):
     for key in ENV_KEYS:
         if key in os.environ:
             values[key] = os.environ[key]
-    # Legacy aliases for the device-id selector (newest name first).
-    if not values.get('DEVICE_ID'):
-        legacy = values.get('DEVICE') or values.get('ADB_SERIAL')
-        if legacy:
-            values['DEVICE_ID'] = legacy
+    # ADB serial selection: modern name plus legacy/ambient aliases.
+    if not values.get('SERIAL'):
+        for legacy in ('DEVICE_ID', 'DEVICE', 'ADB_SERIAL', 'ANDROID_SERIAL'):
+            if values.get(legacy):
+                values['SERIAL'] = values[legacy]
+                break
     for key, value in DEFAULTS.items():
         values.setdefault(key, value)
     return values, config_path
@@ -174,7 +178,7 @@ def _choose_device(devices, log_level, hint=None):
         raise RuntimeError(
             (hint + '：' if hint else '') +
             '检测到多台 ADB 设备（' + '、'.join(devices) +
-            '），无法自动选择。请在配置中设置 device_id，或在交互终端中选择。')
+            '），无法自动选择。请在配置中设置 serial，或在交互终端中选择。')
     print(hint or '检测到多台 ADB 设备：')
     for index, serial in enumerate(devices, 1):
         print(f'  [{index}] {serial}')
@@ -209,39 +213,205 @@ def _resolve_device(adb, settings, log_level):
 
     * ``host`` selects the wireless endpoint (``IP`` or ``IP:port``); the
       controller runs ``adb connect`` first, then pins the matching device.
-    * ``device_id`` pins a specific adb device id (USB serial or mDNS id).
+    * ``serial`` pins a specific adb device (the first column of
+      ``adb devices``: a USB serial or an mDNS id).
     * With neither set, exactly one online device is used; several are
       resolved interactively (or error when non-interactive); zero is an error.
     """
     host = (settings.get('HOST', '') or '').strip()
-    device_id = (settings.get('DEVICE_ID', '') or '').strip()
+    serial = (settings.get('SERIAL', '') or '').strip()
     if host:
         result = _run_adb(adb, ('connect', host), _base_adb_env())
         if result.returncode:
             raise RuntimeError(_display_error(
                 f'无法连接 ADB 设备 {host}', result))
-        if device_id:
-            return device_id
+        if serial:
+            return serial
         matched = _match_host(_adb_devices(adb), host)
         if len(matched) == 1:
             return matched[0]
         if not matched:
             raise RuntimeError(
                 f'已连接 {host}，但 adb devices 中未找到对应设备。'
-                '请确认无线调试端口未变化，或在配置中设置 device_id。')
+                '请确认无线调试端口未变化，或在配置中设置 serial。')
         return _choose_device(matched, log_level,
                               hint=f'已连接 {host}，但匹配到多台设备')
 
-    if device_id:
-        return device_id
+    if serial:
+        return serial
 
     online = [serial for serial, state in _adb_devices(adb)
               if state == 'device']
     if not online:
         raise RuntimeError(
             'adb 未发现已授权的设备。请确认已开启 USB 调试并在设备上授权，'
-            '或在配置中设置 device_id（或 host）。')
+            '或在配置中设置 serial（或 host）。')
     return _choose_device(online, log_level)
+
+
+_TREE_STAT = "stat -c '%f|%s|%Y|%y|%a|%u|%g' -- "
+_TREE_STAT_BASIC = "stat -c '%f|%s|%Y|%y|%a' -- "
+_ADB_STATUS_RE = re.compile(rb'\0__ANDBACKUP_RC__(\d+)\0$')
+
+
+def _adb_shell_command(command):
+    """Wrap one device shell command with the shared exec-out protocol.
+
+    Windows ``adb.exe`` may merge remote shell stderr into ``exec-out``
+    stdout, which would corrupt a path listing or a ``stat`` line.  Remote
+    stderr is discarded on the device and a NUL-delimited status trailer is
+    appended, then stripped again on the host (same protocol as
+    ``adb_source.py``).
+    """
+    return (f'{command} 2>/dev/null; '
+            f'__andbackup_rc=$?; '
+            f"printf '\\0__ANDBACKUP_RC__%s\\0' \"$__andbackup_rc\"")
+
+
+def _adb_exec_shell(adb, env, command):
+    """Return ``(payload, remote_rc)`` for one device shell command."""
+    result = _run_adb(
+        adb, ('exec-out', 'sh', '-c', _adb_shell_command(command)), env)
+    if result.returncode:
+        raise RuntimeError(_display_error('adb 命令失败', result))
+    match = _ADB_STATUS_RE.search(result.stdout)
+    if not match:
+        raise RuntimeError(
+            f'adb exec-out {command!r} 未返回有效的远端退出码')
+    return result.stdout[:match.start()], int(match.group(1))
+
+
+def _list_source_paths(adb, env, root):
+    """Enumerate ``root`` on the device via `find -print0`.
+
+    Returns the NUL-separated paths plus the remote ``find`` exit code, so a
+    partially unreadable tree can still be listed with a warning.
+    """
+    payload, remote_rc = _adb_exec_shell(
+        adb, env, 'find ' + shlex.quote(root) + ' -print0')
+    paths = [part.decode('utf-8', 'surrogateescape')
+             for part in payload.split(b'\0') if part]
+    return paths, remote_rc
+
+
+def _parse_stat_line(payload):
+    """Parse the ``%f|%s|%Y|%y|%a[|%u|%g]`` line; None when unusable."""
+    fields = payload.decode('utf-8', 'replace').strip().split('|')
+    if len(fields) not in (5, 7):
+        return None
+    mode_hex, size, _epoch, human, perm = fields[:5]
+    uid, gid = fields[5:] if len(fields) == 7 else (None, None)
+    try:
+        return {'mode': int(mode_hex, 16), 'size': int(size),
+                'mtime': human, 'perm': int(perm, 8), 'uid': uid, 'gid': gid}
+    except ValueError:
+        return None
+
+
+def _stat_entry(adb, env, path):
+    """Metadata for one device entry, or None when it cannot be read.
+
+    ROMs whose ``stat`` lacks ``%u``/``%g`` fall back to the 5-field format;
+    the owner columns then show ``-``.
+    """
+    for template in (_TREE_STAT, _TREE_STAT_BASIC):
+        try:
+            payload, remote_rc = _adb_exec_shell(
+                adb, env, template + shlex.quote(path))
+        except RuntimeError:
+            return None
+        if remote_rc:
+            return None
+        info = _parse_stat_line(payload)
+        if info is not None:
+            return info
+    return None
+
+
+def _tree_type_char(mode):
+    if stat.S_ISDIR(mode):
+        return 'd'
+    if stat.S_ISLNK(mode):
+        return 'l'
+    if stat.S_ISREG(mode):
+        return '-'
+    return '?'
+
+
+def cmd_tree(settings, out_path=None):
+    """Write a detailed listing tree of the source directory (no backup)."""
+    log_level = str(settings.get('LOG_LEVEL', 'info')).lower()
+    adb = settings['ADB']
+    source = (settings.get('SOURCE_DIR', '') or '').strip()
+    if not source:
+        raise RuntimeError('SOURCE_DIR 不能为空')
+    env = dict(os.environ)
+    serial = _resolve_device(adb, settings, log_level)
+    env['ANDROID_SERIAL'] = serial
+    result = _run_adb(adb, ('get-state',), env)
+    if result.returncode:
+        raise RuntimeError(_display_error(
+            f'adb 不可用，请检查调试授权和 ADB 路径（serial {serial}）', result))
+
+    paths, find_rc = _list_source_paths(adb, env, source)
+    if not paths:
+        raise RuntimeError(f'未列出任何条目：{source}')
+    root = source.rstrip('/')
+    body = []
+    unreadable = 0
+    owner_hidden = False
+    for path in sorted(paths,
+                       key=lambda p: p.encode('utf-8', 'surrogateescape')):
+        relative = path[len(root):].strip('/')
+        name = relative.rsplit('/', 1)[-1] if relative else root.rsplit('/', 1)[-1]
+        indent = '    ' * relative.count('/')
+        info = _stat_entry(adb, env, path)
+        if info is None:
+            unreadable += 1
+            body.append(f'{indent}[?] ??? {name}（无法 stat，可能权限不足）')
+            continue
+        if info['uid'] is None:
+            owner_hidden = True
+            owner = '     -:      -'
+        else:
+            owner = f"{info['uid']:>6}:{info['gid']:<6}"
+        line = (f"{indent}{_tree_type_char(info['mode'])}{info['perm']:04o} "
+                f"{owner} {_format_size(info['size']):>9} "
+                f"{info['mtime']} {name}")
+        if stat.S_ISLNK(info['mode']):
+            try:
+                link, link_rc = _adb_exec_shell(
+                    adb, env, 'readlink -n -- ' + shlex.quote(path))
+            except RuntimeError:
+                link, link_rc = b'', 1
+            if link_rc == 0:
+                target = link.decode('utf-8', 'surrogateescape')
+                if target.endswith('\n'):
+                    target = target[:-1]
+                line += ' -> ' + target
+        body.append(line)
+
+    lines = [f'# source: {source}', f'# serial: {serial}',
+             f'# entries: {len(paths)}']
+    if find_rc:
+        lines.append(f'# find 退出码 {find_rc}：部分子目录不可读，'
+                     '列表可能不完整（对应条目显示为 [?]）')
+    if unreadable:
+        lines.append(f'# {unreadable} 个条目无法 stat，只显示名称')
+    if owner_hidden:
+        lines.append('# 设备 stat 不支持 %u/%g，属主/组显示为 -')
+    lines.extend(body)
+    text = '\n'.join(lines) + '\n'
+
+    if out_path:
+        with open(out_path, 'w', encoding='utf-8', newline='\n') as fh:
+            fh.write(text)
+        if log_level not in ('quiet', 'error'):
+            print(f'[完成] 已写出目录树：{out_path}（{len(paths)} 个条目）')
+    else:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+    return 0
 
 
 def _stream_android_archive(source, adb, compress, output, env,
@@ -866,7 +1036,7 @@ def run(settings):
     result = _run_adb(adb, ('get-state',), env)
     if result.returncode:
         raise RuntimeError(_display_error(
-            f'adb 不可用，请检查调试授权和 ADB 路径（设备 {device}）', result))
+            f'adb 不可用，请检查调试授权和 ADB 路径（serial {device}）', result))
 
     parent = os.path.dirname(output_path) or os.curdir
     os.makedirs(parent, exist_ok=True)
@@ -941,7 +1111,7 @@ def cmd_clean(settings, clean_device, clean_host):
         result = _run_adb(adb, ('get-state',), env)
         if result.returncode:
             raise RuntimeError(_display_error(
-                f'adb 不可用，请检查调试授权和 ADB 路径（设备 {device}）', result))
+                f'adb 不可用，请检查调试授权和 ADB 路径（serial {device}）', result))
         _clean_device_python_env(adb, env)
         if log_level not in ('quiet', 'error'):
             print(f'[清理] 已删除设备端 Python 环境：{ANDROID_ENV_DIR}')
@@ -968,6 +1138,10 @@ def main(argv=None):
                             help='删除设备端缓存的 Android Python 环境后退出（不执行备份）')
         parser.add_argument('--clean-host-cache', action='store_true',
                             help='删除主机端 Android Python 下载/解压缓存后退出（不执行备份）')
+        parser.add_argument('--list-tree', action='store_true',
+                            help='列出源目录的详细信息树后退出（不备份）')
+        parser.add_argument('--tree-out', metavar='PATH',
+                            help='配合 --list-tree：把目录树写入文件（默认写 stdout）')
         args = parser.parse_args(argv)
         settings, _config = _settings(args.config)
         if args.log_level is not None:
@@ -976,6 +1150,8 @@ def main(argv=None):
             settings['PROGRESS_INTERVAL'] = args.progress_interval
         if args.show_rate:
             settings['SHOW_RATE'] = '1'
+        if args.list_tree:
+            return cmd_tree(settings, args.tree_out)
         if args.clean_env or args.clean_host_cache:
             return cmd_clean(settings, args.clean_env, args.clean_host_cache)
         return run(settings)
