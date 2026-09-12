@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""``backup.py --list-tree``: a detailed listing of the Android source tree.
+"""``backup.py tree``: a detailed listing of the Android source tree.
 
 The tree answers "what will a backup be able to read?" without writing an
 archive: one ``find -print0`` for the entry list, then one ``stat`` per entry

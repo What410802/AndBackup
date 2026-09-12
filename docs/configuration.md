@@ -108,19 +108,46 @@ Windows 上的“系统区域设置”取的是**用户界面语言**（Win32 �
 所有归档字节走二进制 stdin/stdout；Windows 用 `cmd.exe` 的管道与重定向（避免 PowerShell
 文本管道）。三个 Python 入口都支持 `--version`。
 
-| 入口 | 用法 | 行为 |
+**语法：`可执行文件 功能 [选项…]`**——第一个非选项词选择**功能（子命令）**，其余参数只属于
+该功能，因此“这次是列举、备份，还是清理”在命令行里一目了然：
+
+| 入口 | 功能 | 用法 | 行为 |
+|---|---|---|---|
+| `paxck.py` | 本机打包 | `paxck.py create DIRECTORY` | 把 `DIRECTORY` 作为根目录写裸 PAX tar 到 stdout；普通文件带 `PAXCK.checksum.sha256` |
+| `paxck.py` | 压缩 | `paxck.py compress {xz,gzip,zstd,none}` | stdin→stdout；`xz`/`gzip`/`none` 只用标准库 |
+| `paxck.py` | 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别裸 tar/xz/gzip/zstd，逐普通文件校验 PAX SHA-256 |
+| `paxck.py` | 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | 默认：校验后暂存原子发布，`DEST` 须不存在；`--direct-tarfile` 为可信归档直接模式 |
+| `adb_source.py` | 数据源 | `adb_source.py pack [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] [--show-rate] DIRECTORY` | `host-adb`：经 `adb exec-out` 写裸 PAX tar 到 stdout（管道阶段） |
+| `backup.py` | 备份 | `backup.py backup [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [-f|--force] [--prune-source] [--prune-dry-run] [--clean-env] [--clean-host-cache]` | 读取配置、组合源与压缩器、校验 `.partial` 后原子替换；最后两个选项表示“本次成功结束后顺带清理缓存” |
+| `backup.py` | 列举 | `backup.py tree [--config PATH] [--log-level …] [--tree-out PATH] [--clean-env] [--clean-host-cache]` | 只列出源目录的详细信息树（模式、数字属主/组 UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out PATH` 写入文件。每个条目一次 adb 调用，大树较慢；不写入归档 |
+| `backup.py` | 清理 | `backup.py clean [{env,host-cache,all}] [--config PATH] [--log-level …]` | 只清理缓存后退出：`env`=设备端 Python 环境，`host-cache`=主机下载/解压缓存，`all`=两者（缺省） |
+| 平台包装 | — | `backup-android.sh [功能 选项…]`；`backup-android.bat [功能 选项…]` | 把所有参数转发给同目录 `backup.py` |
+
+`backup.py` 不带功能时等同于 `backup`（双击包装脚本/无参数运行仍然直接备份）；`--help` 与
+`--version` 不带功能会显示**顶层**帮助（功能一览），`backup.py backup --help` 才是备份功能的
+选项。`--lang` 可以写在功能前或功能后。
+
+### 从旧写法迁移
+
+旧版把功能写成选项（`--list-tree`、`--clean-env`、`--clean-host-cache`）。现在这些写法**不再
+被默默当成默认功能的选项**，而是报错并给出新写法（退出码 `2`），以免一个 "只清理" 的老
+脚本突然变成备份：
+
+| 旧写法 | 新写法 | 含义 |
 |---|---|---|
-| 本机打包 | `paxck.py create DIRECTORY` | 把 `DIRECTORY` 作为根目录写裸 PAX tar 到 stdout；普通文件带 `PAXCK.checksum.sha256` |
-| 压缩 | `paxck.py compress {xz,gzip,zstd,none}` | stdin→stdout；`xz`/`gzip`/`none` 只用标准库 |
-| 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别裸 tar/xz/gzip/zstd，逐普通文件校验 PAX SHA-256 |
-| 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | 默认：校验后暂存原子发布，`DEST` 须不存在；`--direct-tarfile` 为可信归档直接模式 |
-| Android 源适配器 | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | `host-adb`：经 `adb exec-out` 写裸 PAX tar 到 stdout |
-| Android 主控 | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [-f|--force] [--clean-env] [--clean-host-cache] [--list-tree] [--tree-out PATH] [--prune-source] [--prune-dry-run]` | 读取配置、组合源与压缩器、校验 `.partial` 后原子替换；`--clean-*` 只清理缓存后退出；`--list-tree` 只列出源目录的详细信息树（模式、属主/组（数字 UID/GID）、大小、时间、符号链接目标），默认写 stdout，`--tree-out PATH` 写入文件。每个条目一次 adb 调用，大树较慢；它是诊断命令，不写入归档；`--prune-source` 在归档发布后删除已打包的源条目（见下） |
-| 平台包装 | `backup-android.sh [ARGS...]`；`backup-android.bat [ARGS...]` | 把所有参数转发给同目录 `backup.py` |
+| `backup.py --list-tree [--tree-out PATH]` | `backup.py tree [--tree-out PATH]` | 只列举 |
+| `backup.py --clean-env` | `backup.py clean env` | 只清理设备端环境 |
+| `backup.py --clean-host-cache` | `backup.py clean host-cache` | 只清理主机缓存 |
+| `backup.py --clean-env --clean-host-cache` | `backup.py clean all` | 两者都清 |
+| （无等价写法） | `backup.py backup --clean-env` | 备份成功后再清理设备端环境 |
+| `adb_source.py [--adb ADB] DIRECTORY` | `adb_source.py pack [--adb ADB] DIRECTORY` | 管道数据源 |
 
-### 删除已打包的源条目（`--prune-source`）
+`backup.py` 的其余选项（`--config`、`--log-level`、`--progress-interval`、`--show-rate`、
+`-f`/`--force`、`--prune-source`、`--prune-dry-run`）本来就是 `backup` 功能的选项，写法不变。
 
-`backup.py --prune-source` 在**归档通过校验并原子发布之后**，把源目录下确实写进归档的
+### 删除已打包的源条目（`backup --prune-source`）
+
+`backup.py backup --prune-source` 在**归档通过校验并原子发布之后**，把源目录下确实写进归档的
 条目从设备上删除，用于释放空间。它是纯粹的释放空间操作，不可撤销：
 
 - **仅命令行选项**：不提供 YAML 键，也不从环境变量读取（配置文件里写了也无效），避免
@@ -147,8 +174,9 @@ Windows 上的“系统区域设置”取的是**用户界面语言**（Win32 �
 
 示例：
 ```sh
-src/backup-android.sh --prune-source --prune-dry-run   # 先看会删什么
-src/backup-android.sh --prune-source                   # 归档发布后真删
+src/backup-android.sh backup --prune-source --prune-dry-run   # 先看会删什么
+src/backup-android.sh backup --prune-source                   # 归档发布后真删
+src/backup-android.sh --prune-source                          # 省略功能名也等同 backup
 ```
 
 ### stdout / stderr 职责
@@ -206,14 +234,22 @@ src/backup-android.sh --prune-source                   # 归档发布后真删
 - 每次运行的状态文件放 `<env>/run/<uuid>`，无论保留与否都会删除，避免污染缓存。
 - 解释器本身无法执行导致的失败会删除缓存并明确报错，不会悄悄回退到 `host-adb`。
 
-清理命令（互不影响）：
+清理功能（只清理，不备份；`all` 是缺省值）：
 ```sh
-src/backup-android.sh  --clean-env          # 删除设备端 /data/local/tmp/andbackup-pyenv
-src/backup-android.sh  --clean-host-cache   # 删除主机下载缓存目录
+src/backup-android.sh  clean env          # 删除设备端 /data/local/tmp/andbackup-pyenv
+src/backup-android.sh  clean host-cache   # 删除主机下载缓存目录
+src/backup-android.sh  clean all          # 两者都删
 ```
 ```bat
-src\backup-android.bat --clean-env
-src\backup-android.bat --clean-host-cache
+src\backup-android.bat clean env
+src\backup-android.bat clean host-cache
+```
+
+清理也可以作为**备份/列举的收尾选项**（`--clean-env` / `--clean-host-cache`），只在本次运行
+**成功结束后**执行；失败时保留缓存以便重试：
+```sh
+src/backup-android.sh  backup --clean-host-cache    # 备份成功后删掉主机缓存
+src/backup-android.sh  tree   --clean-env           # 列举完顺手删掉设备端环境
 ```
 
 ## 压缩说明

@@ -18,7 +18,7 @@ paxck — 生成/校验带 PAX 内嵌 SHA-256 的 tar 归档
   paxck.py create <目录> | paxck.py compress xz > out.tar.xz
 
   # Android 目录由独立数据源适配器提供，再复用本压缩/校验工具
-  adb_source.py --adb adb /storage/emulated/0/path | paxck.py compress xz > out.tar.xz
+  adb_source.py pack /storage/emulated/0/path | paxck.py compress xz > out.tar.xz
 
   # 校验：自动识别 xz / gzip 压缩流，也可直接吃裸 tar 或文件路径
   paxck.py verify < out.tar.xz

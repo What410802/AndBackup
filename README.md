@@ -133,7 +133,7 @@ src\backup-android.bat --config D:\backup-config\site-backup.yaml
 环境变量的场景。同名业务环境变量（如 `OUT`、`HOST`、`SERIAL`）始终优先于 YAML 内的值
 （旧名 `device_id`/`device`/`ADB_SERIAL` 仍兼容）。
 
-完整的 YAML 键、环境变量、命令行（含 `--clean-env`/`--clean-host-cache`）、缓存与清理、
+完整的 YAML 键、环境变量、命令行（`backup`/`tree`/`clean` 三个功能）、缓存与清理、
 压缩/zstd 说明见 **[docs/configuration.md](docs/configuration.md)**；数据流与元数据边界见
 [docs/flow.md](docs/flow.md)，测试说明见 [docs/testing.md](docs/testing.md)。
 
@@ -236,7 +236,7 @@ py src\paxck.py extract -i local.tar.xz -C local-restored
 再交给通用压缩器。手动组合可用于脚本集成：
 
 ```sh
-python3 src/adb_source.py --adb /path/to/adb \
+python3 src/adb_source.py pack --adb /path/to/adb \
   /storage/emulated/0/DCIM \
   | python3 src/paxck.py compress xz > android.tar.xz
 python3 src/paxck.py verify -i android.tar.xz
@@ -299,12 +299,15 @@ Python 3.14+ 用标准库 `compression.zstd`，否则用外部 `zstd`，否则�
 
 `paxck.py`/`adb_source.py`/`backup.py` 的完整命令行表、退出码与校验/提取语义见
 [docs/configuration.md](docs/configuration.md)；归档元信息字段、时间精度与 Android 权限边界、
-以及与“上传独立 tar 二进制到设备端”的差异对比见 [docs/flow.md](docs/flow.md)。此外
-`backup.py --list-tree [--tree-out PATH]` 可只列出源目录的详细信息树（模式、数字属主/组
+以及与“上传独立 tar 二进制到设备端”的差异对比见 [docs/flow.md](docs/flow.md)。三个入口都采用
+**`可执行文件 功能 [选项…]`** 语法：`paxck.py create|compress|verify|extract`、
+`adb_source.py pack`、`backup.py backup|tree|clean`，因此“这次是列举、备份还是清理”在命令行里
+一目了然（旧写法 `--list-tree`/`--clean-*` 会报错并给出新写法）。此外
+`backup.py tree [--tree-out PATH]` 可只列出源目录的详细信息树（模式、数字属主/组
 UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out` 写入文件，不产生归档；
 每个条目一次 adb 调用，大树较慢。
 
-`backup.py --prune-source [--prune-dry-run]` 在**归档通过校验并发布之后**删除设备上已成功
+`backup.py backup --prune-source [--prune-dry-run]` 在**归档通过校验并发布之后**删除设备上已成功
 打包的源条目以释放空间。这是**仅命令行**的选项（故意不提供 YAML 键，避免配置一次后每次
 备份都静默删源），且只删“确实写进归档”的条目：适配器跳过（权限/scoped storage/打包期间
 被修改/非普通文件）的条目与源根目录永不删除；目录仅在其枚举完整且无被跳过子条目时删除，
@@ -324,12 +327,13 @@ src/
   paxverify.py             归档校验器（CLI：paxck.py verify）
   paxextract.py            安全/直接提取器（CLI：paxck.py extract）
   i18n.py                  中英消息目录与 --lang 语言解析
-  prune.py                 已打包清单的解析、删除计划与执行（--prune-source）  adb_source.py            Android ADB 数据源适配器（写裸 PAX tar）
+  prune.py                 已打包清单的解析、删除计划与执行（backup --prune-source）
+  adb_source.py            Android ADB 数据源适配器（pack 功能：写裸 PAX tar）
   adbdevice.py             ADB 调用、设备选择与 exec-out 协议原语
   android_python.py        device-python 解释器引导：按需从 python-build-standalone 下载/解压
   device_python.py         device-python 子系统：设备端环境放置/校验/清理与远程打包
-  sourcetree.py            --list-tree：源目录详细信息树
-  backup.py                跨平台 Android 主控（配置、host-adb 管道、原子输出与校验、CLI）
+  sourcetree.py            tree 功能：源目录详细信息树
+  backup.py                跨平台 Android 主控（backup/tree/clean 三个功能，配置、host-adb 管道、原子输出与校验）
   backup-android.sh        POSIX 启动包装（转发至 backup.py）
   backup-android.bat       Windows CMD 启动包装（转发至 backup.py）
   backup-android.example.yaml  无现场信息的配置模板
@@ -361,7 +365,7 @@ tests/                     单元、离线集成和真机集成测试
   接收目录 1259 个条目里有 81 个如此，属主 uid `10203`、模式 `0660`）；QQ 自己写的文件属主是
   `10183`、模式多为 `0766`，可以读取。这类文件需在设备上用能访问它的应用“另存/分享”到
   `/sdcard/Download/` 等位置再备份。同时，目标应用的临时目录（如 `.TbsReaderTemp`，组为该
-  应用自身）可能连进入都不允许。可先用 `backup.py --list-tree` 检查（树里属主/组为数字
+  应用自身）可能连进入都不允许。可先用 `backup.py tree` 检查（树里属主/组为数字
   UID/GID）。
 - 归档写入过程中两遍读取不一致（文件正在被改）会硬失败（退出码 `3`），不会发布“成功”的
   不完整归档；条目在选择与首次读取之间已改变大小、或元数据/内容不可读时只 `[WARN]` 跳过，

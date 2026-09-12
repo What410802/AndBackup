@@ -95,8 +95,8 @@ flowchart LR
 | `tests/test_android_python.py` | 单元 | `device-python` 解释器引导：已有路径/缓存复用（不联网）、缺失报错、本地 `.tar.zst` 下载+解压（含离线 fixture），覆盖 stdlib `compression.zstd`/外部 `zstd`/系统 `tar` 三种解压路径 |
 | `tests/test_pipeline_local.py` | 离线集成 | 独立本机 `create | compress | verify`、系统 tar 互操作、还原保真、非 UTF-8 文件名 |
 | `tests/test_backup_out_unit.py` | 单元 | `OUT` 规划（空/目录/尾分隔符/后缀匹配与不符）与输出目标预检：目标缺失/已存在普通文件为可用，已存在目录、FIFO/特殊文件不可用，Windows 上只读文件不可用而 POSIX 可行；已存在目标默认不覆写（提示 `--force`）、`force` 直接通过，`--force` 不绕过真写不进去的目标；`publish_archive` 成功替换、失败时保留已校验的 `.partial.*`；`_choose_output_path` 生成占位文件、自动创建父目录、交互 `y`/`n`（改输新路径）/回车放弃/EOF（Windows 把 NUL stdin 当 TTY）各路径正确且不留残骸；`_enabled` 与 YAML `force:` 映射 |
-| `tests/test_backup_sh_integration.py` | 离线集成 | 真实 `.sh` + 替身 ADB；`backup.py -> adb_source.py -> paxck.py` 组合、USB serial（不 connect）与 TCP serial（connect）、中文/空格/单引号路径、二进制安全、截断条目只 WARN 跳过且照常发布、`--prune-source`（无权限条目与源根目录保留、`--prune-dry-run` 不删除）、错误退出、`--list-tree`（含符号链接目标与 `--tree-out`）、Android/data 路径、输出目标预检（路径某段是文件、父目录不可写时报错且不产生任何 adb 调用） |
-| `tests/test_backup_bat_integration.py` | Windows 离线集成 | 真实 `cmd.exe` + `.bat` + `.cmd` 替身 ADB；`backup.py -> adb_source.py -> paxck.py` 组合、USB serial（不 connect）与 TCP serial（connect）、UTF-8 路径、二进制重定向、gzip/裸 tar、失败清理、命令行 YAML 路径、`--list-tree`、`--prune-source`（只删已打包条目、跳过的保留、演练、`--prune-dry-run` 需与 `--prune-source` 同用、device-python 走远端清单）、`device-python` 上传/回读/清理、缺少 `DEVICE_PYTHON` 报错与不自动回退，以及输出目标预检（只读的已存在目标、路径某段是文件时立即失败，不产生任何 adb 调用且原文件字节不变）与已存在目标的处理（无 `-f` 保留原文件并报错退出，带 `-f` 覆写且归档可校验） |
+| `tests/test_backup_sh_integration.py` | 离线集成 | 真实 `.sh` + 替身 ADB；`backup.py -> adb_source.py -> paxck.py` 组合、USB serial（不 connect）与 TCP serial（connect）、中文/空格/单引号路径、二进制安全、截断条目只 WARN 跳过且照常发布、`--prune-source`（无权限条目与源根目录保留、`--prune-dry-run` 不删除）、错误退出、`tree`（含符号链接目标与 `--tree-out`）、旧的 `--list-tree`/`--clean-*` 报错并提示新写法、`clean host-cache`、Android/data 路径、输出目标预检（路径某段是文件、父目录不可写时报错且不产生任何 adb 调用） |
+| `tests/test_backup_bat_integration.py` | Windows 离线集成 | 真实 `cmd.exe` + `.bat` + `.cmd` 替身 ADB；`backup.py -> adb_source.py -> paxck.py` 组合、USB serial（不 connect）与 TCP serial（connect）、UTF-8 路径、二进制重定向、gzip/裸 tar、失败清理、命令行 YAML 路径、`tree`、`--prune-source`（只删已打包条目、跳过的保留、演练、`--prune-dry-run` 需与 `--prune-source` 同用、device-python 走远端清单）、`clean env`/`clean host-cache`/`clean`（缺省 all）、`--clean-env`/`--clean-host-cache` 作为备份收尾（`backup --clean-host-cache` 在成功备份后清理）、旧的 `--list-tree`/`--clean-*` 报错并提示新写法、`device-python` 上传/回读/清理、缺少 `DEVICE_PYTHON` 报错与不自动回退，以及输出目标预检（只读的已存在目标、路径某段是文件时立即失败，不产生任何 adb 调用且原文件字节不变）与已存在目标的处理（无 `-f` 保留原文件并报错退出，带 `-f` 覆写且归档可校验） |
 | `tests/test_device_integration.py` | 真机集成 | ADB 授权、目标目录读取、双遍字节一致性、平台对应主控备份、设备空间不生成中间文件 |
 | `tests/test_i18n_unit.py` | 单元 | 目录表：两种语言的 key 集合与占位符一致、每个模板都能格式化、未知 key 回退、标签语言无关、源码里 `i18n.t()` 用到的 key 全部存在、命令模块中不再残留中文字面量；语言选择：`normalize`/`resolve` 优先级与回退、OS 语言优先于进程区域（Windows UI 语言）、`--lang` 解析、`--help` 本地化、非法 `--lang` 报错；`i18n.os_error` 优先用本工具译文（未知 errno 才保留系统文本）；`i18n.can_prompt`（`quiet`/`error`、非 TTY、stdin 为 `None`、Windows 上 NUL/DEVNULL 不算可交互） |
 | `tests/test_prune_unit.py` | 单元 | 打包清单解析（`P`/`D`/`S`/`L`、非 UTF-8 路径、空/未知记录）与删除计划：由深到浅、跳过条目及其父目录保留、枚举不完整时保留全部目录、源根目录永不删除、源根之外的路径拒绝、同前缀兄弟目录不算子项；命令构造只用 `rm -f`/`rmdir` 并正确引用 |
@@ -110,7 +110,7 @@ flowchart LR
 亚秒 `mtime`，并直接验证其目录、普通文件和符号链接均经通用 PAX writer 写入，避免回归为
 只读取整数秒或把 ADB 打包逻辑重新耦合回 `paxck.py`。
 
-目录树（`--list-tree`）的离线覆盖在两个主控集成套件里：替身 ADB 会按请求的 `stat -c`
+目录树（`tree` 功能）的离线覆盖在两个主控集成套件里：替身 ADB 会按请求的 `stat -c`
 格式返回 `%u`/`%g`（Windows 替身用 `st_uid`/`st_gid`，通常为 0），测试断言模式位、
 属主/组、缩进层级、符号链接目标、`--tree-out` 写文件，以及不产生归档文件。
 

@@ -237,8 +237,8 @@ class TestBackupBatch(unittest.TestCase):
                          result.stdout.decode('utf-8', 'replace'))
         self.assertIn('serial=FAKE-1', self.log_text())
 
-    def test_list_tree_prints_a_detailed_listing_without_backing_up(self):
-        result = self.run_script(_args=('--list-tree',))
+    def test_tree_prints_a_detailed_listing_without_backing_up(self):
+        result = self.run_script(_args=('tree',))
         text = result.stdout.decode('utf-8', 'replace')
         self.assertEqual(result.returncode, 0, text)
         self.assertIn('# source: ' + self.source, text)
@@ -250,9 +250,9 @@ class TestBackupBatch(unittest.TestCase):
         self.assertIn('readme.txt', text)
         self.assertFalse(os.path.exists(self.out))
 
-    def test_list_tree_can_write_to_a_named_file(self):
+    def test_tree_can_write_to_a_named_file(self):
         target = os.path.join(self.case, 'tree.txt')
-        result = self.run_script(_args=('--list-tree', '--tree-out', target))
+        result = self.run_script(_args=('tree', '--tree-out', target))
         self.assertEqual(result.returncode, 0,
                          result.stdout.decode('utf-8', 'replace'))
         with open(target, encoding='utf-8') as fh:
@@ -436,6 +436,17 @@ class TestBackupBatch(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(blocker, 'out.tar.xz')))
         if os.path.exists(self.log):
             self.assertNotIn('exec-out', self.log_text())
+
+    def test_legacy_function_flags_are_migration_errors(self):
+        """--list-tree/--clean-* 不再被默默当成默认功能的选项。"""
+        for args, hint in ((('--list-tree',), 'tree'),
+                           (('--clean-env',), 'clean env'),
+                           (('--clean-host-cache',), 'clean host-cache')):
+            result = self.run_script(_args=args)
+            text = result.stdout.decode('utf-8', 'replace')
+            self.assertEqual(result.returncode, 2, text)
+            self.assertIn(hint, text)
+            self.assertFalse(os.path.exists(self.out))
 
     def test_unknown_compressor_is_rejected(self):
         result = self.run_script(COMPRESS='bad-compressor')
@@ -650,7 +661,7 @@ class TestDeviceEnvCaching(unittest.TestCase):
         finally:
             shutil.rmtree(case, ignore_errors=True)
 
-    def test_clean_env_command_removes_device_cache(self):
+    def test_clean_env_function_removes_device_cache(self):
         case, device_root, remote_root, prefix = self._make_case()
         try:
             env_dir = self._env_dir(remote_root)
@@ -658,7 +669,7 @@ class TestDeviceEnvCaching(unittest.TestCase):
             with open(os.path.join(env_dir, 'stamp'), 'w') as fh:
                 fh.write('stale\n')
             r, log = self._run(case, device_root, remote_root, prefix,
-                               '--clean-env')
+                               'clean', 'env')
             self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
             self.assertFalse(os.path.exists(env_dir))
             self.assertIn('rm -rf /data/local/tmp/andbackup-pyenv',
@@ -666,15 +677,55 @@ class TestDeviceEnvCaching(unittest.TestCase):
         finally:
             shutil.rmtree(case, ignore_errors=True)
 
-    def test_clean_host_cache_command_removes_cache_dir(self):
+    def test_clean_all_is_the_default_target(self):
+        case, device_root, remote_root, prefix = self._make_case()
+        try:
+            env_dir = self._env_dir(remote_root)
+            os.makedirs(env_dir)
+            cache = os.path.join(case, 'host-cache')
+            os.makedirs(os.path.join(cache, 'andbackup'))
+            r, _ = self._run(case, device_root, remote_root, prefix, 'clean',
+                             LOCALAPPDATA=cache)
+            self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
+            self.assertFalse(os.path.exists(env_dir))
+            self.assertFalse(os.path.exists(os.path.join(cache, 'andbackup')))
+        finally:
+            shutil.rmtree(case, ignore_errors=True)
+
+    def test_clean_host_cache_function_removes_cache_dir(self):
         case, device_root, remote_root, prefix = self._make_case()
         try:
             cache = os.path.join(case, 'host-cache')
             os.makedirs(os.path.join(cache, 'andbackup', 'downloads'))
             r, _ = self._run(case, device_root, remote_root, prefix,
-                             '--clean-host-cache', LOCALAPPDATA=cache)
+                             'clean', 'host-cache', LOCALAPPDATA=cache)
             self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
             self.assertFalse(os.path.exists(os.path.join(cache, 'andbackup')))
+        finally:
+            shutil.rmtree(case, ignore_errors=True)
+
+    def test_clean_host_cache_after_a_successful_backup(self):
+        """--clean-host-cache 在成功备份之后顺带清理（不是单独清理）。"""
+        case, device_root, remote_root, prefix = self._make_case()
+        try:
+            cache = os.path.join(case, 'host-cache')
+            os.makedirs(os.path.join(cache, 'andbackup', 'downloads'))
+            r, _ = self._run(case, device_root, remote_root, prefix,
+                             'backup', '--clean-host-cache', LOCALAPPDATA=cache)
+            self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
+            self.assertTrue(os.path.isfile(os.path.join(case, 'out.tar.xz')))
+            self.assertFalse(os.path.exists(os.path.join(cache, 'andbackup')))
+        finally:
+            shutil.rmtree(case, ignore_errors=True)
+
+    def test_clean_env_after_a_successful_backup(self):
+        case, device_root, remote_root, prefix = self._make_case()
+        try:
+            r, _ = self._run(case, device_root, remote_root, prefix,
+                             'backup', '--clean-env', KEEP_ANDROID_ENV='1')
+            self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
+            self.assertTrue(os.path.isfile(os.path.join(case, 'out.tar.xz')))
+            self.assertFalse(os.path.exists(self._env_dir(remote_root)))
         finally:
             shutil.rmtree(case, ignore_errors=True)
 

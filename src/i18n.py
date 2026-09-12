@@ -232,6 +232,8 @@ MESSAGES = {
         'adb.cli.progress_help': '进度输出最小间隔秒数',
         'adb.cli.show_rate_help': '在定期进度行显示 ADB 有效载荷速率',
         'adb.cli.directory_help': '设备上的非根绝对目录',
+        'adb.cli.pack_help':
+            '枚举设备目录并把裸 PAX tar 写到 stdout（管道中的数据源阶段）',
         'adb.err.source_root_absolute':
             'Android 源路径必须是非根绝对目录：{root}',
         'adb.err.source_not_directory': 'Android 源路径不是目录：{root}',
@@ -352,23 +354,33 @@ MESSAGES = {
         'backup.tree.unreadable_entry':
             '[?] ??? {name}（无法 stat，可能权限不足）',
         'backup.done.tree': '已写出目录树：{path}（{count} 个条目）',
-        'backup.cli.description': 'AndBackup 主控：读取 YAML 并执行 ADB 流式归档',
+        'backup.cli.description':
+            'AndBackup 主控：按功能执行流式归档与维护（backup / tree / clean）',
         'backup.cli.config_help':
             '配置文件路径（默认脚本目录中的 backup-android.yaml；'
             '覆盖 BACKUP_CONFIG_FILE）',
         'backup.cli.log_level_help': '日志级别，覆盖配置中的 log_level',
+        'backup.cli.backup_help': '备份设备目录到主机归档（默认功能）',
+        'backup.cli.tree_help': '只列出源目录的详细信息树（不备份）',
+        'backup.cli.clean_help': '清理缓存：设备端 Python 环境或主机端下载缓存',
+        'backup.cli.clean_target_help':
+            '要清理的缓存：env=设备端 Python 环境，host-cache=主机端下载/解压'
+            '缓存，all=两者（缺省 all）',
         'backup.cli.progress_help':
             '进度输出最小间隔秒数，覆盖配置中的 progress_interval',
         'backup.cli.show_rate_help': '显示 ADB 有效载荷速率，覆盖配置中的 show_rate',
         'backup.cli.clean_env_help':
-            '删除设备端缓存的 Android Python 环境后退出（不执行备份）',
+            '本次运行成功后，顺带删除设备端缓存的 Android Python 环境',
         'backup.cli.clean_host_cache_help':
-            '删除主机端 Android Python 下载/解压缓存后退出（不执行备份）',
-        'backup.cli.list_tree_help': '列出源目录的详细信息树后退出（不备份）',
-        'backup.cli.tree_out_help':
-            '配合 --list-tree：把目录树写入文件（默认写 stdout）',
+            '本次运行成功后，顺带删除主机端下载/解压缓存',
+        'backup.cli.tree_out_help': '把目录树写入文件（默认写 stdout）',
         'backup.cli.force_help':
             '目标文件已存在时直接覆写，不再询问（非交互环境本来就会报错退出）',
+        'backup.cli.legacy_flag':
+            '`{old}` 已改为子命令：请用 `{new}`',
+        'backup.cli.legacy_clean':
+            '`{old}` 现在只表示“本次运行成功后顺带清理”：单独清理请用 '
+            '`{new}`，或写 `backup.py backup {old}`',
         # ---- prune.py / packed manifest --------------------------
         'prune.info.planned':
             '将删除 {count} 个已打包条目，保留 {kept} 个未打包/不完整条目',
@@ -622,6 +634,9 @@ MESSAGES = {
         'adb.cli.progress_help': 'minimum seconds between progress lines',
         'adb.cli.show_rate_help': 'show the ADB payload rate on progress lines',
         'adb.cli.directory_help': 'absolute, non-root directory on the device',
+        'adb.cli.pack_help':
+            'list an Android directory and write a raw PAX tar to stdout '
+            '(the data-source stage of a pipeline)',
         'adb.err.source_root_absolute':
             'the Android source path must be an absolute, non-root directory: {root}',
         'adb.err.source_not_directory':
@@ -771,26 +786,37 @@ MESSAGES = {
             '[?] ??? {name} (cannot stat; probably a permission problem)',
         'backup.done.tree': 'wrote the directory tree to {path} ({count} entries)',
         'backup.cli.description':
-            'AndBackup controller: read the YAML config and run a streaming ADB archive',
+            'AndBackup controller: streaming archives and maintenance, one '
+            'function at a time (backup / tree / clean)',
         'backup.cli.config_help':
             'config file path (defaults to backup-android.yaml next to the script; '
             'overrides BACKUP_CONFIG_FILE)',
         'backup.cli.log_level_help':
             'log level, overriding log_level in the config',
+        'backup.cli.backup_help': 'back up a device directory to a host archive (default)',
+        'backup.cli.tree_help': 'list the detailed source tree only (no backup)',
+        'backup.cli.clean_help':
+            'clean caches: the device Python environment or the host download cache',
+        'backup.cli.clean_target_help':
+            'cache to clean: env = device Python environment, host-cache = host '
+            'download/unpack cache, all = both (default: all)',
         'backup.cli.progress_help':
             'minimum seconds between progress lines, overriding progress_interval',
         'backup.cli.show_rate_help':
             'show the ADB payload rate, overriding show_rate',
         'backup.cli.clean_env_help':
-            'delete the cached Android Python environment and exit (no backup)',
+            'after this run succeeds, also delete the cached device Python environment',
         'backup.cli.clean_host_cache_help':
-            'delete the host download/unpack cache and exit (no backup)',
-        'backup.cli.list_tree_help': 'list the detailed source tree and exit (no backup)',
-        'backup.cli.tree_out_help':
-            'with --list-tree: write the tree to a file (default: stdout)',
+            'after this run succeeds, also delete the host download/unpack cache',
+        'backup.cli.tree_out_help': 'write the tree to a file (default: stdout)',
         'backup.cli.force_help':
             'overwrite an existing target without asking (non-interactive runs '
             'fail instead)',
+        'backup.cli.legacy_flag':
+            '`{old}` is now a subcommand: use `{new}`',
+        'backup.cli.legacy_clean':
+            '`{old}` now only means "clean after this run succeeds": clean on '
+            'its own with `{new}`, or write `backup.py backup {old}`',
         # ---- prune.py / packed manifest --------------------------
         'prune.info.planned':
             'will delete {count} packed entries and keep {kept} unpacked or '

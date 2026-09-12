@@ -11,9 +11,10 @@ The project separates source acquisition from archive handling:
   and are imported lazily by the CLI, so the writer (the only part uploaded to
   the device for `device-python` mode, together with `i18n.py`) depends on
   neither of them.
-- `adb_source.py` adapts an Android directory to that writer. It lists paths,
-  reads metadata, reads symlink targets, and streams regular-file bytes through
-  `adb exec-out`. This is the `host-adb` data source.
+- `adb_source.py pack DIR` adapts an Android directory to that writer. It lists
+  paths, reads metadata, reads symlink targets, and streams regular-file bytes
+  through `adb exec-out`. This is the `host-adb` data source, and `pack` is its
+  function name (the data-source stage of a pipeline).
 - `backup.py` is the Android production controller. It merges configuration,
   performs an optional TCP `adb connect`, selects the source mode, runs the
   source and compressor, verifies a unique host-side partial archive, then
@@ -23,25 +24,26 @@ The project separates source acquisition from archive handling:
   "yes"), fails before any transfer. With `source_mode: device-python`
   it uploads a user-provided Android Python binary plus the device scripts
   `paxck.py` and `i18n.py`, then runs
-  `paxck.py create` on the device. `backup.py --list-tree [--tree-out PATH]`
+  `paxck.py create` on the device. `backup.py tree [--tree-out PATH]`
   bypasses the pipeline and only prints the detailed source tree (mode,
-  owner/group, size, time, symlink targets) for pre-backup permission checks.
+  owner/group, size, time, symlink targets) for pre-backup permission checks,
+  and `backup.py clean [env|host-cache|all]` only removes the caches.
 - `backup-android.sh` and `backup-android.bat` are deliberately thin POSIX and
   CMD forwarding wrappers.
 - Controller-side helpers (none of which `paxck.py` depends on):
   `adbdevice.py` (ADB invocation, device selection, the exec-out status-trailer
   protocol), `device_python.py` (the device-side interpreter environment and
-  remote packing), `sourcetree.py` (`--list-tree`), and `prune.py`
+  remote packing), `sourcetree.py` (the `tree` function), and `prune.py`
   (manifest parsing, deletion planning and execution for `--prune-source`).
 
 ```text
-Android files -- adb exec-out --> adb_source.py -- raw PAX --> paxck.py compress
-                                                             |
-                                                        host .partial archive
-                                                             |
-                                                        paxck.py verify
-                                                             |
-                                                        atomic final output
+Android files -- adb exec-out --> adb_source.py pack -- raw PAX --> paxck.py compress
+                                                                    |
+                                                               host .partial archive
+                                                                    |
+                                                               paxck.py verify
+                                                                    |
+                                                               atomic final output
 ```
 
 The diagram above is the default `host-adb` mode. There, the Android device
@@ -222,7 +224,7 @@ Directories behave the same way: an app's private scratch directory (e.g.
 This is not something the tool can fix and is unrelated to device state such as
 a sleeping screen. The workaround is to re-save or share the file from an app
 that can reach it into a shell-readable location such as `/sdcard/Download/`,
-and to check readability with `backup.py --list-tree` (owner/group appear there
+and to check readability with `backup.py tree` (owner/group appear there
 as numeric UIDs/GIDs).
 
 ## Extraction Modes

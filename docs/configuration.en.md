@@ -134,19 +134,52 @@ is deprecated and ignored.
 Archive bytes use binary stdin/stdout; on Windows run pipelines from `cmd.exe`.
 All three Python entry points support `--version`.
 
-| Entry | Usage | Contract |
+**Grammar: `executable FUNCTION [options…]`** — the first non-option word picks
+the **function** (subcommand) and every later argument belongs to it, so the
+command line says whether this run lists, backs up or cleans:
+
+| Entry | Function | Usage | Contract |
+|---|---|---|---|
+| `paxck.py` | local writer | `paxck.py create DIRECTORY` | raw PAX tar to stdout; `PAXCK.checksum.sha256` per regular file |
+| `paxck.py` | compressor | `paxck.py compress {xz,gzip,zstd,none}` | stdin→stdout; `xz`/`gzip`/`none` need only the stdlib |
+| `paxck.py` | verifier | `paxck.py verify [ARCHIVE]` or `-i ARCHIVE`, optional `-q` | auto-detect tar/xz/gzip/zstd; verify each PAX SHA-256 |
+| `paxck.py` | extractor | `paxck.py extract [ARCHIVE] -C DEST` | default verified/staged/atomic; `--direct-tarfile` for trusted archives |
+| `adb_source.py` | data source | `adb_source.py pack [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] [--show-rate] DIRECTORY` | `host-adb`: raw PAX tar to stdout (the pipeline stage) |
+| `backup.py` | backup | `backup.py backup [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [-f|--force] [--prune-source] [--prune-dry-run] [--clean-env] [--clean-host-cache]` | run + verify + atomic replace; the last two options mean "also clean these caches after a successful run" |
+| `backup.py` | tree | `backup.py tree [--config PATH] [--log-level …] [--tree-out PATH] [--clean-env] [--clean-host-cache]` | list only the detailed tree of the source directory (mode, numeric owner/group UID/GID, size, time, symlink targets) to stdout, or to `--tree-out PATH`. One adb round trip per entry, so large trees are slow; writes no archive |
+| `backup.py` | clean | `backup.py clean [{env,host-cache,all}] [--config PATH] [--log-level …]` | clean caches and exit: `env` = device Python environment, `host-cache` = host download/unpack cache, `all` = both (default) |
+| Wrappers | — | `backup-android.sh [FUNCTION options…]` / `backup-android.bat [FUNCTION options…]` | forward all args to `backup.py` |
+
+Without a function, `backup.py` behaves like `backup` (so double-clicking a
+wrapper or running it bare still backs up); bare `--help`/`--version` show the
+**top-level** help (the function list), while `backup.py backup --help` shows the
+backup options. `--lang` is accepted before or after the function.
+
+### Migrating from the old spelling
+
+The old releases expressed the function as an option (`--list-tree`,
+`--clean-env`, `--clean-host-cache`). Those are no longer silently reinterpreted
+as options of the default function: they fail with the new spelling instead
+(exit code `2`), so an old "clean only" script cannot suddenly start writing an
+archive:
+
+| Old | New | Meaning |
 |---|---|---|
-| Local writer | `paxck.py create DIRECTORY` | raw PAX tar to stdout; `PAXCK.checksum.sha256` per regular file |
-| Compressor | `paxck.py compress {xz,gzip,zstd,none}` | stdin→stdout; `xz`/`gzip`/`none` need only the stdlib |
-| Verifier | `paxck.py verify [ARCHIVE]` or `-i ARCHIVE`, optional `-q` | auto-detect tar/xz/gzip/zstd; verify each PAX SHA-256 |
-| Extractor | `paxck.py extract [ARCHIVE] -C DEST` | default verified/staged/atomic; `--direct-tarfile` for trusted archives |
-| Android source | `adb_source.py [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] DIRECTORY` | `host-adb`: raw PAX tar to stdout |
-| Android controller | `backup.py [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [-f|--force] [--clean-env] [--clean-host-cache] [--list-tree] [--tree-out PATH] [--prune-source] [--prune-dry-run]` | run + verify + atomic replace; `--clean-*` clean caches and exit; `--list-tree` only lists the detailed tree of the source directory (mode, numeric owner/group UID/GID, size, time, symlink targets) to stdout, or to `--tree-out PATH`. One adb round trip per entry, so large trees are slow; it is a diagnostic and writes no archive; `--prune-source` deletes the packed source entries after the archive is published (see below) |
-| Wrappers | `backup-android.sh [ARGS…]` / `backup-android.bat [ARGS…]` | forward all args to `backup.py` |
+| `backup.py --list-tree [--tree-out PATH]` | `backup.py tree [--tree-out PATH]` | list only |
+| `backup.py --clean-env` | `backup.py clean env` | clean the device environment only |
+| `backup.py --clean-host-cache` | `backup.py clean host-cache` | clean the host cache only |
+| `backup.py --clean-env --clean-host-cache` | `backup.py clean all` | clean both |
+| (no equivalent) | `backup.py backup --clean-env` | back up, then clean the device environment |
+| `adb_source.py [--adb ADB] DIRECTORY` | `adb_source.py pack [--adb ADB] DIRECTORY` | pipeline data source |
 
-### Deleting the packed source entries (`--prune-source`)
+The remaining `backup.py` options (`--config`, `--log-level`,
+`--progress-interval`, `--show-rate`, `-f`/`--force`, `--prune-source`,
+`--prune-dry-run`) were always options of the backup function and keep their
+spelling.
 
-`backup.py --prune-source` removes the entries that really made it into the
+### Deleting the packed source entries (`backup --prune-source`)
+
+`backup.py backup --prune-source` removes the entries that really made it into the
 archive from the device *after the archive was verified and atomically
 published*, to free space. It is irreversible:
 
@@ -180,6 +213,13 @@ published*, to free space. It is irreversible:
   it automatically when pruning is requested, so it needs no manual use.
 - Nothing is deleted when the backup, the verification or the publish failed:
   the failure path only removes host-side temporary files.
+
+Examples:
+```sh
+src/backup-android.sh backup --prune-source --prune-dry-run   # see the plan first
+src/backup-android.sh backup --prune-source                   # really delete after publishing
+src/backup-android.sh --prune-source                          # the function name is optional
+```
 
 ### stdout/stderr responsibilities
 
@@ -244,14 +284,23 @@ non-interactive (no TTY) with no setting removes it so scripts do not silently
 leave ~230 MiB on the device. Reusing an existing env never prompts or removes.
 Per-run status files live under `<env>/run/<uuid>` and are always removed.
 
-Cleanup commands are independent:
+The clean function only cleans (no backup; `all` is the default):
 ```sh
-src/backup-android.sh  --clean-env          # device /data/local/tmp/andbackup-pyenv
-src/backup-android.sh  --clean-host-cache   # host download cache
+src/backup-android.sh  clean env          # device /data/local/tmp/andbackup-pyenv
+src/backup-android.sh  clean host-cache   # host download cache
+src/backup-android.sh  clean all          # both
 ```
 ```bat
-src\backup-android.bat --clean-env
-src\backup-android.bat --clean-host-cache
+src\backup-android.bat clean env
+src\backup-android.bat clean host-cache
+```
+
+Cleaning can also be a **last step of a backup or tree run** (`--clean-env` /
+`--clean-host-cache`), executed only when that run succeeded; a failed run keeps
+its caches for the retry:
+```sh
+src/backup-android.sh  backup --clean-host-cache    # back up, then drop the host cache
+src/backup-android.sh  tree   --clean-env           # list, then drop the device env
 ```
 
 ## Compression Notes

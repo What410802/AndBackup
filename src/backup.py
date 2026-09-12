@@ -8,7 +8,7 @@ live here so Windows and POSIX follow exactly the same code path.
 
 Sibling modules: ``adbdevice.py`` (ADB invocation and device selection),
 ``device_python.py`` (the ``source_mode: device-python`` subsystem),
-``sourcetree.py`` (``--list-tree``) and ``prune.py`` (``--prune-source``).
+``sourcetree.py`` (the ``tree`` function) and ``prune.py`` (``--prune-source``).
 """
 import ast
 import argparse
@@ -164,6 +164,7 @@ def _stream_android_archive(source, adb, compress, output, env,
                             show_rate=False, manifest=None):
     """Compose the Android source adapter and generic compressor safely."""
     source_args = [sys.executable, os.path.join(_script_dir(), 'adb_source.py'),
+                   'pack',
                    '--adb', adb, '--log-level', str(log_level),
                    '--progress-interval', str(progress_interval),
                    *(('--show-rate',) if show_rate else ()),
@@ -534,6 +535,114 @@ def run(settings, prune_source=False, prune_dry_run=False):
                     pass
 
 
+FUNCTIONS = ('backup', 'tree', 'clean')
+CLEAN_ENV = 'env'
+CLEAN_HOST_CACHE = 'host-cache'
+CLEAN_ALL = 'all'
+CLEAN_TARGETS = (CLEAN_ENV, CLEAN_HOST_CACHE, CLEAN_ALL)
+
+# Old command lines that would otherwise be reinterpreted silently.  The backup
+# function is the default, so `backup.py --list-tree` has no obvious new
+# spelling: it has to be a migration error, not a surprise run.
+_LEGACY_FUNCTION_FLAGS = {
+    '--list-tree': ('flag', 'backup.py tree'),
+    '--tree-out': ('flag', 'backup.py tree --tree-out PATH'),
+    '--clean-env': ('clean', 'backup.py clean env'),
+    '--clean-host-cache': ('clean', 'backup.py clean host-cache'),
+}
+
+
+class LegacyInvocation(Exception):
+    """An old function flag was used without naming a function."""
+
+
+def _build_parser():
+    """Build the ``backup.py FUNCTION [options]`` command line.
+
+    Every function is a verb, so the text after it can only mean one thing:
+    ``backup`` streams an archive, ``tree`` only lists, ``clean`` only removes
+    caches.  Running the script with no function still backs up, which keeps
+    the double-click launchers working.
+    """
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument('--lang', choices=i18n.LANGUAGES + (i18n.AUTO,),
+                        default=None, help=i18n.lang_help())
+    parser = argparse.ArgumentParser(
+        prog='backup.py', description=i18n.t('backup.cli.description'),
+        parents=[common])
+    parser.add_argument('--version', action='version',
+                        version=f'%(prog)s {paxck.VERSION}')
+    sub = parser.add_subparsers(dest='function',
+                                metavar='{' + ','.join(FUNCTIONS) + '}')
+
+    def shared(target):
+        target.add_argument('--config', metavar='PATH',
+                            help=i18n.t('backup.cli.config_help'))
+        target.add_argument('--log-level',
+                            choices=('quiet', 'error', 'warn', 'info',
+                                     'debug', 'trace'),
+                            help=i18n.t('backup.cli.log_level_help'))
+
+    def cleanup(target):
+        target.add_argument('--clean-env', action='store_true',
+                            help=i18n.t('backup.cli.clean_env_help'))
+        target.add_argument('--clean-host-cache', action='store_true',
+                            help=i18n.t('backup.cli.clean_host_cache_help'))
+
+    backup = sub.add_parser('backup', parents=[common],
+                            help=i18n.t('backup.cli.backup_help'),
+                            description=i18n.t('backup.cli.backup_help'))
+    shared(backup)
+    backup.add_argument('--progress-interval', metavar='SECONDS',
+                        help=i18n.t('backup.cli.progress_help'))
+    backup.add_argument('--show-rate', action='store_true',
+                        help=i18n.t('backup.cli.show_rate_help'))
+    backup.add_argument('-f', '--force', action='store_true',
+                        help=i18n.t('backup.cli.force_help'))
+    backup.add_argument('--prune-source', action='store_true',
+                        help=i18n.t('prune.cli.source_help'))
+    backup.add_argument('--prune-dry-run', action='store_true',
+                        help=i18n.t('prune.cli.dry_run_help'))
+    cleanup(backup)
+
+    tree = sub.add_parser('tree', parents=[common],
+                          help=i18n.t('backup.cli.tree_help'),
+                          description=i18n.t('backup.cli.tree_help'))
+    shared(tree)
+    tree.add_argument('--tree-out', metavar='PATH',
+                      help=i18n.t('backup.cli.tree_out_help'))
+    cleanup(tree)
+
+    clean = sub.add_parser('clean', parents=[common],
+                           help=i18n.t('backup.cli.clean_help'),
+                           description=i18n.t('backup.cli.clean_help'))
+    shared(clean)
+    clean.add_argument('target', nargs='?', choices=CLEAN_TARGETS,
+                       metavar='{env,host-cache,all}',
+                       help=i18n.t('backup.cli.clean_target_help'))
+    return parser
+
+
+def _normalize_argv(raw):
+    """Insert the implicit ``backup`` function, or explain the old spelling."""
+    if not raw:
+        return ['backup']
+    first = raw[0]
+    if first in FUNCTIONS or first in ('-h', '--help', '--version'):
+        # `-h`/`--version` stay on the top-level parser so the function list
+        # stays discoverable.
+        return list(raw)
+    for token in raw:
+        legacy = _LEGACY_FUNCTION_FLAGS.get(token)
+        if legacy is not None:
+            kind, replacement = legacy
+            message_key = ('backup.cli.legacy_clean' if kind == 'clean'
+                           else 'backup.cli.legacy_flag')
+            raise LegacyInvocation(i18n.t(message_key, old=token,
+                                          new=replacement))
+    return ['backup'] + list(raw)
+
+
 def cmd_clean(settings, clean_device, clean_host):
     """Remove cached device-python environments (independent targets)."""
     log_level = str(settings.get('LOG_LEVEL', 'info')).lower()
@@ -563,51 +672,39 @@ def cmd_clean(settings, clean_device, clean_host):
 
 def main(argv=None):
     paxck.configure_stdio_utf8()
-    i18n.set_language(i18n.resolve(cli=i18n.prescan_lang(argv)))
+    raw = list(sys.argv[1:] if argv is None else argv)
+    i18n.set_language(i18n.resolve(cli=i18n.prescan_lang(raw)))
     try:
-        parser = argparse.ArgumentParser(
-            description=i18n.t('backup.cli.description'))
-        parser.add_argument(
-            '--version', action='version', version=f'%(prog)s {paxck.VERSION}')
-        parser.add_argument('--lang', choices=i18n.LANGUAGES + (i18n.AUTO,),
-                            default=None, help=i18n.lang_help())
-        parser.add_argument(
-            '--config', metavar='PATH', help=i18n.t('backup.cli.config_help'))
-        parser.add_argument('--log-level', choices=('quiet', 'error', 'warn', 'info', 'debug', 'trace'),
-                            help=i18n.t('backup.cli.log_level_help'))
-        parser.add_argument('--progress-interval', metavar='SECONDS',
-                            help=i18n.t('backup.cli.progress_help'))
-        parser.add_argument('--show-rate', action='store_true',
-                            help=i18n.t('backup.cli.show_rate_help'))
-        parser.add_argument('-f', '--force', action='store_true',
-                            help=i18n.t('backup.cli.force_help'))
-        parser.add_argument('--clean-env', action='store_true',
-                            help=i18n.t('backup.cli.clean_env_help'))
-        parser.add_argument('--clean-host-cache', action='store_true',
-                            help=i18n.t('backup.cli.clean_host_cache_help'))
-        parser.add_argument('--list-tree', action='store_true',
-                            help=i18n.t('backup.cli.list_tree_help'))
-        parser.add_argument('--tree-out', metavar='PATH',
-                            help=i18n.t('backup.cli.tree_out_help'))
-        parser.add_argument('--prune-source', action='store_true',
-                            help=i18n.t('prune.cli.source_help'))
-        parser.add_argument('--prune-dry-run', action='store_true',
-                            help=i18n.t('prune.cli.dry_run_help'))
-        args = parser.parse_args(argv)
+        parser = _build_parser()
+        try:
+            args = parser.parse_args(_normalize_argv(raw))
+        except LegacyInvocation as e:
+            print(i18n.tag('error') + ' ' + str(e), file=sys.stderr)
+            return 2
         settings, _config = _settings(args.config)
         if args.log_level is not None:
             settings['LOG_LEVEL'] = args.log_level
-        if args.progress_interval is not None:
-            settings['PROGRESS_INTERVAL'] = args.progress_interval
-        if args.show_rate:
-            settings['SHOW_RATE'] = '1'
-        if args.force:
-            settings['FORCE'] = '1'
-        if args.list_tree:
-            return sourcetree.cmd_tree(settings, args.tree_out)
-        if args.clean_env or args.clean_host_cache:
-            return cmd_clean(settings, args.clean_env, args.clean_host_cache)
-        return run(settings, args.prune_source, args.prune_dry_run)
+        clean_env = bool(getattr(args, 'clean_env', False))
+        clean_host = bool(getattr(args, 'clean_host_cache', False))
+        if args.function == 'clean':
+            target = args.target or CLEAN_ALL
+            return cmd_clean(settings, target in (CLEAN_ENV, CLEAN_ALL),
+                             target in (CLEAN_HOST_CACHE, CLEAN_ALL))
+        if args.function == 'tree':
+            code = sourcetree.cmd_tree(settings, args.tree_out)
+        else:
+            if args.progress_interval is not None:
+                settings['PROGRESS_INTERVAL'] = args.progress_interval
+            if args.show_rate:
+                settings['SHOW_RATE'] = '1'
+            if args.force:
+                settings['FORCE'] = '1'
+            code = run(settings, args.prune_source, args.prune_dry_run)
+        if code == 0 and (clean_env or clean_host):
+            # Documented as "clean after a successful run", so a failed backup
+            # keeps its caches for the retry.
+            code = cmd_clean(settings, clean_env, clean_host)
+        return code
     except (RuntimeError, OSError) as e:
         print(i18n.tag('error') + ' ' + i18n.t('backup.err.fatal', err=e),
               file=sys.stderr)

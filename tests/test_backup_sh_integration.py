@@ -191,9 +191,9 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
         self.assertEqual(self.run_script().returncode, 0)
         self.assertIn('exec-out sh -c find', self.adb_log_text())
 
-    def test_list_tree_reports_details_and_symlink_targets(self):
-        """--list-tree 只列目录树：模式、属主/组、大小、符号链接目标。"""
-        r = self.run_script(_args=('--list-tree',))
+    def test_tree_reports_details_and_symlink_targets(self):
+        """`tree` 只列目录树：模式、属主/组、大小、符号链接目标。"""
+        r = self.run_script(_args=('tree',))
         text = r.stdout.decode('utf-8', 'replace')
         self.assertEqual(r.returncode, 0, text)
         self.assertIn('# source: ' + self.source, text)
@@ -207,7 +207,7 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
 
     def test_list_tree_writes_a_file_and_keeps_the_archive_untouched(self):
         target = os.path.join(self.case, 'tree.txt')
-        r = self.run_script(_args=('--list-tree', '--tree-out', target))
+        r = self.run_script(_args=('tree', '--tree-out', target))
         self.assertEqual(r.returncode, 0, r.stdout.decode('utf-8', 'replace'))
         with open(target, encoding='utf-8') as fh:
             text = fh.read()
@@ -368,6 +368,25 @@ class TestBackupScriptFailurePaths(HarnessMixin, unittest.TestCase):
         text = r.stdout.decode('utf-8', 'replace')
         # With device auto-selection, an unavailable adb fails at enumeration.
         self.assertIn('无法枚举 ADB 设备', text)
+
+    def test_legacy_function_flags_are_migration_errors(self):
+        """--list-tree/--clean-* 不再被默默当成默认功能的选项。"""
+        for args, hint in ((('--list-tree',), 'tree'),
+                           (('--clean-host-cache',), 'clean host-cache')):
+            r = self.run_script(_args=args)
+            text = r.stdout.decode('utf-8', 'replace')
+            self.assertEqual(r.returncode, 2, text)
+            self.assertIn(hint, text)
+            self.assertFalse(os.path.exists(self.out))
+
+    def test_clean_host_cache_function_removes_the_local_cache(self):
+        cache = os.path.join(self.case, 'host-cache')
+        os.makedirs(os.path.join(cache, 'andbackup', 'downloads'))
+        r = self.run_script(_args=('clean', 'host-cache'), XDG_CACHE_HOME=cache)
+        text = r.stdout.decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 0, text)
+        self.assertFalse(os.path.exists(os.path.join(cache, 'andbackup')))
+        self.assertFalse(os.path.exists(self.out))
 
     def test_existing_target_is_kept_without_force(self):
         """非交互环境不静默覆盖上次的备份：保留原文件并以失败退出。"""

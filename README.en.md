@@ -230,7 +230,7 @@ pick another path. If the final rename still fails, the verified archive is
 kept at that `.partial.*` path instead of being discarded.
 
 ```sh
-python3 src/adb_source.py --adb adb /storage/emulated/0/DCIM \
+python3 src/adb_source.py pack --adb adb /storage/emulated/0/DCIM \
   | python3 src/paxck.py compress xz > android.tar.xz
 python3 src/paxck.py verify -i android.tar.xz
 ```
@@ -244,8 +244,8 @@ builds work well). The interpreter is cached at `/data/local/tmp/andbackup-pyenv
 each run checks the stamp and `--version`, reusing a valid cache and otherwise
 re-provisioning it. After a run that created the env, an interactive terminal
 is asked whether to keep it (Enter = keep); non-interactive runs remove it
-unless `keep_android_env: true`. Delete the device env with `--clean-env` and
-the host download cache with `--clean-host-cache` (see
+unless `keep_android_env: true`. Delete the device env with `backup.py clean env` and
+the host download cache with `backup.py clean host-cache` (see
 [docs/configuration.en.md](docs/configuration.en.md)). If `device-python`
 cannot run, the controller fails instead of silently falling back to
 `host-adb`.
@@ -276,16 +276,21 @@ py src\paxck.py extract -i local.tar.xz -C local-restored
 
 The complete command-line tables for `paxck.py`, `adb_source.py`, and
 `backup.py`, the supported YAML keys/environment variables, the cache and
-cleanup rules (`keep_android_env`, `--clean-env`, `--clean-host-cache`), and
+cleanup rules (`keep_android_env`, `backup.py clean env|host-cache|all`), and
 compression notes live in [docs/configuration.en.md](docs/configuration.en.md).
 Archive metadata fields, time precision, Android permission boundaries, and the
 comparison against uploading an independent tar binary to the device live in
-[docs/flow.en.md](docs/flow.en.md). `backup.py --list-tree [--tree-out PATH]`
+[docs/flow.en.md](docs/flow.en.md). Every entry point uses the
+**`executable FUNCTION [options…]`** grammar: `paxck.py
+create|compress|verify|extract`, `adb_source.py pack`, `backup.py
+backup|tree|clean`, so the command line says whether this run lists, backs up or
+cleans (the old `--list-tree`/`--clean-*` spellings fail with the new form).
+`backup.py tree [--tree-out PATH]`
 lists just the detailed tree of the source directory (mode, numeric owner/group
 UID:GID, size, time, symlink targets) to stdout or to a file, writes no archive,
 and costs one adb round trip per entry, so large trees are slow.
 
-`backup.py --prune-source [--prune-dry-run]` deletes the source entries that
+`backup.py backup --prune-source [--prune-dry-run]` deletes the source entries that
 were really packed **after the archive was verified and published**, to free
 space on the device. It is command-line only on purpose (no YAML key, so a
 one-time setting cannot silently delete sources later) and it only touches
@@ -333,7 +338,7 @@ service such as Honor Docs Service — cannot be read and are skipped with
 readable); re-save or share them from an app that can reach them into
 `/sdcard/Download/` and back that up instead. The target app's temporary
 directories (e.g. `.TbsReaderTemp`, grouped to the app itself) may not even be
-enterable. Use `backup.py --list-tree` to inspect first (owner/group appear as
+enterable. Use `backup.py tree` to inspect first (owner/group appear as
 numeric UIDs/GIDs; one adb round trip per entry, so large trees are slow).
 
 Some Windows `adb.exe` transports merge remote shell stderr into `exec-out`

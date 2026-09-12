@@ -6,9 +6,9 @@ All notable changes to this project are recorded in this file.
 
 ### Added
 
-- `backup.py --prune-source` (command-line only): after the archive has been
-  verified and atomically published, delete the source entries that really made
-  it into the archive, to free space on the device. The packer records a
+- `backup.py backup --prune-source` (command-line only): after the archive has
+  been verified and atomically published, delete the source entries that really
+  made it into the archive, to free space on the device. The packer records a
   manifest (`paxck.py`/`adb_source.py`/device-side `create` accept
   `--packed-manifest PATH`, passed automatically by the controller), so skipped
   or unreadable entries are never deleted; the source root is never deleted;
@@ -25,7 +25,7 @@ All notable changes to this project are recorded in this file.
   language. Help text, interactive prompts, progress and errors are all
   translated; `src/i18n.py` holds the catalog and `device-python` mode uploads
   it next to `paxck.py` (the device cache stamp covers both files).
-- `backup.py --list-tree [--tree-out PATH]`: lists the detailed tree of the
+- `backup.py tree [--tree-out PATH]`: lists the detailed tree of the
   source directory (type, mode, numeric owner/group UID/GID, size, mtime,
   symlink target) without writing an archive, so permissions can be checked
   before a backup. Requires one `adb` call per entry; large trees are slow.
@@ -40,19 +40,19 @@ All notable changes to this project are recorded in this file.
 ### Fixed
 
 - Messages no longer mix two languages. Two causes are gone: on Windows the
-automatic language now follows the **user interface language** instead of
-`locale.getlocale()`, which UTF-8 mode reports as English on a Chinese system
-(so a Chinese system now prints Chinese, as it does for its own error text);
-and OS error strings are translated by `i18n.os_error` from the `errno`
-(`error.errno.*`) instead of being embedded verbatim from `OSError.strerror`,
-so `--lang en` on a Chinese Windows no longer produces an English sentence
-with a Chinese error inside. Only an unrecognized `errno` keeps the raw OS
-text.
+  automatic language now follows the **user interface language** instead of
+  `locale.getlocale()`, which UTF-8 mode reports as English on a Chinese system
+  (so a Chinese system now prints Chinese, as it does for its own error text);
+  and OS error strings are translated by `i18n.os_error` from the `errno`
+  (`error.errno.*`) instead of being embedded verbatim from `OSError.strerror`,
+  so `--lang en` on a Chinese Windows no longer produces an English sentence
+  with a Chinese error inside. Only an unrecognized `errno` keeps the raw OS
+  text.
 - Prompts are only shown when a console can answer them: `i18n.can_prompt`
-replaces the bare `sys.stdin.isatty()` checks (Windows reports a NUL/DEVNULL
-stdin as a TTY). An automated run therefore fails with one clear message
-instead of printing a question nobody can answer, and the prune plan is
-printed whether or not the prompt is shown.
+  replaces the bare `sys.stdin.isatty()` checks (Windows reports a NUL/DEVNULL
+  stdin as a TTY). An automated run therefore fails with one clear message
+  instead of printing a question nobody can answer, and the prune plan is
+  printed whether or not the prompt is shown.
 - An unusable output target no longer wastes a whole transfer. `backup.py` now
   creates the `OUT.partial.*` placeholder, and hence validates the destination,
   *before* any ADB command: a target that already exists and is a directory, is
@@ -68,6 +68,31 @@ printed whether or not the prompt is shown.
 
 ### Changed
 
+- **Breaking**: the controller and the Android data source now follow the
+  `executable FUNCTION [options…]` grammar instead of encoding the function in
+  options, so a command line says what it does:
+
+  | Old | New |
+  |---|---|
+  | `backup.py --list-tree [--tree-out PATH]` | `backup.py tree [--tree-out PATH]` |
+  | `backup.py --clean-env` | `backup.py clean env` |
+  | `backup.py --clean-host-cache` | `backup.py clean host-cache` |
+  | `backup.py --clean-env --clean-host-cache` | `backup.py clean all` |
+  | `adb_source.py [--adb ADB] DIRECTORY` | `adb_source.py pack [--adb ADB] DIRECTORY` |
+
+  `backup.py` without a function still backs up, so plain wrapper invocations
+  (double-click, `backup-android.bat`) are unchanged, while `backup.py --help`
+  now lists the functions. The old spellings are refused with exit code `2` and
+  the new form instead of being reinterpreted — without that guard an old
+  "clean only" script would have started writing an archive.
+- Cleaning the caches can also be the last step of another function:
+  `backup --clean-env`, `backup --clean-host-cache`, `tree --clean-env` and
+  `tree --clean-host-cache` run the same cleanup, but only after that run
+  succeeded (a failed backup keeps its caches for the retry). `backup.py clean`
+  on its own still only cleans, and its target defaults to `all`.
+- `--prune-source`/`--prune-dry-run` stay options of the backup function
+  (`backup.py backup --prune-source`): they consume the manifest of that very
+  run, so they cannot become a function of their own.
 - `backup.py` no longer overwrites an existing target on its own. Scripts that
   intentionally reuse one output path (for example a nightly job writing
   `out: ./backups/DCIM.tar.xz`) must now pass `-f`/`--force` or set

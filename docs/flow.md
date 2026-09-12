@@ -15,9 +15,9 @@ ADB 可以通过 USB 有线链路或 TCP 无线链路承载，两种模式遵循
 - `paxck.py create <本机目录>` 是通用本机目录打包器；`compress`、`verify` 和 `extract` 可处理
   它产生的裸 PAX tar。校验与提取的实现分别在 `paxverify.py`、`paxextract.py`，由 `paxck.py`
   的 CLI 惰性导入，因此打包器本身不依赖它们（设备端只需 `paxck.py` + `i18n.py`）。
-- `adb_source.py --adb <ADB> <Android目录>` 只负责以 `adb exec-out` 枚举/读取设备目录，并把
+- `adb_source.py pack <Android目录>` 只负责以 `adb exec-out` 枚举/读取设备目录，并把
   条目交给 `paxck.py` 的通用 PAX writer。它的 stdout 是裸 tar，不负责压缩或最终落盘。
-  这是 `host-adb` 模式的数据源。
+  这是 `host-adb` 模式的数据源（`pack` 是它的功能名：它是管道里的数据源阶段）。
 - `backup.py` 是 Android 组合入口：读取 `source_mode` 选择数据源，启动数据源与压缩器、
   检查两个子进程的退出码，写入并校验 `OUT.partial.*` 后再原子替换最终输出。`.bat` 和
   `.sh` 仅转发到它。开工前它会用该占位文件预检输出目标（目标不可用、或已存在而未加
@@ -25,11 +25,11 @@ ADB 可以通过 USB 有线链路或 TCP 无线链路承载，两种模式遵循
   它上传 `DEVICE_PYTHON` 二进制与 `paxck.py`/`i18n.py` 到设备并在设备端运行 `paxck.py create`。
 - 主控的辅助模块（都不被 `paxck.py` 依赖）：`adbdevice.py` 负责 ADB 调用、设备选择与
   exec-out 状态尾标协议；`device_python.py` 负责设备端 Python 环境与远程打包；
-  `sourcetree.py` 实现 `--list-tree`；`prune.py` 实现 `--prune-source` 的清单解析、
+  `sourcetree.py` 实现 `tree` 功能；`prune.py` 实现 `backup --prune-source` 的清单解析、
   删除计划与执行。
 
 因此 `paxck.py` 可以完全脱离 Android 使用；Android 手动组合为
-`adb_source.py ... | paxck.py compress xz`，但生产备份应使用 `backup.py` 以得到完整的失败清理
+`adb_source.py pack ... | paxck.py compress xz`，但生产备份应使用 `backup.py` 以得到完整的失败清理
 和双端退出码检查。
 
 ## 提取模式与公开 CLI
@@ -52,8 +52,8 @@ Python `tarfile`，可写入已有目录，不校验 PAX SHA-256，不保证原�
 | 压缩 | `paxck.py compress {xz,gzip,zstd,none}` | 二进制 stdin 到二进制 stdout。 |
 | 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别压缩，校验普通文件的 PAX SHA-256。 |
 | 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | 默认已验证、暂存、原子发布；可加 `--direct-tarfile` 改为可信归档直接模式。 |
-| Android 数据源 | `adb_source.py [--adb ADB] DIRECTORY` | 设备目录写为 stdout 裸 PAX tar。 |
-| Android 主控 | `backup.py [--config PATH]`、`backup.py --list-tree [--tree-out PATH]` | 读取 YAML/环境，完成 ADB 管道、校验和原子输出；`--list-tree` 只输出源目录详细信息树（模式、属主/组、大小、时间、符号链接目标）。 |
+| Android 数据源 | `adb_source.py pack [--adb ADB] DIRECTORY` | 设备目录写为 stdout 裸 PAX tar。 |
+| Android 主控 | `backup.py backup [--config PATH]`、`backup.py tree [--tree-out PATH]`、`backup.py clean [目标]` | 读取 YAML/环境，完成 ADB 管道、校验和原子输出；`tree` 只输出源目录详细信息树（模式、属主/组、大小、时间、符号链接目标）；`clean` 只删缓存。 |
 | 平台包装 | `backup-android.sh [ARGS...]` / `backup-android.bat [ARGS...]` | 将参数转发给同目录 `backup.py`。 |
 
 三个 Python 入口都支持 `--version`。`backup.py` 识别 YAML 键 `adb`、`host`、`serial`、
@@ -389,6 +389,6 @@ PAX SHA-256 语义；而上传独立 tar 二进制则通常没有这些保证。
   `[WARN]` 跳过（实测某 QQ 接收目录 1259 个条目中 81 个属于此类）。目录同理：应用自带临时目录（如 `.TbsReaderTemp`，`drwxrwx---`，
   组为该应用自身）连进入都不允许。这不是本工具能解决的问题，且与息屏等状态无关；
   可行办法是在设备上用能访问它的应用“另存/分享”到 `/sdcard/Download/` 等 shell 可读位置，
-  再用 `backup.py --list-tree` 确认可读性（树里的属主/组是数字 UID/GID）。
+  再用 `backup.py tree` 确认可读性（树里的属主/组是数字 UID/GID）。
 - Windows 必须使用 `cmd.exe` 执行 `.bat`。cmd 的重定向按字节写入；PowerShell 会把随机
   二进制流经文本编码转换，可能永久损坏归档。

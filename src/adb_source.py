@@ -516,24 +516,32 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
 def main(argv=None):
     paxck.configure_stdio_utf8()
     i18n.set_language(i18n.resolve(cli=i18n.prescan_lang(argv)))
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument('--lang', choices=i18n.LANGUAGES + (i18n.AUTO,),
+                        default=None, help=i18n.lang_help())
     parser = argparse.ArgumentParser(
-        description=i18n.t('adb.cli.description'))
+        prog='adb_source.py', description=i18n.t('adb.cli.description'),
+        parents=[common])
     parser.add_argument(
         '--version', action='version', version=f'%(prog)s {paxck.VERSION}')
-    parser.add_argument('--lang', choices=i18n.LANGUAGES + (i18n.AUTO,),
-                        default=None, help=i18n.lang_help())
-    parser.add_argument('directory', help=i18n.t('adb.cli.directory_help'))
-    parser.add_argument('--adb', default='adb',
-                        help=i18n.t('adb.cli.adb_help'))
-    parser.add_argument('--log-level', default='info',
-                        choices=tuple(_LOG_LEVELS),
-                        help=i18n.t('adb.cli.log_level_help'))
-    parser.add_argument('--progress-interval', default='5', metavar='SECONDS',
-                        help=i18n.t('adb.cli.progress_help'))
-    parser.add_argument('--show-rate', action='store_true',
-                        help=i18n.t('adb.cli.show_rate_help'))
-    parser.add_argument('--packed-manifest', metavar='PATH',
-                        help=i18n.t('prune.cli.manifest_help'))
+    # One function only, but spelled out: `adb_source.py pack DIR | ...` says
+    # which stage of the pipeline this is, and leaves room for later functions.
+    sub = parser.add_subparsers(dest='function', metavar='{pack}')
+    pack = sub.add_parser('pack', parents=[common],
+                          help=i18n.t('adb.cli.pack_help'),
+                          description=i18n.t('adb.cli.pack_help'))
+    pack.add_argument('directory', help=i18n.t('adb.cli.directory_help'))
+    pack.add_argument('--adb', default='adb',
+                      help=i18n.t('adb.cli.adb_help'))
+    pack.add_argument('--log-level', default='info',
+                      choices=tuple(_LOG_LEVELS),
+                      help=i18n.t('adb.cli.log_level_help'))
+    pack.add_argument('--progress-interval', default='5', metavar='SECONDS',
+                      help=i18n.t('adb.cli.progress_help'))
+    pack.add_argument('--show-rate', action='store_true',
+                      help=i18n.t('adb.cli.show_rate_help'))
+    pack.add_argument('--packed-manifest', metavar='PATH',
+                      help=i18n.t('prune.cli.manifest_help'))
     args = parser.parse_args(argv)
     return write_tar(args.directory, args.adb, log_level=args.log_level,
                      progress_interval=args.progress_interval,
