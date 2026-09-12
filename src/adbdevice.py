@@ -157,6 +157,18 @@ def adb_shell_command(command):
             f"printf '\\0__ANDBACKUP_RC__%s\\0' \"$__andbackup_rc\"")
 
 
+def split_status_trailer(payload):
+    """Split ``payload`` into its data part and the remote exit code.
+
+    Returns ``(data, rc)``; ``rc`` is ``None`` when the trailer is missing, so
+    a streaming caller can tell "the command was cut off" from "it failed".
+    """
+    match = _ADB_STATUS_RE.search(payload)
+    if not match:
+        return payload, None
+    return payload[:match.start()], int(match.group(1))
+
+
 def adb_exec_shell(adb, env, command):
     """Return ``(payload, remote_rc)`` for one device shell command."""
     result = run_adb(
@@ -164,11 +176,25 @@ def adb_exec_shell(adb, env, command):
     if result.returncode:
         raise RuntimeError(
             display_error(i18n.t('backup.err.adb_command_failed'), result))
-    match = _ADB_STATUS_RE.search(result.stdout)
-    if not match:
+    payload, remote_rc = split_status_trailer(result.stdout)
+    if remote_rc is None:
         raise RuntimeError(
             i18n.t('backup.err.no_remote_rc', command=repr(command)))
-    return result.stdout[:match.start()], int(match.group(1))
+    return payload, remote_rc
+
+
+def open_adb_shell(adb, env, command):
+    """Start one wrapped exec-out command and return the ``Popen``.
+
+    The streaming counterpart of :func:`adb_exec_shell`: the caller reads
+    ``proc.stdout`` incrementally and must drain ``proc.stderr`` (a thread is
+    the safe way) so a chatty device cannot fill the pipe.  The NUL status
+    trailer arrives at the end of stdout and is parsed with
+    :func:`split_status_trailer`.
+    """
+    return subprocess.Popen(
+        [adb, 'exec-out', 'sh', '-c', adb_shell_command(command)],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
 def format_size(value):

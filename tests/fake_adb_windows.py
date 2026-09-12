@@ -73,7 +73,21 @@ def _find(source):
         b''.join(path.encode('utf-8', 'surrogateescape') + b'\0' for path in paths))
 
 
-def _stat(device_path, fmt):
+def _walk(source):
+    """Yield the device paths `find` would visit, root first."""
+    root = _local_path(source)
+    if not os.path.isdir(root):
+        raise FileNotFoundError(source)
+    yield source
+    for directory, directories, filenames in os.walk(root, followlinks=False):
+        directories.sort()
+        filenames.sort()
+        for name in directories + filenames:
+            yield _device_path(source, root, os.path.join(directory, name))
+
+
+def _stat_text(device_path, fmt):
+    """The `stat -c` text for one entry, without the trailing path field."""
     item = os.lstat(_local_path(device_path))
     seconds, nanos = divmod(item.st_mtime_ns, 1000000000)
     human = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(seconds))
@@ -83,7 +97,36 @@ def _stat(device_path, fmt):
     if '%u' in fmt:
         # Mirrors toybox `%u|%g`; Windows reports 0 for both.
         text += '|%d|%d' % (item.st_uid, item.st_gid)
-    sys.stdout.buffer.write((text + '\n').encode('ascii'))
+    return text
+
+
+def _find_exec(source, words):
+    """Emulate `find ROOT -exec ... {} +` (the one-shot tree listing)."""
+    if os.environ.get('FAKE_ADB_NO_ONESHOT'):
+        raise ValueError('this fake ROM cannot run find -exec')
+    if '-type' in words and words[words.index('-type') + 1] == 'l':
+        # find ROOT -type l -exec sh -c SCRIPT sh {} +
+        for path in _walk(source):
+            local = _local_path(path)
+            if os.path.islink(local):
+                target = os.readlink(local)
+                sys.stdout.buffer.write(
+                    path.encode('utf-8', 'surrogateescape') + b'\0'
+                    + target.encode('utf-8', 'surrogateescape') + b'\0')
+        return 0
+    fmt = words[words.index('-c') + 1]
+    for path in _walk(source):
+        try:
+            text = _stat_text(path, fmt)
+        except OSError:
+            continue
+        sys.stdout.buffer.write(
+            (text + '|' + path).encode('utf-8', 'surrogateescape') + b'\n')
+    return 0
+
+
+def _stat(device_path, fmt):
+    sys.stdout.buffer.write((_stat_text(device_path, fmt) + '\n').encode('ascii'))
 
 
 def _cat(device_path):
@@ -259,6 +302,8 @@ def main(args):
         words = shlex.split(command, posix=True)
         if words[:1] == ['find'] and words[-1:] == ['-print0']:
             _find(words[1])
+        elif words[:1] == ['find'] and '-exec' in words:
+            _find_exec(words[1], words)
         elif words[:2] == ['stat', '-c'] and len(words) == 5 and words[3] == '--':
             _stat(words[4], words[2])
         elif words[:2] == ['readlink', '-n'] and len(words) == 4 and words[2] == '--':

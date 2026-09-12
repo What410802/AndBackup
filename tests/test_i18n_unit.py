@@ -94,7 +94,7 @@ class TestCatalog(unittest.TestCase):
         pattern = re.compile(r"i18n\.(?:t|tag)\(\s*'([^']+)'")
         used = set()
         for name in ('paxck.py', 'adb_source.py', 'backup.py',
-                     'android_python.py'):
+                     'sourcetree.py', 'android_python.py'):
             with open(os.path.join(T.SRC_DIR, name), encoding='utf-8') as fh:
                 used.update(pattern.findall(fh.read()))
         self.assertTrue(used)
@@ -109,7 +109,7 @@ class TestCatalog(unittest.TestCase):
         import ast
         cjk = re.compile('[\\u3400-\\u9fff]')
         for name in ('paxck.py', 'adb_source.py', 'backup.py',
-                     'android_python.py'):
+                     'sourcetree.py', 'android_python.py'):
             with open(os.path.join(T.SRC_DIR, name), encoding='utf-8') as fh:
                 tree = ast.parse(fh.read())
             parents = {}

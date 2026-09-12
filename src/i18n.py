@@ -353,6 +353,18 @@ MESSAGES = {
         'backup.tree.no_owner': '# 设备 stat 不支持 %u/%g，属主/组显示为 -',
         'backup.tree.unreadable_entry':
             '[?] ??? {name}（无法 stat，可能权限不足）',
+        'backup.tree.progress.enumerate':
+            '正在枚举设备目录...（已接收 {size}，{done} 个条目）',
+        'backup.tree.progress.receive':
+            '正在接收设备端一次性枚举：{done}/{total} 个条目（{size}）',
+        'backup.tree.progress.stat':
+            '已统计 {done}/{total} 个条目（每条一次 ADB 往返，大目录较慢）',
+        'backup.tree.progress.links':
+            '已读取 {done}/{total} 个符号链接',
+        'backup.tree.warn.fallback':
+            '设备端一次性枚举不可用（{err}），已退回逐条 stat',
+        'backup.tree.warn.mismatch':
+            '设备端一次性枚举与目录枚举不一致（{count} != {expected}），已退回逐条 stat',
         'backup.done.tree': '已写出目录树：{path}（{count} 个条目）',
         'backup.cli.description':
             'AndBackup 主控：按功能执行流式归档与维护（backup / tree / clean）',
@@ -360,6 +372,8 @@ MESSAGES = {
             '配置文件路径（默认脚本目录中的 backup-android.yaml；'
             '覆盖 BACKUP_CONFIG_FILE）',
         'backup.cli.log_level_help': '日志级别，覆盖配置中的 log_level',
+        'backup.err.tree_mode':
+            '未知的 tree 枚举方式：{mode}（可选 auto / oneshot / per-entry）',
         'backup.cli.backup_help': '备份设备目录到主机归档（默认功能）',
         'backup.cli.tree_help': '只列出源目录的详细信息树（不备份）',
         'backup.cli.clean_help': '清理缓存：设备端 Python 环境或主机端下载缓存',
@@ -374,6 +388,9 @@ MESSAGES = {
         'backup.cli.clean_host_cache_help':
             '本次运行成功后，顺带删除主机端下载/解压缓存',
         'backup.cli.tree_out_help': '把目录树写入文件（默认写 stdout）',
+        'backup.cli.tree_mode_help':
+            'tree 的枚举方式：auto（默认，设备端一次性，失败退回逐条）/ '
+            'oneshot（设备端一次性）/ per-entry（逐条 stat，最慢但最兼容）',
         'backup.cli.force_help':
             '目标文件已存在时直接覆写，不再询问（非交互环境本来就会报错退出）',
         'backup.cli.legacy_flag':
@@ -784,6 +801,21 @@ MESSAGES = {
             '# this device stat has no %u/%g; owner/group are shown as -',
         'backup.tree.unreadable_entry':
             '[?] ??? {name} (cannot stat; probably a permission problem)',
+        'backup.tree.progress.enumerate':
+            'enumerating the device directory... ({size} received, {done} entries)',
+        'backup.tree.progress.receive':
+            'receiving the device-side listing: {done}/{total} entries ({size})',
+        'backup.tree.progress.stat':
+            'collected {done}/{total} entries (one ADB round trip each; large '
+            'directories are slow)',
+        'backup.tree.progress.links':
+            'read {done}/{total} symlink targets',
+        'backup.tree.warn.fallback':
+            'the one-shot device listing is unavailable ({err}); falling back to '
+            'one stat per entry',
+        'backup.tree.warn.mismatch':
+            'the one-shot device listing disagrees with the directory listing '
+            '({count} != {expected}); falling back to one stat per entry',
         'backup.done.tree': 'wrote the directory tree to {path} ({count} entries)',
         'backup.cli.description':
             'AndBackup controller: streaming archives and maintenance, one '
@@ -793,6 +825,9 @@ MESSAGES = {
             'overrides BACKUP_CONFIG_FILE)',
         'backup.cli.log_level_help':
             'log level, overriding log_level in the config',
+        'backup.err.tree_mode':
+            'unknown tree enumeration mode: {mode} (use auto / oneshot / '
+            'per-entry)',
         'backup.cli.backup_help': 'back up a device directory to a host archive (default)',
         'backup.cli.tree_help': 'list the detailed source tree only (no backup)',
         'backup.cli.clean_help':
@@ -809,6 +844,9 @@ MESSAGES = {
         'backup.cli.clean_host_cache_help':
             'after this run succeeds, also delete the host download/unpack cache',
         'backup.cli.tree_out_help': 'write the tree to a file (default: stdout)',
+        'backup.cli.tree_mode_help':
+            'how tree enumerates: auto (default: one device-side pass, falling '
+            'back to per-entry) / oneshot / per-entry (slowest, most compatible)',
         'backup.cli.force_help':
             'overwrite an existing target without asking (non-interactive runs '
             'fail instead)',

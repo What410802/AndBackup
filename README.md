@@ -303,9 +303,11 @@ Python 3.14+ 用标准库 `compression.zstd`，否则用外部 `zstd`，否则�
 **`可执行文件 功能 [选项…]`** 语法：`paxck.py create|compress|verify|extract`、
 `adb_source.py pack`、`backup.py backup|tree|clean`，因此“这次是列举、备份还是清理”在命令行里
 一目了然（旧写法 `--list-tree`/`--clean-*` 会报错并给出新写法）。此外
-`backup.py tree [--tree-out PATH]` 可只列出源目录的详细信息树（模式、数字属主/组
-UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out` 写入文件，不产生归档；
-每个条目一次 adb 调用，大树较慢。
+`backup.py tree [--tree-out PATH] [--tree-mode {auto,oneshot,per-entry}]` 可只列出源目录的详细信息树（模式、数字属主/组
+UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out` 写入文件，不产生归档。默认在**设备端一次性遍历**（设备端 `find -exec stat` 批量取元数据，主机只把结果流式接回），
+实测 5093 个条目的目录约 1.6 秒（原逐条模式约 17 分钟）；设备不支持或结果与目录枚举不一致时
+自动退回逐条 stat 并打一条 `[WARN]`，也可用 `--tree-mode per-entry`（或 YAML `tree_mode`）强制。
+枚举过程中按 `progress_interval` 在 stderr 输出 `[PROGRESS]`（枚举/接收/统计三个阶段）。
 
 `backup.py backup --prune-source [--prune-dry-run]` 在**归档通过校验并发布之后**删除设备上已成功
 打包的源条目以释放空间。这是**仅命令行**的选项（故意不提供 YAML 键，避免配置一次后每次

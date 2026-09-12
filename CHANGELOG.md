@@ -6,6 +6,21 @@ All notable changes to this project are recorded in this file.
 
 ### Added
 
+- `backup.py tree` now enumerates the device directory in **one device-side
+  pass** by default: the device runs `find ROOT -exec stat -c '…|%n' -- {} +`
+  (plus one `find -type l -exec sh -c …` pass for symlink targets) and the host
+  streams the records back, so a tree of N entries costs a handful of adb round
+  trips instead of N. Measured on a real device: 5093 entries went from ~17
+  minutes to ~1.6 seconds. `--tree-mode {auto,oneshot,per-entry}` (or the
+  `tree_mode`/`TREE_MODE` setting) picks the strategy; `auto` falls back to the
+  old per-entry loop with a `[WARN]` when the ROM refuses the batched pass or
+  when its output disagrees with the directory listing (e.g. a path containing
+  a newline, which a line-based record cannot carry). The listing header now
+  records the strategy as `# listing: oneshot|per-entry`.
+- `backup.py tree` reports progress on stderr at `progress_interval`: the
+  enumeration phase shows the bytes and entries received, the one-shot phase
+  shows `received/total`, and the per-entry fallback shows `collected/total`.
+  The listing itself (stdout or `--tree-out`) stays free of progress text.
 - `backup.py backup --prune-source` (command-line only): after the archive has
   been verified and atomically published, delete the source entries that really
   made it into the archive, to free space on the device. The packer records a

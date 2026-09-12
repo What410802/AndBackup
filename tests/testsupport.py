@@ -76,6 +76,20 @@ def load_backup():
         sys.path.pop(0)
 
 
+def load_sourcetree():
+    """Load the `tree` function's listing module (adbdevice + paxck siblings)."""
+    import importlib.util
+    sys.path.insert(0, SRC_DIR)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            'sourcetree_under_test', os.path.join(SRC_DIR, 'sourcetree.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        sys.path.pop(0)
+
+
 def py():
     return sys.executable or 'python3'
 

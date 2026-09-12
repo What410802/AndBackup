@@ -69,6 +69,7 @@ cause `more than one device/emulator` failures.
 | `paxck.py` | Magic sniffing, PAX checksums, local file changes, links, compression, verified extraction, direct-tarfile extraction, malformed archives, and CLI status. |
 | Interpreter bootstrap | Cache reuse without network, missing-interpreter errors, and local `.tar.zst` download+unpack using an offline fixture. |
 | Local integration | `create | compress | verify`, system tar interoperability, restoration fidelity, and non-UTF-8 names where supported. |
+| Tree listing (`tests/test_sourcetree_unit.py`) | Record parsing (7-field, 5-field, a `|` or a tab inside the path, garbage rejected), `_consume_stream` framing (newline and NUL records, a missing status trailer, remote stderr collected), and `_TreeProgress` (silent for quiet/error, throttled by the interval, translated and tagged). |
 | OUT planning / publishing (`tests/test_backup_out_unit.py`) | `OUT` planning (empty, directory, trailing separator, matching and mismatched suffix) and the target pre-flight: a missing target or an existing regular file is fine, an existing directory or a FIFO/special file is not, a read-only file is refused on Windows but accepted on POSIX; an existing target is never replaced without `force` (and the reason points at `--force`), while `--force` still does not bypass a target that genuinely cannot be written; `publish_archive` replaces on success and keeps the verified `.partial.*` file on failure; `_choose_output_path` returns a placeholder, creates missing parents, and handles interactive `y`/`n` (offer another path)/Enter (give up)/EOF (Windows reports NUL stdin as a TTY) without leaving anything behind; `_enabled` and the YAML `force:` key. |
 | POSIX/CMD controllers | Fake ADB plus real `.sh` or `cmd.exe`/`.bat`, USB and TCP selection, binary bytes, temporary-output cleanup, configuration selection, `tree` (modes, owner/group, indentation, symlink targets, `--tree-out`, no archive written), `clean env`/`clean host-cache`/`clean` (default `all`), the cleanup options as a last step (`backup --clean-host-cache` after a successful run), the migration guard for the old `--list-tree`/`--clean-*` spellings (exit code 2 with the new form), truncated-content skip-and-publish, `--prune-source` (only packed entries go, skipped entries and the source root stay, dry run deletes nothing, the remote manifest path in `device-python` mode), `device-python` upload/round-trip/cleanup without fallback, and the output pre-flight (a read-only existing target, or a path component that is a file, fails immediately with no adb call and no change to the original bytes), plus the existing-target policy (no `-f` keeps the file and fails, `-f` overwrites into a verifiable archive). |
 | Device integration | Opt-in real ADB transport and source-byte checks. |
@@ -76,8 +77,15 @@ cause `more than one device/emulator` failures.
 | Packed manifest / prune (`tests/test_prune_unit.py`) | Manifest parsing (`P`/`D`/`S`/`L`, non-UTF-8 paths, empty/unknown records) and the deletion plan: deepest-first, skipped entries and their parents kept, every directory kept with an incomplete listing, the source root never deleted, out-of-root paths refused, sibling prefixes not treated as children; commands use `rm -f`/`rmdir` only and quote paths correctly. |
 
 The `tree` function's fake ADB answers the requested `stat -c` format, including
-`%u`/`%g` (the Windows substitute reports `st_uid`/`st_gid`, normally 0), so the
-tree tests cover the same code path on both launchers.
+`%u`/`%g` (the Windows substitute reports `st_uid`/`st_gid`, normally 0), and
+emulates the device-side one-shot pass (`find -exec stat … {} +`) plus the
+symlink pass, so both suites assert that the `# listing: oneshot|per-entry`
+header matches the strategy really used: `auto` goes one-shot,
+`FAKE_ADB_NO_ONESHOT=1` makes the Windows substitute play a ROM that cannot do
+it (asserting the `[WARN]` and the per-entry fallback), and the POSIX suite
+additionally asserts that the per-entry listing is identical to the one-shot
+one. `tests/test_sourcetree_unit.py` covers record framing and progress
+throttling without adb.
 
 The verified-extraction tests assert that checksum failure or path traversal
 does not publish a destination. Direct mode tests assert that the completion

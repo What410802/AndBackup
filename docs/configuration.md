@@ -11,7 +11,7 @@
 3. 脚本同目录默认 `src/backup-android.yaml`（存在时）
 4. 业务环境变量（`ADB`、`HOST`、`SERIAL`、`ANDROID_SERIAL`、`SOURCE_DIR`、`OUT`、`COMPRESS`、`SOURCE_MODE`、`DEVICE_PYTHON`、
    `DOWNLOAD_DEVICE_PYTHON`、`DEVICE_PYTHON_URL`、`KEEP_ANDROID_ENV`、`LOG_LEVEL`、
-   `PROGRESS_INTERVAL`、`SHOW_RATE`、`FORCE`）始终优先于 YAML 内的同名键
+   `PROGRESS_INTERVAL`、`SHOW_RATE`、`FORCE`、`TREE_MODE`）始终优先于 YAML 内的同名键
 5. 内置默认值
 
 显式传入但不存在的 `--config` 会报错；把 `BACKUP_CONFIG_FILE` 设为空或不存在路径，则不加载
@@ -40,6 +40,7 @@
 | `keep_android_env` | 未设置 | `device-python` 保留设备端解释器缓存：`true`/`false`，未设置则交互询问、非交互删除 |
 | `log_level` | `info` | `quiet`、`error`、`warn`、`info`、`debug`、`trace` |
 | `force` | `false` | 目标文件已存在时直接覆写，不再询问（别名 `overwrite`；等同命令行 `-f`/`--force`） |
+| `tree_mode` | `auto` | `tree` 的枚举方式：`auto`（默认，优先设备端一次性）/ `oneshot` / `per-entry` |
 | `progress_interval` | `5` | 进度输出最小间隔（秒），最小 `0.1` |
 | `show_rate` | `false` | 在定期进度行显示有效载荷速率 |
 
@@ -119,7 +120,7 @@ Windows 上的“系统区域设置”取的是**用户界面语言**（Win32 �
 | `paxck.py` | 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | 默认：校验后暂存原子发布，`DEST` 须不存在；`--direct-tarfile` 为可信归档直接模式 |
 | `adb_source.py` | 数据源 | `adb_source.py pack [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] [--show-rate] DIRECTORY` | `host-adb`：经 `adb exec-out` 写裸 PAX tar 到 stdout（管道阶段） |
 | `backup.py` | 备份 | `backup.py backup [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [-f|--force] [--prune-source] [--prune-dry-run] [--clean-env] [--clean-host-cache]` | 读取配置、组合源与压缩器、校验 `.partial` 后原子替换；最后两个选项表示“本次成功结束后顺带清理缓存” |
-| `backup.py` | 列举 | `backup.py tree [--config PATH] [--log-level …] [--tree-out PATH] [--clean-env] [--clean-host-cache]` | 只列出源目录的详细信息树（模式、数字属主/组 UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out PATH` 写入文件。每个条目一次 adb 调用，大树较慢；不写入归档 |
+| `backup.py` | 列举 | `backup.py tree [--config PATH] [--log-level …] [--tree-out PATH] [--tree-mode {auto,oneshot,per-entry}] [--clean-env] [--clean-host-cache]` | 只列出源目录的详细信息树（模式、数字属主/组 UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out PATH` 写入文件。不写入归档；枚举方式与进度见下 |
 | `backup.py` | 清理 | `backup.py clean [{env,host-cache,all}] [--config PATH] [--log-level …]` | 只清理缓存后退出：`env`=设备端 Python 环境，`host-cache`=主机下载/解压缓存，`all`=两者（缺省） |
 | 平台包装 | — | `backup-android.sh [功能 选项…]`；`backup-android.bat [功能 选项…]` | 把所有参数转发给同目录 `backup.py` |
 
@@ -144,6 +145,27 @@ Windows 上的“系统区域设置”取的是**用户界面语言**（Win32 �
 
 `backup.py` 的其余选项（`--config`、`--log-level`、`--progress-interval`、`--show-rate`、
 `-f`/`--force`、`--prune-source`、`--prune-dry-run`）本来就是 `backup` 功能的选项，写法不变。
+
+### 目录树枚举方式与进度（`tree --tree-mode`）
+
+`tree` 需要为每个条目取 `stat`（以及符号链接的 `readlink`），历史上是主机逐条发 adb 命令，
+每个条目一次往返，大树极慢（实测 5093 个条目的 DCIM 目录约 17 分钟）。现在默认改为：
+
+- **`oneshot`（默认策略）**：在**设备端一次遍历**。设备端用
+  `find ROOT -exec stat -c '…|%n' -- {} +` 把 `stat` 批量跑完，主机只把结果流式接回来；
+  符号链接再用一次 `find -type l -exec sh -c …` 取目标。整棵树总共几次 adb 往返，
+  实测同一个 5093 条目的目录约 1.6 秒（约 600×）。
+- **`per-entry`**：原来的逐条模式（每条一次 adb 往返），兼容性最好，作为回退保留。
+- **`auto`（默认）**：先试 `oneshot`，若设备拒绝（例如 toybox/`find` 不支持 `-exec … +`）
+  或结果与目录枚举不一致（例如路径里含换行，行式记录装不下），就打印一条 `[WARN]` 并退回
+  `per-entry`。`--tree-mode oneshot` 则要求必须成功，失败即报错，便于脚本强制走快路径。
+
+两种模式都会在 **stderr** 上按 `progress_interval` 打印 `[PROGRESS]`：
+枚举阶段显示“已接收 X，N 个条目”，一次性枚举阶段显示“已接收 N/总数”，逐条模式显示
+“已统计 N/总数”。输出文本（或 `--tree-out` 文件）仍然只含目录树，便于管道使用；
+文件头多了一行 `# listing: oneshot|per-entry` 说明本次用的哪种方式。
+
+可用 YAML 键 `tree_mode` 或环境变量 `TREE_MODE` 设置默认值。
 
 ### 删除已打包的源条目（`backup --prune-source`）
 

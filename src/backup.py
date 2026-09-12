@@ -36,10 +36,12 @@ ENV_KEYS = ('ADB', 'HOST', 'SERIAL', 'ANDROID_SERIAL',
             'SOURCE_DIR', 'OUT', 'COMPRESS',
             'SOURCE_MODE', 'DEVICE_PYTHON', 'DOWNLOAD_DEVICE_PYTHON',
             'DEVICE_PYTHON_URL', 'KEEP_ANDROID_ENV',
-            'LOG_LEVEL', 'PROGRESS_INTERVAL', 'SHOW_RATE', 'FORCE')
+            'LOG_LEVEL', 'PROGRESS_INTERVAL', 'SHOW_RATE', 'FORCE',
+            'TREE_MODE')
 DEFAULTS = {'ADB': 'adb', 'SOURCE_DIR': '/sdcard/DCIM',
             'SOURCE_MODE': 'host-adb', 'LOG_LEVEL': 'info',
-            'PROGRESS_INTERVAL': '5', 'SHOW_RATE': '0', 'FORCE': '0'}
+            'PROGRESS_INTERVAL': '5', 'SHOW_RATE': '0', 'FORCE': '0',
+            'TREE_MODE': 'auto'}
 
 
 def _enabled(value):
@@ -80,6 +82,7 @@ def read_config(path):
         'progress-interval': 'PROGRESS_INTERVAL',
         'show_rate': 'SHOW_RATE', 'show-rate': 'SHOW_RATE',
         'force': 'FORCE', 'overwrite': 'FORCE',
+        'tree_mode': 'TREE_MODE', 'tree-mode': 'TREE_MODE',
     }
     values = {}
     try:
@@ -611,6 +614,8 @@ def _build_parser():
     shared(tree)
     tree.add_argument('--tree-out', metavar='PATH',
                       help=i18n.t('backup.cli.tree_out_help'))
+    tree.add_argument('--tree-mode', choices=sourcetree.TREE_MODES,
+                      help=i18n.t('backup.cli.tree_mode_help'))
     cleanup(tree)
 
     clean = sub.add_parser('clean', parents=[common],
@@ -691,6 +696,8 @@ def main(argv=None):
             return cmd_clean(settings, target in (CLEAN_ENV, CLEAN_ALL),
                              target in (CLEAN_HOST_CACHE, CLEAN_ALL))
         if args.function == 'tree':
+            if args.tree_mode:
+                settings['TREE_MODE'] = args.tree_mode
             code = sourcetree.cmd_tree(settings, args.tree_out)
         else:
             if args.progress_interval is not None:

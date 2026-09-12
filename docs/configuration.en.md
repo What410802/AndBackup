@@ -13,7 +13,7 @@ command-line and cache-cleanup reference.
 4. operational environment variables override the YAML values
    (`ADB`, `HOST`, `SERIAL`, `ANDROID_SERIAL`, `SOURCE_DIR`, `OUT`, `COMPRESS`, `SOURCE_MODE`, `DEVICE_PYTHON`,
    `DOWNLOAD_DEVICE_PYTHON`, `DEVICE_PYTHON_URL`, `KEEP_ANDROID_ENV`,
-   `LOG_LEVEL`, `PROGRESS_INTERVAL`, `SHOW_RATE`, `FORCE`)
+   `LOG_LEVEL`, `PROGRESS_INTERVAL`, `SHOW_RATE`, `FORCE`, `TREE_MODE`)
 5. built-in defaults
 
 An explicitly missing `--config` is an error. Setting `BACKUP_CONFIG_FILE` empty
@@ -47,6 +47,7 @@ is a tiny top-level `key: value` subset (single/double-quoted strings,
 | `progress_interval` | `5` | minimum progress interval in seconds |
 | `show_rate` | `false` | include payload rate in periodic progress |
 | `force` | `false` | overwrite an existing target without asking (alias `overwrite`; same as `-f`/`--force`) |
+| `tree_mode` | `auto` | how `tree` enumerates: `auto` (default: prefer the one-shot device pass) / `oneshot` / `per-entry` |
 
 **OUT semantics**: empty → `backup.tar.<suffix>` in the current directory
 (suffix `.tar.xz`/`.tar.gz`/`.tar.zst`/`.tar` per `compress`). Pointing `out` at
@@ -146,7 +147,7 @@ command line says whether this run lists, backs up or cleans:
 | `paxck.py` | extractor | `paxck.py extract [ARCHIVE] -C DEST` | default verified/staged/atomic; `--direct-tarfile` for trusted archives |
 | `adb_source.py` | data source | `adb_source.py pack [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] [--show-rate] DIRECTORY` | `host-adb`: raw PAX tar to stdout (the pipeline stage) |
 | `backup.py` | backup | `backup.py backup [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [-f|--force] [--prune-source] [--prune-dry-run] [--clean-env] [--clean-host-cache]` | run + verify + atomic replace; the last two options mean "also clean these caches after a successful run" |
-| `backup.py` | tree | `backup.py tree [--config PATH] [--log-level …] [--tree-out PATH] [--clean-env] [--clean-host-cache]` | list only the detailed tree of the source directory (mode, numeric owner/group UID/GID, size, time, symlink targets) to stdout, or to `--tree-out PATH`. One adb round trip per entry, so large trees are slow; writes no archive |
+| `backup.py` | tree | `backup.py tree [--config PATH] [--log-level …] [--tree-out PATH] [--tree-mode {auto,oneshot,per-entry}] [--clean-env] [--clean-host-cache]` | list only the detailed tree of the source directory (mode, numeric owner/group UID/GID, size, time, symlink targets) to stdout, or to `--tree-out PATH`. Writes no archive; enumeration modes and progress are described below |
 | `backup.py` | clean | `backup.py clean [{env,host-cache,all}] [--config PATH] [--log-level …]` | clean caches and exit: `env` = device Python environment, `host-cache` = host download/unpack cache, `all` = both (default) |
 | Wrappers | — | `backup-android.sh [FUNCTION options…]` / `backup-android.bat [FUNCTION options…]` | forward all args to `backup.py` |
 
@@ -176,6 +177,36 @@ The remaining `backup.py` options (`--config`, `--log-level`,
 `--progress-interval`, `--show-rate`, `-f`/`--force`, `--prune-source`,
 `--prune-dry-run`) were always options of the backup function and keep their
 spelling.
+
+### Tree enumeration modes and progress (`tree --tree-mode`)
+
+`tree` needs one `stat` per entry (plus `readlink` for symlinks), which used to
+mean one adb round trip per entry from the host -- a 5093-entry directory took
+about 17 minutes. The default is now:
+
+- **`oneshot`** (the default strategy): one device-side pass. The device runs
+  `find ROOT -exec stat -c '…|%n' -- {} +`, so `stat` is batched there and the
+  host only streams the records back; a second `find -type l -exec sh -c …`
+  pass collects symlink targets. A whole tree costs a handful of adb round
+  trips: the same 5093-entry directory now lists in ~1.6 s (~600x faster).
+- **`per-entry`**: the original host-driven loop (one adb round trip per
+  entry). Kept as the fallback because it works on every ROM.
+- **`auto`** (the default): try `oneshot` first, and fall back to `per-entry`
+  with a `[WARN]` when the device refuses it (e.g. a `find` without
+  `-exec … +`) or when its output disagrees with the directory listing (a path
+  containing a newline cannot ride in a line-based record).
+  `--tree-mode oneshot` instead fails hard, so a script can insist on the fast
+  path.
+
+Both strategies print `[PROGRESS]` lines on **stderr** at `progress_interval`:
+the enumeration phase shows "X received, N entries", the one-shot phase shows
+"N/total entries received", and the per-entry mode shows "N/total entries
+collected". The listing itself (stdout or `--tree-out`) stays pure, so it can
+still be piped; its header gained one line, `# listing: oneshot|per-entry`,
+recording which strategy ran.
+
+Set the default with the YAML key `tree_mode` or the environment variable
+`TREE_MODE`.
 
 ### Deleting the packed source entries (`backup --prune-source`)
 

@@ -203,6 +203,21 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
         self.assertRegex(text, r'(?m)^l[0-7]{3,4} ')
         self.assertIn('-> readme.txt', text)
         self.assertIn('a-fifo', text)
+        # The sh fake adb runs the device-side pass on this host, so auto mode
+        # uses the one-shot listing here.
+        self.assertIn('# listing: oneshot', text)
+        self.assertNotIn('[WARN]', text)
+
+    def test_tree_per_entry_mode_lists_the_same_entries(self):
+        """逐条模式与设备端一次性模式的输出必须一致（模式行除外）。"""
+        one = self.run_script(_args=('tree',))
+        per = self.run_script(_args=('tree', '--tree-mode', 'per-entry'))
+        self.assertEqual(per.returncode, 0, per.stdout.decode('utf-8', 'replace'))
+        strip = lambda text: [line for line in text.splitlines()
+                              if not line.startswith('# listing:')]
+        self.assertEqual(strip(one.stdout.decode('utf-8', 'replace')),
+                         strip(per.stdout.decode('utf-8', 'replace')))
+        self.assertIn('# listing: per-entry', per.stdout.decode('utf-8', 'replace'))
         self.assertFalse(os.path.exists(self.out))
 
     def test_list_tree_writes_a_file_and_keeps_the_archive_untouched(self):

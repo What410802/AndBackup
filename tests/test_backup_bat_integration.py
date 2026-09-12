@@ -84,6 +84,7 @@ class TestBackupBatch(unittest.TestCase):
         env.pop('FAKE_ADB_TRUNCATE', None)
         env.pop('FAKE_ADB_DEVICES', None)
         env.pop('FAKE_ADB_DEVICE_NOT_FOUND', None)
+        env.pop('FAKE_ADB_NO_ONESHOT', None)
         # Operational keys a developer may have exported in their shell must not
         # leak into tests that do not set them explicitly (e.g. SOURCE_MODE).
         env.pop('SOURCE_MODE', None)
@@ -249,6 +250,28 @@ class TestBackupBatch(unittest.TestCase):
                         text)
         self.assertIn('readme.txt', text)
         self.assertFalse(os.path.exists(self.out))
+        # The fake adb answers `find -exec stat ... {} +` in one pass, so auto
+        # mode uses the device-side listing.
+        self.assertIn('# listing: oneshot', text)
+
+    def test_tree_falls_back_when_the_device_cannot_list_in_one_pass(self):
+        result = self.run_script(_args=('tree',), FAKE_ADB_NO_ONESHOT='1')
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 0, text)
+        self.assertIn('# listing: per-entry', text)
+        self.assertIn('[WARN]', text)
+        self.assertIn('readme.txt', text)
+
+    def test_tree_per_entry_mode_is_accepted(self):
+        result = self.run_script(_args=('tree', '--tree-mode', 'per-entry'))
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 0, text)
+        self.assertIn('# listing: per-entry', text)
+        self.assertNotIn('[WARN]', text)
+
+    def test_tree_rejects_an_unknown_mode(self):
+        result = self.run_script(_args=('tree', '--tree-mode', 'teleport'))
+        self.assertEqual(result.returncode, 2)
 
     def test_tree_can_write_to_a_named_file(self):
         target = os.path.join(self.case, 'tree.txt')
