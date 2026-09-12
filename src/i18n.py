@@ -113,7 +113,8 @@ MESSAGES = {
         'paxck.verify.more_failures': '... 其余 {count} 条省略',
         'paxck.verify.incomplete_hint': '提示：归档不完整（传输中断？），请重新传输',
         'paxck.verify.summary':
-            '\n共 {total} 个条目：SHA-256 通过 {ok}，失败 {bad}，无记录 {skip}',
+            '\n共 {total} 个条目：SHA-256 通过 {ok}，失败 {bad}，'
+            '无记录 {skip}（目录/链接等 {other}，普通文件缺记录 {nosum}）',
         # ---- paxck.py: extraction safety ---------------------------------
         'paxck.extract.empty_path': '条目路径为空',
         'paxck.extract.nul_path': '条目路径含 NUL：{name}',
@@ -524,7 +525,8 @@ MESSAGES = {
         'paxck.verify.incomplete_hint':
             'hint: the archive is incomplete (interrupted transfer?); send it again',
         'paxck.verify.summary':
-            '\n{total} entries: SHA-256 ok {ok}, failed {bad}, no record {skip}',
+            '\n{total} entries: SHA-256 ok {ok}, failed {bad}, without a record '
+            '{skip} ({other} directories/links, {nosum} regular files)',
         # ---- paxck.py: extraction safety ---------------------------------
         'paxck.extract.empty_path': 'empty member path',
         'paxck.extract.nul_path': 'member path contains NUL: {name}',

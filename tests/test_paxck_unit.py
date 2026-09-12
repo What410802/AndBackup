@@ -690,6 +690,122 @@ class TestVerifyReturnCodes(T.BaseCase):
         self.assertEqual(err.strip(), b'')
 
 
+def rebuild_tar(source, mutate=None, append=None):
+    """Copy a tar member by member, then optionally append extra members.
+
+    ``TarInfo.pax_headers`` travels with the member, so a copy keeps the
+    ``PAXCK.checksum.sha256`` records exactly like the original.  ``mutate``
+    returns False to drop a member; ``append`` runs once at the end and is how
+    a member the packer never saw gets planted.  Returns bytes.
+    """
+    out = io.BytesIO()
+    with tarfile.open(fileobj=io.BytesIO(source), mode='r:') as tf_in:
+        with tarfile.open(fileobj=out, mode='w',
+                          format=tarfile.PAX_FORMAT) as tf_out:
+            for member in tf_in:
+                payload = (tf_in.extractfile(member).read()
+                           if member.isfile() else None)
+                if mutate is not None and not mutate(member, payload):
+                    continue
+                tf_out.addfile(
+                    member, io.BytesIO(payload) if payload is not None else None)
+            if append is not None:
+                append(tf_out)
+    return out.getvalue()
+
+
+def plant(tf_out, name, payload, record=True):
+    """Append a member the packer never saw, optionally with a valid record."""
+    member = tarfile.TarInfo(name)
+    member.size = len(payload)
+    member.mode = 0o644
+    member.mtime = 1700000000
+    if record:
+        member.pax_headers = {T.PAX_KEY: T.sha256_of(payload)}
+    tf_out.addfile(member, io.BytesIO(payload))
+
+
+class TestVerifyScope(T.BaseCase):
+    """What `verify` does and does not protect -- see docs/flow.md 校验语义.
+
+    These tests pin the documented boundary rather than a wish: the archive
+    carries one checksum per regular file and nothing that enumerates the
+    expected member set, so a member that disappears together with its record,
+    or one that is planted with a record consistent with its own bytes, cannot
+    be noticed.  Changing that behaviour must change these tests and the docs.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tree = os.path.join(self.tmp, 'scope')
+        os.makedirs(os.path.join(self.tree, 'sub'))
+        for name, body in (('one.txt', b'one\n'), ('two.txt', b'two\n'),
+                           ('sub/three.txt', b'three\n')):
+            with open(os.path.join(self.tree, *name.split('/')), 'wb') as fh:
+                fh.write(body)
+        self.raw = T.make_tar(self.tree)
+
+    def summary(self, blob):
+        rc, out, err = verify_stdin(blob)
+        text = err.decode('utf-8', 'replace')
+        for line in text.splitlines():
+            if 'SHA-256 通过' in line:
+                return rc, line.strip()
+        return rc, text.strip()
+
+    def test_the_no_record_column_is_counted_while_reading(self):
+        """目录/链接与“普通文件缺记录”同列，但报数时分开说明。"""
+        rc, line = self.summary(self.raw)
+        self.assertEqual(rc, 0)
+        # 5 个成员：2 个目录 + 3 个普通文件（其中 2 个嵌套在子目录里）
+        self.assertEqual(
+            line, '共 5 个条目：SHA-256 通过 3，失败 0，无记录 2'
+                  '（目录/链接等 2，普通文件缺记录 0）')
+
+    def test_a_recordless_regular_file_counts_in_the_same_column(self):
+        def strip_one(member, payload):
+            if member.name.endswith('one.txt'):
+                member.pax_headers = {}
+            return True
+
+        rc, line = self.summary(rebuild_tar(self.raw, mutate=strip_one))
+        self.assertEqual(rc, 0)          # 其它文件仍有记录，整体仍判成功
+        self.assertIn('通过 2', line)
+        self.assertIn('目录/链接等 2，普通文件缺记录 1', line)
+
+    def test_a_member_deleted_with_its_record_is_not_detected(self):
+        blob = rebuild_tar(
+            self.raw,
+            mutate=lambda member, payload: not member.name.endswith('one.txt'))
+        rc, line = self.summary(blob)
+        self.assertEqual(rc, 0)
+        self.assertIn('共 4 个条目：SHA-256 通过 2', line)
+
+    def test_a_planted_member_with_a_consistent_record_is_not_detected(self):
+        blob = rebuild_tar(
+            self.raw,
+            append=lambda tf: plant(tf, 'scope/extra.txt', b'planted\n'))
+        rc, line = self.summary(blob)
+        self.assertEqual(rc, 0)
+        self.assertIn('共 6 个条目：SHA-256 通过 4', line)
+
+    def test_a_planted_member_without_a_record_only_shows_up_as_unverified(self):
+        blob = rebuild_tar(
+            self.raw,
+            append=lambda tf: plant(tf, 'scope/extra.bin', b'plant',
+                                    record=False))
+        rc, line = self.summary(blob)
+        self.assertEqual(rc, 0)
+        self.assertIn('目录/链接等 2，普通文件缺记录 1', line)
+
+    def test_content_change_is_still_caught(self):
+        """反向保证：真正的改内容仍然一定失败。"""
+        blob = self.raw.replace(b'one\n', b'ONE\n', 1)
+        rc, out, err = verify_stdin(blob)
+        self.assertEqual(rc, 1)
+        self.assertIn('SHA-256 不符', err.decode('utf-8', 'replace'))
+
+
 class TestVerifyInputHandling(unittest.TestCase):
     def test_missing_file_is_a_clean_failure(self):
         rc, out, err = T.run_cli(['verify', '/no/such/archive.tar.xz'])

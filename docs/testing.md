@@ -91,7 +91,7 @@ flowchart LR
 
 | 文件 | 类型 | 重点 |
 |---|---|---|
-| `tests/test_paxck_unit.py` | 单元 | 通用 PAX writer、魔术字节、流读取器、PAX 哈希、符号链接、硬链接、变化文件、压缩、校验/提取退出码、默认安全提取与 `tarfile` 直接提取，以及 `adb_source` 的 Android `%Y/%y` 元数据解析 |
+| `tests/test_paxck_unit.py` | 单元 | 通用 PAX writer、魔术字节、流读取器、PAX 哈希、符号链接、硬链接、变化文件、压缩、校验/提取退出码、默认安全提取与 `tarfile` 直接提取，以及 `adb_source` 的 Android `%Y/%y` 元数据解析；`TestVerifyScope` 把校验的**保护边界**固定为契约（目录/链接与“普通文件缺记录”同列及其拆分计数、内容篡改仍必失败、整成员被删或被植入带一致记录的成员时**不**报错），与 [docs/flow.md](flow.md#校验语义与保护范围) 同步 |
 | `tests/test_android_python.py` | 单元 | `device-python` 解释器引导：已有路径/缓存复用（不联网）、缺失报错、本地 `.tar.zst` 下载+解压（含离线 fixture），覆盖 stdlib `compression.zstd`/外部 `zstd`/系统 `tar` 三种解压路径 |
 | `tests/test_pipeline_local.py` | 离线集成 | 独立本机 `create | compress | verify`、系统 tar 互操作、还原保真、非 UTF-8 文件名 |
 | `tests/test_backup_out_unit.py` | 单元 | `OUT` 规划（空/目录/尾分隔符/后缀匹配与不符）与输出目标预检：目标缺失/已存在普通文件为可用，已存在目录、FIFO/特殊文件不可用，Windows 上只读文件不可用而 POSIX 可行；已存在目标默认不覆写（提示 `--force`）、`force` 直接通过，`--force` 不绕过真写不进去的目标；`publish_archive` 成功替换、失败时保留已校验的 `.partial.*`；`_choose_output_path` 生成占位文件、自动创建父目录、交互 `y`/`n`（改输新路径）/回车放弃/EOF（Windows 把 NUL stdin 当 TTY）各路径正确且不留残骸；`_enabled` 与 YAML `force:` 映射 |

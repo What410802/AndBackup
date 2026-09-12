@@ -234,6 +234,62 @@ that can reach it into a shell-readable location such as `/sdcard/Download/`,
 and to check readability with `backup.py tree` (owner/group appear there
 as numeric UIDs/GIDs).
 
+## Verification Semantics and Limits
+
+`verify` detects the container by magic bytes (plain tar, xz, gzip, zstd) and
+checks the `PAXCK.checksum.sha256` PAX header of every regular file while
+streaming the tar. It rejects an empty archive, a broken or truncated stream,
+and a third-party tar in which *no* regular file carries a record. An archive
+of directories only is reported as "nothing was content-checked", which is not
+a suitable result for a directory that has files.
+
+**The "without a record" number is not stored in the archive.** What the
+archive stores is one content hash per regular file, in that member's own PAX
+extended header; `verify` derives every number while reading. Each member the
+reader yields counts towards `total` (PAX extended headers are folded into
+`member.pax_headers` and never appear as members of their own), regular files
+are judged by their own record, and everything else lands in the "without a
+record" column -- so directories, symlinks and recordless regular files share
+that column by construction. The report now splits it:
+`without a record {skip} ({other} directories/links, {nosum} regular files)`.
+`nosum` also feeds the gate below: when *every* regular file lacks a record
+(typically: the archive was not made by `paxck create`, or its PAX headers were
+stripped) verification fails outright; otherwise "without a record" merely
+means those members were not checked. `--packed-manifest` is a **side channel**
+for the controller and `--prune-source`; it is not written into the archive and
+is therefore not consulted here.
+
+So this protects **content**, not **set membership**:
+
+| Tampering | Result | Why |
+|---|---|---|
+| Change a file's bytes (record kept) | **fails** with `SHA-256 mismatch` | per-file hash |
+| Change archive bytes (compressed stream / tar structure) | **fails**: unparsable or broken stream | the compressor's own CRC plus tar structure checks |
+| Truncation (missing tail) | **fails** | same, via the compressed stream footer |
+| Strip one file's record, keep the file | usually **not** a failure; only an extra "recordless file" | only fails when *all* regular files lack records |
+| Delete a whole member together with its record | **not detected**; one fewer "ok" | nothing enumerates the expected members, and a streaming tar cannot declare future members up front |
+| Plant a member that carries a correct record | **not detected**; one extra "ok" | the record travels with the member; there is no archive-level signature or inventory |
+| Plant a member without a record | usually **not** a failure; an extra "recordless file" | as above; only the "no records at all" gate fires |
+| Rename or move a member | **not detected** | the hash covers content, not names or positions |
+
+In other words, this layer proves "the files inside are the very bytes that were
+read at pack time"; it does not prove "not one file read at pack time is
+missing, and not one extra file was added". Covering the second half would need
+an **inventory member** inside the archive (for example a trailing
+`PAXCK.manifest` listing every member's path/type/size/mtime and hash, with a
+`PAXCK.checksum.sha256` of its own) which `verify` compares in both directions
+when it is present, falling back to today's behaviour with a note when it is
+absent. That is not implemented yet.
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| `0` | packing or verification succeeded |
+| `1` | bad arguments, an unusable ADB root/source, or a failed verification; also an output target that cannot be written (directory/special file/read-only/busy) or that exists without consent to overwrite (no `-f`/`--force` and nobody to ask) |
+| `2` | no zstd support |
+| `3` | unrecoverable I/O such as a source change during packing or a compressor/write interruption; the result must not be treated as a backup. Unreadable entries only produce `[WARN]` and are skipped (no file at all is written only when the listing itself fails completely) |
+
 ## Extraction Modes
 
 `paxck.py extract` defaults to verified, staged recovery. The destination must

@@ -21,7 +21,20 @@ from paxck import (PAX_KEY, _bin_in, _drain_archive_stream, open_archive_stream,
 
 
 def cmd_verify(quiet=False, infile=None):
-    """Verify one archive (or stdin): structure plus every PAX SHA-256."""
+    """Verify one archive (or stdin): structure plus every PAX SHA-256.
+
+    Nothing in the archive stores how many entries carry no checksum: the
+    numbers printed at the end are derived while walking the members.
+
+    ``total`` counts every tar member the reader yields (directories and
+    symlinks included; PAX extended headers are folded into
+    ``member.pax_headers`` and never appear as members of their own), ``ok`` /
+    ``bad`` are the regular files whose record matched / did not, and the
+    "without a record" column is everything else -- non-regular members plus
+    regular files that carry no record.  ``nosum`` keeps the latter apart so
+    the report can say which is which, and so the "a paxck archive with no
+    record at all" gate below cannot be fooled by a third-party tar.
+    """
     src = None
     tf = None
     stream = None
@@ -144,6 +157,7 @@ def cmd_verify(quiet=False, infile=None):
             sys.stderr.write('  ' + i18n.t('paxck.verify.incomplete_hint')
                              + '\n')
         sys.stderr.write(i18n.t('paxck.verify.summary', total=total, ok=ok,
-                                bad=bad, skip=skip) + '\n')
+                                bad=bad, skip=skip, nosum=nosum,
+                                other=skip - nosum) + '\n')
 
     return 1 if bad else 0

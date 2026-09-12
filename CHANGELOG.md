@@ -126,6 +126,18 @@ All notable changes to this project are recorded in this file.
 
 ### Changed
 
+- `verify`'s closing report now splits its "without a record" column, because
+  that number is derived while reading and always mixed two different things:
+  `no record 3 (2 directories/links, 1 regular file)`. The figure counts
+  non-regular members (directories, symlinks) together with regular files that
+  carry no `PAXCK.checksum.sha256`, and nothing in the archive stores it --
+  only the per-file records exist. `docs/flow.md`/`docs/flow.en.md` now spell
+  out how the number is computed and what the layer really protects: content
+  (per-file hash, broken/truncated stream) but **not** set membership, so a
+  member deleted together with its record, or one planted with a record
+  consistent with its own bytes, verifies clean. The documented (unimplemented)
+  remedy is a trailing inventory member that `verify` would compare in both
+  directions, which `tests/test_paxck_unit.py::TestVerifyScope` pins until then.
 - **Breaking**: the controller and the Android data source now follow the
   `executable FUNCTION [options…]` grammar instead of encoding the function in
   options, so a command line says what it does:

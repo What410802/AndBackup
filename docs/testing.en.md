@@ -66,7 +66,7 @@ cause `more than one device/emulator` failures.
 
 | Area | Tests |
 |---|---|
-| `paxck.py` | Magic sniffing, PAX checksums, local file changes, links, compression, verified extraction, direct-tarfile extraction, malformed archives, and CLI status. |
+| `paxck.py` | Magic sniffing, PAX checksums, local file changes, links, compression, verified extraction, direct-tarfile extraction, malformed archives, and CLI status. `TestVerifyScope` pins the verification **boundary** as a contract: the no-record column mixes directories/links with recordless files (and the report splits it), a content change still fails, while a member deleted together with its record, or planted with a record consistent with its own bytes, is **not** reported -- kept in sync with docs/flow.md. |
 | Interpreter bootstrap | Cache reuse without network, missing-interpreter errors, and local `.tar.zst` download+unpack using an offline fixture. |
 | Local integration | `create | compress | verify`, system tar interoperability, restoration fidelity, and non-UTF-8 names where supported. |
 | Tree listing (`tests/test_sourcetree_unit.py`) | Record parsing (7-field, 5-field, a `|` or a tab inside the path, garbage rejected), `_consume_stream` framing (newline and NUL records, a missing status trailer, remote stderr collected), the `DeviceListing` reassembly of the device-Python records (metadata+path pairing, bytes or text, a newline/`|`/tab inside a name, progress lines, `\x02U` unreadable entries, `\x03L` link targets, garbage dropped rather than fatal), the POSIX `TZ` derivation from `stat -c %y` (sign flip, half-hour zones, unusable answers), and `_TreeProgress` (silent for quiet/error, throttled by the interval, translated and tagged). |
