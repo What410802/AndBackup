@@ -91,7 +91,7 @@ flowchart LR
 
 | 文件 | 类型 | 重点 |
 |---|---|---|
-| `tests/test_paxck_unit.py` | 单元 | 通用 PAX writer、魔术字节、流读取器、PAX 哈希、符号链接、硬链接、变化文件、压缩、校验/提取退出码、默认安全提取与 `tarfile` 直接提取，以及 `adb_source` 的 Android `%Y/%y` 元数据解析；`TestVerifyScope` 把校验的**保护边界**固定为契约（目录/链接与“普通文件缺记录”同列及其拆分计数、内容篡改仍必失败、整成员被删或被植入带一致记录的成员时**不**报错），与 [docs/flow.md](flow.md#校验语义与保护范围) 同步 |
+| `tests/test_paxck_unit.py` | 单元 | 通用 PAX writer、魔术字节、流读取器、PAX 哈希、符号链接、硬链接、变化文件、压缩、校验/提取退出码、默认安全提取与 `tarfile` 直接提取，以及 `adb_source` 的 Android `%Y/%y` 元数据解析；`TestVerifyScope` 把校验的**两层保护**固定为契约（目录/链接与“普通文件缺记录”同列及其拆分计数、内容篡改仍必失败、整成员被删或被植入现在**必须**被成员清单抓到、只改元信息也会被抓到、缺少清单默认判失败而 `--allow-missing-inventory` 放行且只保住内容层、改写清单内容会被清单自己的记录抓到），`TestCreateInventory` 覆盖写入侧的清单（清单在末尾、自身记录正确、逐条元信息与归档一致、保留名/重复路径被拒），与 [docs/flow.md](flow.md#校验语义与保护范围) 同步 |
 | `tests/test_android_python.py` | 单元 | `device-python` 解释器引导：已有路径/缓存复用（不联网）、缺失报错、本地 `.tar.zst` 下载+解压（含离线 fixture），覆盖 stdlib `compression.zstd`/外部 `zstd`/系统 `tar` 三种解压路径 |
 | `tests/test_pipeline_local.py` | 离线集成 | 独立本机 `create | compress | verify`、系统 tar 互操作、还原保真、非 UTF-8 文件名 |
 | `tests/test_backup_out_unit.py` | 单元 | `OUT` 规划（空/目录/尾分隔符/后缀匹配与不符）与输出目标预检：目标缺失/已存在普通文件为可用，已存在目录、FIFO/特殊文件不可用，Windows 上只读文件不可用而 POSIX 可行；已存在目标默认不覆写（提示 `--force`）、`force` 直接通过，`--force` 不绕过真写不进去的目标；`publish_archive` 成功替换、失败时保留已校验的 `.partial.*`；`_choose_output_path` 生成占位文件、自动创建父目录、交互 `y`/`n`（改输新路径）/回车放弃/EOF（Windows 把 NUL stdin 当 TTY）各路径正确且不留残骸；`_enabled` 与 YAML `force:` 映射 |
@@ -102,6 +102,8 @@ flowchart LR
 `auto` 优先用设备端 Python、假设备不支持一次性时回退并告警、未知模式报错）、
 `verify`（成功归档返回 0 且不产生任何 adb 调用、`-i` 与 `--log-level quiet` 静默、
 内容被改动的归档报 1 并给出 `[FAIL]` 行、不存在/不可读的归档报 1）、
+`extract`（还原内容正确、清单成员不写进还原结果、成员被删时拒绝且不留暂存目录、
+旧归档需 `--allow-missing-inventory`）、非功能名的首词报“未知功能”而不是变成备份参数、
 `source_mode: host`（主机目录备份：归档内容与源一致、无任何 adb 调用、源目录不存在报错、
 `--prune-source` 被拒绝）、`--prune-source`（只删已打包条目、跳过的保留、演练、`--prune-dry-run` 需与 `--prune-source` 同用、device-python 走远端清单）、`clean env`/`clean host-cache`/`clean`（缺省 all）、`--clean-env`/`--clean-host-cache` 作为备份收尾（`backup --clean-host-cache` 在成功备份后清理）、旧的 `--list-tree`/`--clean-*` 报错并提示新写法、`device-python` 上传/回读/清理、缺少 `DEVICE_PYTHON` 报错与不自动回退，以及输出目标预检（只读的已存在目标、路径某段是文件时立即失败，不产生任何 adb 调用且原文件字节不变）与已存在目标的处理（无 `-f` 保留原文件并报错退出，带 `-f` 覆写且归档可校验） |
 | `tests/test_device_integration.py` | 真机集成 | ADB 授权、目标目录读取、双遍字节一致性、平台对应主控备份、设备空间不生成中间文件 |

@@ -66,7 +66,8 @@ ADB 序列号（`adb devices` 第一列，等价 `adb -s SERIAL`；`-t` 传输 I
 
 主机目录备份：`source_mode: host` 时 `source_dir` 就是本机目录，全程不碰 ADB（无需 `adb`、
 `serial`、`host`）。归档格式与设备备份完全一致（逐文件 `PAXCK.checksum.sha256`、
-失败不留残形、校验后原子发布），`backup.py verify` 可直接重新校验；`--prune-source` 不适用。
+失败不留残形、校验后原子发布），`backup.py verify` 可直接重新校验，`backup.py extract ARCHIVE -C DIR`
+可恢复到新目录（同样先校验后原子发布）；`--prune-source` 不适用。
 进度报告的字节数是“已写入归档”的量（即压缩后），详见
 [docs/configuration.md](docs/configuration.md#主机目录备份source_mode-host)。
 
@@ -307,7 +308,7 @@ Python 3.14+ 用标准库 `compression.zstd`，否则用外部 `zstd`，否则�
 [docs/configuration.md](docs/configuration.md)；归档元信息字段、时间精度与 Android 权限边界、
 以及与“上传独立 tar 二进制到设备端”的差异对比见 [docs/flow.md](docs/flow.md)。三个入口都采用
 **`可执行文件 功能 [选项…]`** 语法：`paxck.py create|compress|verify|extract`、
-`adb_source.py pack`、`backup.py backup|tree|verify|clean`，因此“这次是列举、备份、校验还是清理”在命令行里
+`adb_source.py pack`、`backup.py backup|tree|verify|extract|clean`，因此“这次是列举、备份、校验、恢复还是清理”在命令行里
 一目了然（旧写法 `--list-tree`/`--clean-*` 会报错并给出新写法）。此外
 `backup.py tree [--tree-out PATH] [--tree-mode {auto,device-python,oneshot,per-entry}]` 可只列出源目录的详细信息树（模式、数字属主/组
 UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out` 写入文件，不产生归档。速度上分三层：

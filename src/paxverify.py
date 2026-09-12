@@ -11,16 +11,55 @@ never needs the verifier there.
 The command line entry point lives in ``paxck.py`` (``paxck.py verify``), which
 imports this module lazily.
 """
+import hashlib
 import lzma
 import sys
 import tarfile
 
 import i18n
-from paxck import (PAX_KEY, _bin_in, _drain_archive_stream, open_archive_stream,
+from paxck import (INVENTORY_NAME, PAX_KEY, InventoryError, _bin_in,
+                   _drain_archive_stream, compare_inventory,
+                   member_identity, open_archive_stream, parse_inventory,
                    sha256_stream)
 
 
-def cmd_verify(quiet=False, infile=None):
+def _identity_text(identity):
+    """Human-readable identity, for reporting a changed member."""
+    kind, mode, size, mtime, uid, gid, linkname = identity
+    return 'type %s, mode %o, size %d, mtime %.9f, uid %d, gid %d%s' % (
+        kind, mode, size, mtime, uid, gid,
+        (', link ' + linkname) if linkname else '')
+
+
+def _identity_diff(listed, found):
+    """Which identity fields differ, as ``name: old -> new`` fragments."""
+    names = ('type', 'mode', 'size', 'mtime', 'uid', 'gid', 'link')
+    parts = []
+    for label, old, new in zip(names, listed, found):
+        if old != new:
+            parts.append('%s %s -> %s' % (label, old, new))
+    return ', '.join(parts)
+
+
+def _report_inventory(listed, found, failures, quiet):
+    """Compare the archive against its inventory; append failures."""
+    missing, extra, changed = compare_inventory(listed, found)
+    for name in missing[:50]:
+        failures.append(i18n.t('paxck.inventory.missing', name=name))
+    for name in extra[:50]:
+        failures.append(i18n.t('paxck.inventory.extra', name=name))
+    for name, was, now in changed[:50]:
+        failures.append(i18n.t('paxck.inventory.changed', name=name,
+                               detail=_identity_diff(was, now)))
+    if not quiet:
+        sys.stderr.write(i18n.t(
+            'paxck.inventory.summary', listed=len(listed),
+            found=len(found), missing=len(missing), extra=len(extra),
+            changed=len(changed)) + '\n')
+    return len(missing) + len(extra) + len(changed)
+
+
+def cmd_verify(quiet=False, infile=None, allow_missing_inventory=False):
     """Verify one archive (or stdin): structure plus every PAX SHA-256.
 
     Nothing in the archive stores how many entries carry no checksum: the
@@ -42,6 +81,10 @@ def cmd_verify(quiet=False, infile=None):
     total = ok = bad = skip = nosum = regular = 0
     failures = []
     truncated = False
+    inventory_blob = None
+    inventory_failures = []
+    found = {}
+    duplicates = []
     fail_tag = i18n.tag('fail')
 
     try:
@@ -73,6 +116,28 @@ def cmd_verify(quiet=False, infile=None):
                 total += 1
                 ph = getattr(m, 'pax_headers', None) or {}
                 digest = ph.get(PAX_KEY)
+
+                if m.name == INVENTORY_NAME:
+                    # The inventory describes the member set, so it is not part
+                    # of it: it cannot list itself and is not counted.  Its own
+                    # PAX SHA-256 is still checked, like any regular file.
+                    total -= 1
+                    fobj = tf.extractfile(m)
+                    if fobj is None:
+                        inventory_failures.append(i18n.t(
+                            'paxck.verify.entry_unreadable', name=m.name))
+                        continue
+                    inventory_blob = fobj.read()
+                    if digest is not None:
+                        actual = hashlib.sha256(inventory_blob).hexdigest()
+                        if actual != digest:
+                            inventory_failures.append(i18n.t(
+                                'paxck.inventory.self_mismatch',
+                                expected=digest[:16], actual=actual[:16]))
+                    continue
+                if m.name in found:
+                    duplicates.append(m.name)
+                found[m.name] = member_identity(m)
 
                 if not m.isfile():
                     skip += 1
@@ -147,6 +212,27 @@ def cmd_verify(quiet=False, infile=None):
     if regular == 0:
         sys.stderr.write('  ' + i18n.t('paxck.verify.no_regular_files') + '\n')
 
+    # 成员集合：清单成员（如果有）与归档实际成员双向比对。逐文件哈希只能证明
+    # “里面的文件内容没变”，发现不了“整个成员被删掉/被插进来”。
+    problems = len(inventory_failures)
+    failures.extend(inventory_failures)
+    for name in duplicates[:50]:
+        failures.append(i18n.t('paxck.inventory.duplicate', name=name))
+        problems += 1
+    if inventory_blob is None:
+        if not allow_missing_inventory:
+            failures.append(i18n.t('paxck.inventory.absent',
+                                   member=INVENTORY_NAME))
+            problems += 1
+    else:
+        try:
+            listed = parse_inventory(inventory_blob)
+        except InventoryError as e:
+            failures.append(i18n.t(e.message_key, **e.kwargs))
+            problems += 1
+        else:
+            problems += _report_inventory(listed, found, failures, quiet)
+
     if not quiet:
         for line in failures[:50]:
             sys.stderr.write('  ' + fail_tag + ' ' + line + '\n')
@@ -160,4 +246,4 @@ def cmd_verify(quiet=False, infile=None):
                                 bad=bad, skip=skip, nosum=nosum,
                                 other=skip - nosum) + '\n')
 
-    return 1 if bad else 0
+    return 1 if (bad or problems) else 0

@@ -618,7 +618,7 @@ def run(settings, prune_source=False, prune_dry_run=False):
                     pass
 
 
-FUNCTIONS = ('backup', 'tree', 'verify', 'clean')
+FUNCTIONS = ('backup', 'tree', 'verify', 'extract', 'clean')
 CLEAN_ENV = 'env'
 CLEAN_HOST_CACHE = 'host-cache'
 CLEAN_ALL = 'all'
@@ -637,6 +637,10 @@ _LEGACY_FUNCTION_FLAGS = {
 
 class LegacyInvocation(Exception):
     """An old function flag was used without naming a function."""
+
+
+class UnknownFunction(Exception):
+    """A first word that looks like a function but is not one of them."""
 
 
 def _build_parser():
@@ -711,6 +715,28 @@ def _build_parser():
                         help=i18n.t('backup.cli.verify_path_help'))
     verify.add_argument('-i', '--input', dest='infile', metavar='PATH',
                         help=i18n.t('paxck.cli.input_help'))
+    verify.add_argument('--allow-missing-inventory', action='store_true',
+                        help=i18n.t('paxck.cli.inventory_help'))
+
+    extract = sub.add_parser('extract', parents=[common],
+                             help=i18n.t('backup.cli.extract_help'),
+                             description=i18n.t('backup.cli.extract_help'))
+    # Like verify: nothing to configure, so no --config.
+    extract.add_argument('--log-level',
+                         choices=('quiet', 'error', 'warn', 'info',
+                                  'debug', 'trace'),
+                         help=i18n.t('backup.cli.log_level_help'))
+    extract.add_argument('path', nargs='?',
+                         help=i18n.t('backup.cli.verify_path_help'))
+    extract.add_argument('-i', '--input', dest='infile', metavar='PATH',
+                         help=i18n.t('paxck.cli.input_help'))
+    extract.add_argument('-C', '--directory', required=True, metavar='PATH',
+                         help=i18n.t('paxck.cli.directory_help'))
+    extract.add_argument('--direct-tarfile', '--direct', dest='direct',
+                         action='store_true',
+                         help=i18n.t('paxck.cli.direct_help'))
+    extract.add_argument('--allow-missing-inventory', action='store_true',
+                         help=i18n.t('paxck.cli.inventory_help'))
 
     clean = sub.add_parser('clean', parents=[common],
                            help=i18n.t('backup.cli.clean_help'),
@@ -739,6 +765,11 @@ def _normalize_argv(raw):
                            else 'backup.cli.legacy_flag')
             raise LegacyInvocation(i18n.t(message_key, old=token,
                                           new=replacement))
+    if not first.startswith('-'):
+        # A bare word where a function belongs.  Saying so is the whole point:
+        # silently running a backup with it as an argument would surprise
+        # anybody who typed a verb this launcher does not have.
+        raise UnknownFunction(first)
     return ['backup'] + list(raw)
 
 
@@ -801,6 +832,73 @@ def cmd_verify(settings, path):
     return 0
 
 
+def _run_paxck(settings, argv):
+    """Run a ``paxck.py`` subcommand, relaying its output and its exit code.
+
+    Verification and extraction are deliberately not reimplemented here: the
+    launcher runs exactly the command the backup pipeline runs on its own
+    output, so a manual re-check and the pipeline's check are the same code.
+    """
+    log_level = str(settings.get('LOG_LEVEL', 'info')).lower()
+    quiet = log_level in ('quiet', 'error')
+    env = dict(os.environ)
+    i18n.export(env)
+    command = [sys.executable, os.path.join(_script_dir(), 'paxck.py'), *argv]
+    if quiet and argv[0] == 'verify':
+        # `--quiet` belongs to verify; extraction prints its own result line.
+        command.append('--quiet')
+    result = subprocess.run(command, env=env, check=False)
+    return result.returncode, quiet
+
+
+def cmd_verify(settings, path, allow_missing_inventory=False):
+    """Verify a local archive: no device, no transfer, no mutation.
+
+    The check runs ``paxck.py verify`` in its own process -- the very command
+    the backup pipeline uses on the archive it just produced -- so a manual
+    re-check runs the same code and prints the same diagnostics.  Its exit code
+    is reported as-is (nonzero when any record fails), and the archive is
+    opened read-only.
+    """
+    argv = ['verify']
+    if allow_missing_inventory:
+        argv.append('--allow-missing-inventory')
+    if path:
+        argv.append(path)
+    code, quiet = _run_paxck(settings, argv)
+    label = path or i18n.t('backup.label.stdin')
+    if code:
+        if not quiet:
+            print(i18n.tag('error') + ' '
+                  + i18n.t('backup.err.verify_failed_path', path=label),
+                  file=sys.stderr)
+        return 1
+    if not quiet:
+        print(i18n.tag('done') + ' '
+              + i18n.t('backup.done.verify', path=label))
+    return 0
+
+
+def cmd_extract(settings, path, directory, direct=False,
+                allow_missing_inventory=False):
+    """Extract a verified archive into a new directory (recovery path)."""
+    argv = ['extract']
+    if allow_missing_inventory:
+        argv.append('--allow-missing-inventory')
+    if direct:
+        argv.append('--direct-tarfile')
+    if path:
+        argv.append(path)
+    argv += ['-C', directory]
+    code, quiet = _run_paxck(settings, argv)
+    if code and not quiet:
+        print(i18n.tag('error') + ' '
+              + i18n.t('backup.err.extract_failed', path=path or
+                       i18n.t('backup.label.stdin'), directory=directory),
+              file=sys.stderr)
+    return code
+
+
 def main(argv=None):
     paxck.configure_stdio_utf8()
     raw = list(sys.argv[1:] if argv is None else argv)
@@ -812,6 +910,11 @@ def main(argv=None):
         except LegacyInvocation as e:
             print(i18n.tag('error') + ' ' + str(e), file=sys.stderr)
             return 2
+        except UnknownFunction as e:
+            print(i18n.tag('error') + ' ' + i18n.t(
+                'backup.cli.unknown_function', name=e.args[0],
+                functions=' / '.join(FUNCTIONS)), file=sys.stderr)
+            return 2
         settings, _config = _settings(getattr(args, 'config', None))
         if args.log_level is not None:
             settings['LOG_LEVEL'] = args.log_level
@@ -822,7 +925,12 @@ def main(argv=None):
             return cmd_clean(settings, target in (CLEAN_ENV, CLEAN_ALL),
                              target in (CLEAN_HOST_CACHE, CLEAN_ALL))
         if args.function == 'verify':
-            return cmd_verify(settings, args.infile or args.path)
+            return cmd_verify(settings, args.infile or args.path,
+                              args.allow_missing_inventory)
+        if args.function == 'extract':
+            return cmd_extract(settings, args.infile or args.path,
+                               args.directory, args.direct,
+                               args.allow_missing_inventory)
         if args.function == 'tree':
             if args.tree_mode:
                 settings['TREE_MODE'] = args.tree_mode

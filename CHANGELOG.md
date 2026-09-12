@@ -6,6 +6,35 @@ All notable changes to this project are recorded in this file.
 
 ### Added
 
+- **A trailing member inventory (`PAXCK.manifest`) ends every archive**, which
+  closes the set-membership hole: per-file checksums prove that the bytes inside
+  are the bytes that were read, but they cannot notice a whole member that was
+  deleted (with its record) or planted after packing. The packer now appends one
+  ordinary regular member listing every other member's type/mode/size/mtime/
+  uid/gid, path, and link target, NUL-framed so a tab or newline in a path is
+  safe. Being a regular file, it carries its own `PAXCK.checksum.sha256`, so
+  editing it is caught by its own hash. `verify` and `extract` compare it with
+  the archive **in both directions**: missing, extra, changed metadata/type/link
+  target, and duplicate paths all fail.
+
+  The inventory is **required by default**, so `verify`/`extract` refuse an
+  archive made by an older version with a hint to pass
+  `--allow-missing-inventory`, which keeps content checking only. Honest limits,
+  documented in `docs/flow.md`: there is no key and no signature, so a
+  determined attacker who rebuilds the whole archive stays self-consistent, and
+  the inventory writes every member path into the archive (~`path length + 60`
+  bytes per member, less once compressed).
+- `backup.py extract ARCHIVE -C DIR [--direct-tarfile]`: recovery as a first
+  class function of the launcher, running the same `paxck.py extract` the
+  tool set already had (per-file verification plus the inventory comparison,
+  published atomically into a destination that must not exist). `--direct`
+  keeps the trusted-archive tarfile semantics.
+- `backup.py verify` and `backup.py extract` gained
+  `--allow-missing-inventory` for archives made before the inventory existed.
+- `backup.py` now reports a first word that is not a function (`frobnicate`) as
+  an unknown function, listing the real ones. It used to be passed to the
+  default `backup` function, so `backup-android.bat extract --help` silently
+  printed the *backup* help.
 - `source_mode: host` (or `SOURCE_MODE=host`): back up a directory on the host
   itself, with no ADB involved at all -- no `adb` binary, no `serial`
   resolution, no `get-state` (those keys are simply ignored in this mode).
@@ -126,6 +155,11 @@ All notable changes to this project are recorded in this file.
 
 ### Changed
 
+- Archives grew by one member (the inventory) and are no longer byte-identical
+  to those made by previous versions: `verify` on an archive without the
+  inventory now fails unless `--allow-missing-inventory` is given, and
+  `extract` refuses it for the same reason (an incomplete recovery must not look
+  successful). Regenerating an archive with this version adds the inventory.
 - `verify`'s closing report now splits its "without a record" column, because
   that number is derived while reading and always mixed two different things:
   `no record 3 (2 directories/links, 1 regular file)`. The figure counts

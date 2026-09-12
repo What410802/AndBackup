@@ -415,6 +415,48 @@ class TestCreateMembers(T.BaseCase):
         self.assertEqual(self.members()['测试.d/readme.txt'][2], b'hello\n')
 
 
+class TestCreateInventory(T.BaseCase):
+    """The trailing PAXCK.manifest member the verifier compares against."""
+
+    def test_the_archive_ends_with_a_parsable_inventory(self):
+        paxck = T.load_paxck()
+        blob = T.make_tar(self.root)
+        with tarfile.open(fileobj=io.BytesIO(blob), mode='r:') as tf:
+            names = [m.name for m in tf]
+        self.assertEqual(names[-1], paxck.INVENTORY_NAME)
+        members = T.list_members(blob)
+        payload = members[paxck.INVENTORY_NAME][2]
+        # 清单自身的记录也要对得上（它是普通成员，和其它文件一样受保护）
+        self.assertEqual(members[paxck.INVENTORY_NAME][3][T.PAX_KEY],
+                         T.sha256_of(payload))
+        listed = paxck.parse_inventory(payload)
+        # 清单列出除自己以外的每个成员，且元信息与归档一致
+        self.assertEqual(sorted(listed), sorted(n for n in names
+                                                if n != paxck.INVENTORY_NAME))
+        for name in listed:
+            identity = paxck.member_identity(
+                _member_of(blob, name, paxck.INVENTORY_NAME))
+            self.assertEqual(identity, listed[name], name)
+
+    def test_the_inventory_name_and_duplicates_are_refused(self):
+        """归档根下不会出现同名文件，但写入器仍然要把这两个不变量守住。"""
+        paxck = T.load_paxck()
+        inventory = paxck.ArchiveInventory()
+        with self.assertRaises(paxck.InventoryError):
+            inventory.add(tarfile.TarInfo(paxck.INVENTORY_NAME))
+        inventory.add(tarfile.TarInfo('a'))
+        with self.assertRaises(paxck.InventoryError):
+            inventory.add(tarfile.TarInfo('a'))
+
+
+def _member_of(blob, name, inventory_name):
+    with tarfile.open(fileobj=io.BytesIO(blob), mode='r:') as tf:
+        for member in tf:
+            if member.name == name:
+                return member
+    raise AssertionError('member not found: ' + name)
+
+
 class TestCreateHardLinks(T.BaseCase):
     def link(self, src, dst):
         try:
@@ -628,7 +670,8 @@ class TestVerifyReturnCodes(T.BaseCase):
             ti.type = tarfile.DIRTYPE
             ti.mtime = 0
             tf.addfile(ti)
-        rc, out, err = verify_stdin(buf.getvalue())
+        rc, out, err = T.run_cli(['verify', '--allow-missing-inventory'],
+                                 stdin=buf.getvalue())
         self.assertEqual(rc, 0)
         self.assertIn('没有做内容校验', err.decode('utf-8', 'replace'))
 
@@ -695,8 +738,10 @@ def rebuild_tar(source, mutate=None, append=None):
 
     ``TarInfo.pax_headers`` travels with the member, so a copy keeps the
     ``PAXCK.checksum.sha256`` records exactly like the original.  ``mutate``
-    returns False to drop a member; ``append`` runs once at the end and is how
-    a member the packer never saw gets planted.  Returns bytes.
+    returns False to drop a member, a bytes payload to replace its content
+    (same length: the tar header keeps the original size), or True to keep it;
+    ``append`` runs once at the end and is how a member the packer never saw
+    gets planted.  Returns bytes.
     """
     out = io.BytesIO()
     with tarfile.open(fileobj=io.BytesIO(source), mode='r:') as tf_in:
@@ -705,8 +750,12 @@ def rebuild_tar(source, mutate=None, append=None):
             for member in tf_in:
                 payload = (tf_in.extractfile(member).read()
                            if member.isfile() else None)
-                if mutate is not None and not mutate(member, payload):
-                    continue
+                if mutate is not None:
+                    decision = mutate(member, payload)
+                    if decision is False:
+                        continue
+                    if isinstance(decision, (bytes, bytearray)):
+                        payload = bytes(decision)
                 tf_out.addfile(
                     member, io.BytesIO(payload) if payload is not None else None)
             if append is not None:
@@ -726,13 +775,14 @@ def plant(tf_out, name, payload, record=True):
 
 
 class TestVerifyScope(T.BaseCase):
-    """What `verify` does and does not protect -- see docs/flow.md 校验语义.
+    """What `verify` protects -- see docs/flow.md 校验语义与保护范围.
 
-    These tests pin the documented boundary rather than a wish: the archive
-    carries one checksum per regular file and nothing that enumerates the
-    expected member set, so a member that disappears together with its record,
-    or one that is planted with a record consistent with its own bytes, cannot
-    be noticed.  Changing that behaviour must change these tests and the docs.
+    Two layers: per-file checksums for content, and the trailing inventory
+    member for set membership.  These tests pin both, including the honest
+    limit of the second one: it is an unsigned consistency check, so an
+    attacker who rewrites the archive *and* its inventory can still hide a
+    deleted member, and the escape hatch for old archives
+    (``--allow-missing-inventory``) gives up the membership check by design.
     """
 
     def setUp(self):
@@ -745,22 +795,28 @@ class TestVerifyScope(T.BaseCase):
                 fh.write(body)
         self.raw = T.make_tar(self.tree)
 
-    def summary(self, blob):
-        rc, out, err = verify_stdin(blob)
-        text = err.decode('utf-8', 'replace')
+    def verify(self, blob, *options):
+        rc, out, err = T.run_cli(['verify', *options], stdin=blob)
+        return rc, err.decode('utf-8', 'replace')
+
+    def summary(self, text):
         for line in text.splitlines():
             if 'SHA-256 通过' in line:
-                return rc, line.strip()
-        return rc, text.strip()
+                return line.strip()
+        return text.strip()
 
     def test_the_no_record_column_is_counted_while_reading(self):
         """目录/链接与“普通文件缺记录”同列，但报数时分开说明。"""
-        rc, line = self.summary(self.raw)
+        rc, text = self.verify(self.raw)
         self.assertEqual(rc, 0)
         # 5 个成员：2 个目录 + 3 个普通文件（其中 2 个嵌套在子目录里）
         self.assertEqual(
-            line, '共 5 个条目：SHA-256 通过 3，失败 0，无记录 2'
-                  '（目录/链接等 2，普通文件缺记录 0）')
+            self.summary(text),
+            '共 5 个条目：SHA-256 通过 3，失败 0，无记录 2'
+            '（目录/链接等 2，普通文件缺记录 0）')
+        # 清单成员自身不计入总数，但会比对成员集合
+        self.assertIn('成员清单：清单 5 条，归档 5 条；缺失 0，多余 0，元信息不符 0',
+                      text)
 
     def test_a_recordless_regular_file_counts_in_the_same_column(self):
         def strip_one(member, payload):
@@ -768,35 +824,88 @@ class TestVerifyScope(T.BaseCase):
                 member.pax_headers = {}
             return True
 
-        rc, line = self.summary(rebuild_tar(self.raw, mutate=strip_one))
+        rc, text = self.verify(rebuild_tar(self.raw, mutate=strip_one))
         self.assertEqual(rc, 0)          # 其它文件仍有记录，整体仍判成功
+        line = self.summary(text)
         self.assertIn('通过 2', line)
         self.assertIn('目录/链接等 2，普通文件缺记录 1', line)
 
-    def test_a_member_deleted_with_its_record_is_not_detected(self):
+    def test_a_member_deleted_with_its_record_is_detected(self):
+        """整条成员（连同记录）被删除：清单比对必须发现。"""
         blob = rebuild_tar(
             self.raw,
             mutate=lambda member, payload: not member.name.endswith('one.txt'))
-        rc, line = self.summary(blob)
-        self.assertEqual(rc, 0)
-        self.assertIn('共 4 个条目：SHA-256 通过 2', line)
+        rc, text = self.verify(blob)
+        self.assertEqual(rc, 1)
+        self.assertIn('清单里有但归档中缺失的成员：scope/one.txt', text)
+        self.assertIn('缺失 1，多余 0', text)
 
-    def test_a_planted_member_with_a_consistent_record_is_not_detected(self):
+    def test_a_planted_member_is_detected_even_with_a_consistent_record(self):
         blob = rebuild_tar(
             self.raw,
             append=lambda tf: plant(tf, 'scope/extra.txt', b'planted\n'))
-        rc, line = self.summary(blob)
-        self.assertEqual(rc, 0)
-        self.assertIn('共 6 个条目：SHA-256 通过 4', line)
+        rc, text = self.verify(blob)
+        self.assertEqual(rc, 1)
+        self.assertIn('归档里有但清单中没有的成员：scope/extra.txt', text)
 
-    def test_a_planted_member_without_a_record_only_shows_up_as_unverified(self):
+    def test_a_planted_member_without_a_record_is_detected_too(self):
         blob = rebuild_tar(
             self.raw,
             append=lambda tf: plant(tf, 'scope/extra.bin', b'plant',
                                     record=False))
-        rc, line = self.summary(blob)
+        rc, text = self.verify(blob)
+        self.assertEqual(rc, 1)
+        self.assertIn('归档里有但清单中没有的成员：scope/extra.bin', text)
+
+    def test_changed_metadata_is_detected(self):
+        """只改元信息（不动内容）也会被清单比对发现。"""
+        def bump_mode(member, payload):
+            if member.name.endswith('two.txt'):
+                member.mode = 0o600
+            return True
+
+        rc, text = self.verify(rebuild_tar(self.raw, mutate=bump_mode))
+        self.assertEqual(rc, 1)
+        self.assertIn('清单与归档的同名成员不一致：scope/two.txt', text)
+        self.assertIn('mode', text)
+
+    def test_an_archive_without_the_inventory_is_refused(self):
+        blob = rebuild_tar(
+            self.raw, mutate=lambda member, payload: member.name != 'PAXCK.manifest')
+        rc, text = self.verify(blob)
+        self.assertEqual(rc, 1)
+        self.assertIn('归档没有 PAXCK.manifest 成员', text)
+        # 旧归档可以显式放行
+        rc, text = self.verify(blob, '--allow-missing-inventory')
         self.assertEqual(rc, 0)
-        self.assertIn('目录/链接等 2，普通文件缺记录 1', line)
+
+    def test_the_escape_hatch_gives_up_the_membership_check(self):
+        """--allow-missing-inventory 只保住"内容"层，删成员不再被发现。"""
+        blob = rebuild_tar(
+            self.raw,
+            mutate=lambda member, payload: member.name != 'PAXCK.manifest')
+        rc, text = self.verify(blob, '--allow-missing-inventory')
+        self.assertEqual(rc, 0)
+        self.assertNotIn('成员清单', text)
+
+    def test_editing_the_inventory_is_caught_by_its_own_record(self):
+        """清单自己也是普通成员，改它的内容会被它自己的记录抓到。
+
+        诚实的上限：清单没有签名，所以把整个归档（内容、记录、清单）重做一遍
+        依然能自圆其说；那种情况只能靠签名区分，本工具没有签名。
+        """
+        def edit_the_inventory(member, payload):
+            if member.name != 'PAXCK.manifest':
+                return True
+            return payload[:-1] + b'X'          # 同长度改写，只动清单内容
+
+        rc, text = self.verify(rebuild_tar(self.raw,
+                                           mutate=edit_the_inventory))
+        self.assertEqual(rc, 1)
+        self.assertIn('成员清单自身的 SHA-256 不符', text)
+        # 干净重建的归档内部自洽，因此校验通过（见上面的上限说明）。
+        rebuilt, _text = self.verify(T.make_tar(self.tree))
+        self.assertEqual(rebuilt, 0)
 
     def test_content_change_is_still_caught(self):
         """反向保证：真正的改内容仍然一定失败。"""
@@ -884,6 +993,46 @@ class TestExtract(T.BaseCase):
         rc, out, err = T.run_cli(['extract', '-C', destination], stdin=damaged)
         self.assertEqual(rc, 1, err.decode('utf-8', 'replace'))
         self.assertFalse(os.path.lexists(destination))
+
+    def test_a_missing_member_blocks_recovery(self):
+        """少了一个成员时不能悄悄恢复出“看起来完整”的目录。"""
+        raw = rebuild_tar(
+            T.make_tar(self.root),
+            mutate=lambda member, payload: not member.name.endswith('readme.txt'))
+        destination = self._destination()
+        rc, out, err = T.run_cli(['extract', '-C', destination], stdin=raw)
+        text = err.decode('utf-8', 'replace')
+        self.assertEqual(rc, 1, text)
+        self.assertIn('清单里有但归档中缺失的成员', text)
+        self.assertFalse(os.path.lexists(destination))
+        # 暂存目录也必须清掉
+        self.assertEqual([n for n in os.listdir(self.tmp) if '.partial.' in n], [])
+
+    def test_extraction_skips_the_inventory_member(self):
+        """清单是记账用的，不应出现在还原结果里。"""
+        destination = self._destination()
+        rc, out, err = T.run_cli(['extract', '-C', destination],
+                                 stdin=T.make_tar(self.root))
+        self.assertEqual(rc, 0, err.decode('utf-8', 'replace'))
+        self.assertFalse(os.path.lexists(
+            os.path.join(destination, 'PAXCK.manifest')))
+        self.assertFalse(os.path.lexists(os.path.join(self.tmp,
+                                                      'PAXCK.manifest')))
+
+    def test_an_archive_without_an_inventory_needs_the_flag(self):
+        raw = rebuild_tar(T.make_tar(self.root),
+                          mutate=lambda m, d: m.name != 'PAXCK.manifest')
+        destination = self._destination()
+        rc, out, err = T.run_cli(['extract', '-C', destination], stdin=raw)
+        self.assertEqual(rc, 1, err.decode('utf-8', 'replace'))
+        self.assertIn('归档没有 PAXCK.manifest 成员', err.decode('utf-8', 'replace'))
+        self.assertFalse(os.path.lexists(destination))
+        rc, out, err = T.run_cli(
+            ['extract', '--allow-missing-inventory', '-C', destination],
+            stdin=raw)
+        self.assertEqual(rc, 0, err.decode('utf-8', 'replace'))
+        self.assertTrue(os.path.isfile(
+            os.path.join(destination, '测试.d', 'readme.txt')))
 
     def test_path_traversal_is_rejected_before_writing(self):
         data = b'not outside the destination'

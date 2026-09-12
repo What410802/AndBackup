@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Windows-only integration tests for the real cmd.exe backup launcher."""
+import io
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -365,6 +367,52 @@ class TestBackupBatch(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('归档校验未通过：' + missing,
                       result.stdout.decode('utf-8', 'replace'))
+
+    def test_extract_recovers_the_archive(self):
+        self.assertEqual(self.run_script().returncode, 0)
+        restored = os.path.join(self.case, 'restored')
+        result = self.run_script(_args=('extract', self.out, '-C', restored))
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 0, text)
+        root = "测试 'quoted' dir — v2"
+        with open(os.path.join(restored, root, 'readme.txt'), 'rb') as fh:
+            self.assertEqual(fh.read(), b'hello\n')
+        # 记账用的清单成员不应出现在还原结果里
+        self.assertFalse(os.path.lexists(os.path.join(restored,
+                                                      'PAXCK.manifest')))
+
+    def test_extract_refuses_a_modified_archive(self):
+        plain = os.path.join(self.case, 'plain.tar')
+        self.assertEqual(self.run_script(COMPRESS='none', OUT=plain).returncode, 0)
+        blob = T.read_bytes(plain)
+        # 删掉一整个成员（含它的记录）：成员清单必须拦住
+        with tarfile.open(fileobj=io.BytesIO(blob), mode='r:') as tf_in:
+            out = io.BytesIO()
+            with tarfile.open(fileobj=out, mode='w',
+                              format=tarfile.PAX_FORMAT) as tf_out:
+                for member in tf_in:
+                    if member.name.endswith('readme.txt'):
+                        continue
+                    payload = (tf_in.extractfile(member).read()
+                               if member.isfile() else None)
+                    tf_out.addfile(member, io.BytesIO(payload)
+                                   if payload is not None else None)
+        with open(plain, 'wb') as fh:
+            fh.write(out.getvalue())
+        restored = os.path.join(self.case, 'not-restored')
+        result = self.run_script(_args=('extract', plain, '-C', restored))
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 1, text)
+        self.assertIn('清单里有但归档中缺失的成员', text)
+        self.assertFalse(os.path.lexists(restored))
+
+    def test_an_unknown_function_is_reported_not_reinterpreted(self):
+        result = self.run_script(_args=('frobnicate', '--help'))
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 2, text)
+        self.assertIn('未知功能：frobnicate', text)
+        self.assertIn('backup / tree / verify / extract / clean', text)
+        self.assertNotIn('usage: backup.py backup', text)
 
     def test_tree_can_write_to_a_named_file(self):
         target = os.path.join(self.case, 'tree.txt')

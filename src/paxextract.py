@@ -25,8 +25,9 @@ import tarfile
 import tempfile
 
 import i18n
-from paxck import (CHUNK, PAX_KEY, _bin_in, _drain_archive_stream,
-                   open_archive_stream)
+from paxck import (CHUNK, INVENTORY_NAME, PAX_KEY, InventoryError, _bin_in,
+                   _drain_archive_stream, compare_inventory, member_identity,
+                   open_archive_stream, parse_inventory)
 
 
 class _UnsafeArchive(ValueError):
@@ -120,13 +121,24 @@ def _copy_verified_member(tf, member, destination):
                                     actual=actual[:16]))
 
 
-def _extract_to_stage(infile, stage):
-    """Extract one verified archive into a private, empty staging directory."""
+def _extract_to_stage(infile, stage, allow_missing_inventory=False):
+    """Extract one verified archive into a private, empty staging directory.
+
+    Besides checking every regular file against its own record, the member set
+    is compared with the archive's trailing inventory member, so a member that
+    was deleted (or added) after packing is refused instead of silently
+    producing an incomplete recovery.  The inventory member is bookkeeping and
+    is not written into the destination.
+    """
     src = None
     stream = None
     tf = None
     total = 0
     seen = set()
+    found = {}
+    duplicates = []
+    inventory_blob = None
+    inventory_problem = None
     deferred_hardlinks = []
     deferred_symlinks = []
     directories = []
@@ -145,6 +157,25 @@ def _extract_to_stage(infile, stage):
 
         for member in tf:
             total += 1
+            if member.name == INVENTORY_NAME:
+                source = tf.extractfile(member)
+                if source is None:
+                    inventory_problem = i18n.t(
+                        'paxck.verify.entry_unreadable', name=member.name)
+                else:
+                    inventory_blob = source.read()
+                    expected = (getattr(member, 'pax_headers', None) or {}).get(
+                        PAX_KEY)
+                    if expected:
+                        actual = hashlib.sha256(inventory_blob).hexdigest()
+                        if actual != expected:
+                            inventory_problem = i18n.t(
+                                'paxck.inventory.self_mismatch',
+                                expected=expected[:16], actual=actual[:16])
+                continue
+            if member.name in found:
+                duplicates.append(member.name)
+            found[member.name] = member_identity(member)
             parts = _member_parts(member.name)
             canonical = '/'.join(parts)
             if canonical in seen:
@@ -207,6 +238,36 @@ def _extract_to_stage(infile, stage):
         for destination, member in reversed(directories):
             _restore_metadata(destination, member)
         _drain_archive_stream(stream)
+
+        # Only now is the member set known: compare it with the inventory the
+        # packer wrote, before the staging directory can be published.
+        if inventory_problem is not None:
+            raise _UnsafeArchive(inventory_problem)
+        for name in duplicates[:50]:
+            raise _UnsafeArchive(i18n.t('paxck.inventory.duplicate', name=name))
+        if inventory_blob is None:
+            if not allow_missing_inventory:
+                raise _UnsafeArchive(i18n.t('paxck.inventory.absent',
+                                            member=INVENTORY_NAME))
+        else:
+            try:
+                listed = parse_inventory(inventory_blob)
+            except InventoryError as e:
+                raise _UnsafeArchive(i18n.t(e.message_key, **e.kwargs)) from None
+            missing, extra, changed = compare_inventory(listed, found)
+            if missing or extra or changed:
+                details = []
+                details += [i18n.t('paxck.inventory.missing', name=name)
+                            for name in missing[:20]]
+                details += [i18n.t('paxck.inventory.extra', name=name)
+                            for name in extra[:20]]
+                details += [i18n.t('paxck.inventory.changed', name=name,
+                                   detail='')
+                            for name, _was, _now in changed[:20]]
+                raise _UnsafeArchive(i18n.t(
+                    'paxck.inventory.summary', listed=len(listed),
+                    found=len(found), missing=len(missing), extra=len(extra),
+                    changed=len(changed)) + '; ' + '; '.join(details))
     finally:
         if tf is not None:
             try:
@@ -225,7 +286,7 @@ def _extract_to_stage(infile, stage):
                 pass
 
 
-def cmd_extract(infile, directory):
+def cmd_extract(infile, directory, allow_missing_inventory=False):
     """Safely extract a PAXCK archive into a new directory, atomically."""
     destination = os.path.abspath(directory)
     parent = os.path.dirname(destination) or os.curdir
@@ -244,7 +305,7 @@ def cmd_extract(infile, directory):
     try:
         stage = tempfile.mkdtemp(
             prefix=os.path.basename(destination) + '.partial.', dir=parent)
-        _extract_to_stage(infile, stage)
+        _extract_to_stage(infile, stage, allow_missing_inventory)
         os.replace(stage, destination)
         stage = None
         print(i18n.tag('done') + ' '

@@ -86,7 +86,9 @@ Host directories: with `source_mode: host`, `source_dir` is a local directory an
 ADB is never involved (no `adb`, `serial` or `host` needed). The archive is
 identical in shape to a device backup (per-file `PAXCK.checksum.sha256`, no
 leftovers on failure, verified before the atomic publish), so `backup.py verify`
-re-checks it directly; `--prune-source` does not apply. The progress number is
+re-checks it directly and `backup.py extract ARCHIVE -C DIR` recovers it, both
+with the same verification-then-atomic-publish rules; `--prune-source` does not
+apply. The progress number is
 the bytes written into the archive (after compression) — see
 [docs/configuration.en.md](docs/configuration.en.md#backing-up-a-host-directory-source_mode-host).
 
@@ -291,9 +293,10 @@ comparison against uploading an independent tar binary to the device live in
 [docs/flow.en.md](docs/flow.en.md). Every entry point uses the
 **`executable FUNCTION [options…]`** grammar: `paxck.py
 create|compress|verify|extract`, `adb_source.py pack`, `backup.py
-backup|tree|verify|clean`, so the command line says whether this run lists, backs
-up, verifies or cleans (the old `--list-tree`/`--clean-*` spellings fail with
-the new form).
+backup|tree|verify|extract|clean`, so the command line says whether this run lists, backs
+up, verifies, recovers or cleans (the old `--list-tree`/`--clean-*` spellings
+fail with the new form). A first word that is not a function is reported as an
+unknown function instead of being silently treated as a backup argument.
 `backup.py tree [--tree-out PATH] [--tree-mode {auto,device-python,oneshot,per-entry}]`
 lists just the detailed tree of the source directory (mode, numeric owner/group
 UID:GID, size, time, symlink targets) to stdout or to a file, and writes no

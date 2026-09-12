@@ -43,6 +43,7 @@ import os
 import sys
 import stat
 import gzip
+import io
 import lzma
 import shutil
 import hashlib
@@ -55,6 +56,14 @@ import i18n
 
 # pax key 名：全大写 vendor 前缀，POSIX 保留给厂商扩展，避免与未来标准冲突
 PAX_KEY = 'PAXCK.checksum.sha256'
+
+# The trailing inventory member.  Its payload lists every member the archive
+# contains, so a verifier can tell "one file is missing" from "everything is
+# fine", which the per-file checksums alone cannot.  A regular file name at the
+# archive root could collide with a real entry, so the writer refuses that name
+# instead of silently producing two members with one name.
+INVENTORY_NAME = 'PAXCK.manifest'
+INVENTORY_VERSION = '1'
 CHUNK = 1 << 20          # 1 MiB，分块哈希
 BLOCKSIZE = tarfile.RECORDSIZE  # tar 记录大小 512
 
@@ -426,6 +435,136 @@ def _tar_relpath(path, start):
     return rel.replace('\\', '/')
 
 
+class InventoryError(Exception):
+    """An inventory payload that cannot be written or read."""
+    def __init__(self, message_key, **kwargs):
+        super().__init__(message_key)
+        self.message_key = message_key
+        self.kwargs = kwargs
+
+
+_TYPE_CHARS = {tarfile.REGTYPE: 'f', tarfile.AREGTYPE: 'f',
+               tarfile.DIRTYPE: 'd', tarfile.SYMTYPE: 'l',
+               tarfile.LNKTYPE: 'h', tarfile.CHRTYPE: 'c',
+               tarfile.BLKTYPE: 'b', tarfile.FIFOTYPE: 'p'}
+
+
+def member_identity(member):
+    """``(type, mode, size, mtime, uid, gid, linkname)`` of one tar member."""
+    return (_TYPE_CHARS.get(member.type, '?'), int(member.mode),
+            int(member.size), float(member.mtime), int(member.uid),
+            int(member.gid), member.linkname or '')
+
+
+def _identity_record(name, identity):
+    """One member as NUL-terminated records (a name may hold tabs/newlines)."""
+    kind, mode, size, mtime, uid, gid, linkname = identity
+    records = ['M%s\t%o\t%d\t%.9f\t%d\t%d' % (kind, mode, size, mtime, uid, gid),
+               'P' + name]
+    if linkname:
+        records.append('L' + linkname)
+    return b''.join(record.encode('utf-8', 'surrogateescape') + b'\0'
+                    for record in records)
+
+
+def parse_inventory(blob):
+    """``{name: identity}`` from an inventory payload.
+
+    Raises :class:`InventoryError` with a message key when the payload is not a
+    readable inventory at all -- which is what a tampered or truncated member
+    looks like, so callers treat it as a failure rather than as "empty".
+    """
+    if isinstance(blob, bytes):
+        blob = blob.decode('utf-8', 'surrogateescape')
+    records = blob.split('\0')
+    if records and records[-1] == '':
+        records.pop()
+    if not records or records[0] != 'V' + INVENTORY_VERSION:
+        raise InventoryError('paxck.verify.inventory_version',
+                             found=(records[0][:40] if records else ''))
+    entries = {}
+    index = 1
+    while index < len(records):
+        head = records[index]
+        fields = head[1:].split('\t') if head.startswith('M') else []
+        if (len(fields) != 6 or index + 1 >= len(records)
+                or not records[index + 1].startswith('P')):
+            raise InventoryError('paxck.verify.inventory_unparsable',
+                                 detail=head[:40])
+        name = records[index + 1][1:]
+        index += 2
+        linkname = ''
+        if index < len(records) and records[index].startswith('L'):
+            linkname = records[index][1:]
+            index += 1
+        kind, mode, size, mtime, uid, gid = fields
+        try:
+            entries[name] = (kind, int(mode, 8), int(size), float(mtime),
+                             int(uid), int(gid), linkname)
+        except ValueError:
+            raise InventoryError('paxck.verify.inventory_unparsable',
+                                 detail=head[:40]) from None
+    return entries
+
+
+def compare_inventory(listed, found):
+    """``(missing, extra, changed)`` between the inventory and the archive.
+
+    ``listed`` comes from the inventory member and ``found`` from the members
+    the reader actually saw (both ``{name: identity}``).  ``changed`` holds
+    ``(name, listed_identity, found_identity)``.
+    """
+    missing = sorted(name for name in listed if name not in found)
+    extra = sorted(name for name in found if name not in listed)
+    changed = []
+    for name, identity in listed.items():
+        other = found.get(name)
+        if other is not None and other != identity:
+            changed.append((name, identity, other))
+    return missing, extra, changed
+
+
+class ArchiveInventory:
+    """Collect one archive's members, then write them as a trailing member.
+
+    The producers (``paxck.py create`` and ``adb_source.py pack``) hand over the
+    ``TarInfo`` they just wrote, so the inventory costs no extra stat or ADB
+    call and describes exactly what went into the archive.  It is a regular
+    member carrying its own ``PAXCK.checksum.sha256``, i.e. protected exactly
+    like every other file, and it is the only way to notice a member that was
+    lost or added after packing: per-file checksums cannot see set membership.
+    """
+
+    def __init__(self):
+        self._names = set()
+        self._records = []
+        self.count = 0
+
+    def add(self, member):
+        name = member.name
+        if name == INVENTORY_NAME:
+            raise InventoryError('paxck.err.inventory_name_taken', name=name)
+        if name in self._names:
+            raise InventoryError('paxck.err.inventory_duplicate', name=name)
+        self._names.add(name)
+        self._records.append(_identity_record(name, member_identity(member)))
+        self.count += 1
+
+    def payload(self):
+        return (('V' + INVENTORY_VERSION).encode('ascii') + b'\0'
+                + b''.join(self._records))
+
+    def write(self, tf):
+        """Emit the inventory member last (fixed metadata: reproducible)."""
+        payload = self.payload()
+        member = tarfile.TarInfo(INVENTORY_NAME)
+        member.size = len(payload)
+        member.mode = 0o644
+        member.mtime = 0
+        member.pax_headers = {PAX_KEY: hashlib.sha256(payload).hexdigest()}
+        tf.addfile(member, io.BytesIO(payload))
+
+
 class PackedManifest:
     """Record which entries were packed, for ``backup.py --prune-source``.
 
@@ -488,6 +627,7 @@ def cmd_create(root, manifest=None):
         ti.mode = stat.S_IMODE(st.st_mode)
         ti.mtime = st.st_mtime
         tf.addfile(ti)
+        inventory.add(ti)
 
     def walk_error(e):
         warn(i18n.t('paxck.warn.walk_failed',
@@ -495,6 +635,8 @@ def cmd_create(root, manifest=None):
         listed.incomplete(1)
 
     listed = PackedManifest(manifest)
+    inventory = ArchiveInventory()
+    complete = False
     try:
         # 先归档根目录自身
         st = os.lstat(root)
@@ -503,6 +645,7 @@ def cmd_create(root, manifest=None):
         ti.mode = stat.S_IMODE(st.st_mode)
         ti.mtime = st.st_mtime
         tf.addfile(ti)
+        inventory.add(ti)
         listed.packed(root, is_dir=True)
 
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False,
@@ -526,6 +669,7 @@ def cmd_create(root, manifest=None):
                 ti.mode = stat.S_IMODE(st.st_mode)
                 ti.mtime = st.st_mtime
                 tf.addfile(ti)
+                inventory.add(ti)
                 listed.packed(full, is_dir=True)
 
             for f in filenames:
@@ -557,6 +701,7 @@ def cmd_create(root, manifest=None):
                     ti.linkname = seen_ino[key]
                     ti.size = 0
                     tf.addfile(ti)
+                    inventory.add(ti)
                     listed.packed(full)
                     continue
 
@@ -575,13 +720,19 @@ def cmd_create(root, manifest=None):
                 if not written:
                     listed.skipped(full)
                     continue
+                inventory.add(ti)
                 listed.packed(full)
 
                 # 只有完整写入成功后，才允许后续硬链接指向它
                 if st.st_nlink > 1:
                     seen_ino[key] = rel
 
+        complete = True
     finally:
+        if complete:
+            # The inventory goes last: it can only be written once every member
+            # is known, and it is itself a regular member with its own record.
+            inventory.write(tf)
         tf.close()
         listed.close()
     return 0
@@ -681,7 +832,7 @@ def _drain_archive_stream(stream):
 
 # Extraction (cmd_extract / cmd_extract_direct and their helpers) moved to
 # paxextract.py; paxck.py imports it lazily in main().
-def _swallow_broken_pipe():
+def swallow_broken_pipe():
     """Stop a second traceback when the next stage already closed our stdout.
 
     A dying compressor (an unavailable `zstd`, a full disk) closes its stdin, so
@@ -728,6 +879,8 @@ def main(argv=None):
     v.add_argument('-i', '--input', dest='infile',
                    help=i18n.t('paxck.cli.input_help'))
     v.add_argument('-q', '--quiet', action='store_true')
+    v.add_argument('--allow-missing-inventory', action='store_true',
+                   help=i18n.t('paxck.cli.inventory_help'))
 
     x = sub.add_parser('extract', help=i18n.t('paxck.cli.extract_help'),
                        parents=[common])
@@ -738,14 +891,20 @@ def main(argv=None):
                    help=i18n.t('paxck.cli.directory_help'))
     x.add_argument('--direct-tarfile', '--direct', dest='direct',
                    action='store_true', help=i18n.t('paxck.cli.direct_help'))
+    x.add_argument('--allow-missing-inventory', action='store_true',
+                   help=i18n.t('paxck.cli.inventory_help'))
 
     args = ap.parse_args(argv)
     if args.cmd == 'create':
         try:
             return cmd_create(args.directory, args.packed_manifest)
         except BrokenPipeError:
-            _swallow_broken_pipe()
+            swallow_broken_pipe()
             return 1
+        except InventoryError as e:
+            sys.stderr.write(i18n.tag('error') + ' '
+                             + i18n.t(e.message_key, **e.kwargs) + '\n')
+            return 3
     if args.cmd == 'compress':
         return cmd_compress(args.kind)
     # Verification and extraction live in their own modules so the writer (the
@@ -753,11 +912,13 @@ def main(argv=None):
     import paxverify
     import paxextract
     if args.cmd == 'verify':
-        return paxverify.cmd_verify(args.quiet, args.infile or args.path)
+        return paxverify.cmd_verify(args.quiet, args.infile or args.path,
+                                    args.allow_missing_inventory)
     if args.direct:
         return paxextract.cmd_extract_direct(args.infile or args.path,
                                              args.directory)
-    return paxextract.cmd_extract(args.infile or args.path, args.directory)
+    return paxextract.cmd_extract(args.infile or args.path, args.directory,
+                                  args.allow_missing_inventory)
 
 
 if __name__ == '__main__':

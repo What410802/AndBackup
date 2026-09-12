@@ -116,13 +116,14 @@ Windows 上的“系统区域设置”取的是**用户界面语言**（Win32 �
 |---|---|---|---|
 | `paxck.py` | 本机打包 | `paxck.py create DIRECTORY` | 把 `DIRECTORY` 作为根目录写裸 PAX tar 到 stdout；普通文件带 `PAXCK.checksum.sha256` |
 | `paxck.py` | 压缩 | `paxck.py compress {xz,gzip,zstd,none}` | stdin→stdout；`xz`/`gzip`/`none` 只用标准库 |
-| `paxck.py` | 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别裸 tar/xz/gzip/zstd，逐普通文件校验 PAX SHA-256；“无记录”列的计算方式与**保护边界**（内容 vs 成员集合）见 [docs/flow.md](flow.md#校验语义与保护范围) |
-| `paxck.py` | 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | 默认：校验后暂存原子发布，`DEST` 须不存在；`--direct-tarfile` 为可信归档直接模式 |
+| `paxck.py` | 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q`、`--allow-missing-inventory` | 自动识别裸 tar/xz/gzip/zstd，逐普通文件校验 PAX SHA-256，并与末尾 `PAXCK.manifest` 成员清单双向比对；“无记录”列的计算方式与**保护边界**（内容 + 成员集合、无签名的上限）见 [docs/flow.md](flow.md#校验语义与保护范围) |
+| `paxck.py` | 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE`，可加 `--allow-missing-inventory` | 默认：逐文件校验 + 成员清单比对，全部通过后暂存目录原子发布，`DEST` 须不存在；`--direct-tarfile` 为可信归档直接模式 |
 | `adb_source.py` | 数据源 | `adb_source.py pack [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] [--show-rate] DIRECTORY` | `host-adb`：经 `adb exec-out` 写裸 PAX tar 到 stdout（管道阶段） |
 | `backup.py` | 备份 | `backup.py backup [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [-f|--force] [--prune-source] [--prune-dry-run] [--clean-env] [--clean-host-cache]` | 读取配置、组合源与压缩器、校验 `.partial` 后原子替换；最后两个选项表示“本次成功结束后顺带清理缓存” |
 | `backup.py` | 列举 | `backup.py tree [--config PATH] [--log-level …] [--tree-out PATH] [--tree-mode {auto,device-python,oneshot,per-entry}] [--clean-env] [--clean-host-cache]` | 只列出源目录的详细信息树（模式、数字属主/组 UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out PATH` 写入文件。不写入归档；枚举方式与进度见下 |
 | `backup.py` | 清理 | `backup.py clean [{env,host-cache,all}] [--config PATH] [--log-level …]` | 只清理缓存后退出：`env`=设备端 Python 环境，`host-cache`=主机下载/解压缓存，`all`=两者（缺省） |
-| `backup.py` | 校验 | `backup.py verify [ARCHIVE]` 或 `-i ARCHIVE` | 重新校验已有归档，用的就是备份管道校验自己产物时的那条命令。纯本地：不接触设备、不需要 `--config`（没有可读的配置），不写不改任何文件；任何条目校验失败即以退出码 1 结束 |
+| `backup.py` | 校验 | `backup.py verify [ARCHIVE]` 或 `-i ARCHIVE` | 重新校验已有归档，用的就是备份管道校验自己产物时的那条命令。纯本地：不接触设备、不需要 `--config`（没有可读的配置），不写不改任何文件；任何条目校验失败即以退出码 1 结束。默认要求归档带成员清单，旧归档加 `--allow-missing-inventory` |
+| `backup.py` | 恢复 | `backup.py extract ARCHIVE -C DIR [--direct-tarfile]` | 从归档恢复到**尚未存在**的 `DIR`：逐文件校验 + 成员清单比对，全部通过才原子发布（暂存目录会被清掉）；`--direct-tarfile` 为可信归档的 tarfile 直接模式（不校验、非原子） |
 | 平台包装 | — | `backup-android.sh [功能 选项…]`；`backup-android.bat [功能 选项…]` | 把所有参数转发给同目录 `backup.py` |
 
 `backup.py` 不带功能时等同于 `backup`（双击包装脚本/无参数运行仍然直接备份）；`--help` 与

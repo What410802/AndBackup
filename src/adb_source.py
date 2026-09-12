@@ -408,6 +408,8 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
         return 1
 
     listed = paxck.PackedManifest(manifest)
+    inventory = paxck.ArchiveInventory()
+    complete = False
     try:
         root_st = _lstat(adb, root)
         if not stat.S_ISDIR(root_st['mode']):
@@ -466,6 +468,7 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
             if stat.S_ISDIR(mode):
                 tar_info.type = tarfile.DIRTYPE
                 tf.addfile(tar_info)
+                inventory.add(tar_info)
                 listed.packed(full, is_dir=True)
                 reporter.entry(relative)
                 continue
@@ -482,6 +485,7 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
                                 err=i18n.os_error(e)))
                     reporter.entry(relative, skipped=True)
                 else:
+                    inventory.add(tar_info)
                     listed.packed(full)
                     reporter.entry(relative)
                 continue
@@ -500,11 +504,15 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
             if rc:
                 return rc
             if written:
+                inventory.add(tar_info)
                 listed.packed(full)
             else:
                 listed.skipped(full)
             reporter.entry(relative, skipped=not written)
+        complete = True
     finally:
+        if complete:
+            inventory.write(tf)
         tf.close()
         listed.close()
     reporter.finish()
@@ -543,10 +551,18 @@ def main(argv=None):
     pack.add_argument('--packed-manifest', metavar='PATH',
                       help=i18n.t('prune.cli.manifest_help'))
     args = parser.parse_args(argv)
-    return write_tar(args.directory, args.adb, log_level=args.log_level,
-                     progress_interval=args.progress_interval,
-                     show_rate=args.show_rate,
-                     manifest=args.packed_manifest)
+    try:
+        return write_tar(args.directory, args.adb, log_level=args.log_level,
+                         progress_interval=args.progress_interval,
+                         show_rate=args.show_rate,
+                         manifest=args.packed_manifest)
+    except BrokenPipeError:
+        paxck.swallow_broken_pipe()
+        return 1
+    except paxck.InventoryError as e:
+        sys.stderr.write(i18n.tag('error') + ' '
+                         + i18n.t(e.message_key, **e.kwargs) + '\n')
+        return 3
 
 
 if __name__ == '__main__':

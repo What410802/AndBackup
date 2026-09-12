@@ -259,27 +259,49 @@ means those members were not checked. `--packed-manifest` is a **side channel**
 for the controller and `--prune-source`; it is not written into the archive and
 is therefore not consulted here.
 
-So this protects **content**, not **set membership**:
+So protection has two layers: **per-file records** (content) and a **trailing
+member inventory** (set membership).
 
-| Tampering | Result | Why |
+The set-membership layer is the `PAXCK.manifest` member at the end of the
+archive: the packer writes every member's type/mode/size/mtime/uid/gid and path
+(plus the target for symlinks and hardlinks) as NUL-framed records in the last
+member, so a tab or newline inside a path cannot break the records. That member
+is an ordinary regular file carrying its own `PAXCK.checksum.sha256` -- that is
+what "carries its own record" means: editing its content is caught by its own
+hash, exactly like any other file. It cannot list itself, so it is not part of
+the set it describes and does not count towards `total`.
+
+`verify` and `extract` compare the two **in both directions**: listed but
+absent (missing), present but unlisted (extra), same name with a different
+type/mode/size/mtime/uid/gid/link target (changed), and the same path twice
+(duplicate) all fail. The inventory is **required by default**: an archive made
+before this version fails with a hint to pass `--allow-missing-inventory`, which
+gives up the membership layer and keeps only content checking.
+
+| Tampering | Result | Layer |
 |---|---|---|
 | Change a file's bytes (record kept) | **fails** with `SHA-256 mismatch` | per-file hash |
 | Change archive bytes (compressed stream / tar structure) | **fails**: unparsable or broken stream | the compressor's own CRC plus tar structure checks |
 | Truncation (missing tail) | **fails** | same, via the compressed stream footer |
-| Strip one file's record, keep the file | usually **not** a failure; only an extra "recordless file" | only fails when *all* regular files lack records |
-| Delete a whole member together with its record | **not detected**; one fewer "ok" | nothing enumerates the expected members, and a streaming tar cannot declare future members up front |
-| Plant a member that carries a correct record | **not detected**; one extra "ok" | the record travels with the member; there is no archive-level signature or inventory |
-| Plant a member without a record | usually **not** a failure; an extra "recordless file" | as above; only the "no records at all" gate fires |
-| Rename or move a member | **not detected** | the hash covers content, not names or positions |
+| Delete a whole member together with its record | **fails**: `listed ... but missing from the archive` | member inventory |
+| Plant a member (with or without a record) | **fails**: `in the archive but not listed` | member inventory |
+| Change a member's metadata/type/link target (content untouched) | **fails**: `the inventory and the archive disagree` | member inventory |
+| The same path twice | **fails**: duplicate path | member inventory |
+| Strip one file's record, keep the file | usually **not** a failure; only an extra "recordless file" | -- (only fails when *all* regular files lack records) |
+| Delete the inventory member itself | **fails**: `the archive has no PAXCK.manifest member` | the inventory is required |
+| Rewrite the inventory content | **fails**: `the member inventory itself fails its SHA-256` | per-file hash (the inventory is a regular file) |
+| Rebuild the whole archive (content, records, inventory) | **not detected** (internally consistent) | none -- there is no signature |
 
-In other words, this layer proves "the files inside are the very bytes that were
-read at pack time"; it does not prove "not one file read at pack time is
-missing, and not one extra file was added". Covering the second half would need
-an **inventory member** inside the archive (for example a trailing
-`PAXCK.manifest` listing every member's path/type/size/mtime and hash, with a
-`PAXCK.checksum.sha256` of its own) which `verify` compares in both directions
-when it is present, falling back to today's behaviour with a note when it is
-absent. That is not implemented yet.
+So what is proven is "**not one member is missing, not one was added, and every
+member's content is the very bytes read at pack time**". It still cannot prove
+that the archive came from a genuine packing run: there is no key and no
+signature inside the archive, so anyone able to rewrite the whole file can make
+every layer agree. Defending against that needs a signature stored outside the
+archive (an HMAC or a GPG signature over the final file), which is out of scope
+here. One honest cost: the inventory writes every member path into the archive
+(about `path length + 60` bytes per member, less after compression), so treat
+the archive as sensitive if those names are; `--allow-missing-inventory` only
+affects verification, never the archive's contents.
 
 Exit codes:
 
@@ -296,8 +318,11 @@ Exit codes:
 not exist. Each regular file is SHA-256-checked while written to a temporary
 sibling directory. Empty, duplicate, unsafe, or unsupported members fail the
 operation. The staging directory is renamed to the destination only after
-every member and compression footer is valid, so an existing destination is
-never touched.
+every member and compression footer is valid **and** the member set agrees with
+the archive's inventory, so a recovery can neither silently lose a member nor
+overwrite an existing destination. The inventory member itself is bookkeeping
+and is not written into the destination; use `--allow-missing-inventory` for an
+archive made before the inventory existed.
 
 `paxck.py extract --direct-tarfile` (or `--direct`) deliberately delegates to
 Python `tarfile` with its traditional trusted-archive semantics. It permits an

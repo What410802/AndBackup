@@ -153,6 +153,31 @@ MESSAGES = {
         'paxck.direct.failed': 'tarfile 直接提取失败：{err}',
         'paxck.done.direct_extracted':
             '已由 tarfile 直接提取到 {path}（未校验 PAX SHA-256，非原子）',
+        # ---- 归档末尾的成员清单（inventory）：verify 与 extract 共用 ----
+        'paxck.inventory.summary':
+            '成员清单：清单 {listed} 条，归档 {found} 条；'
+            '缺失 {missing}，多余 {extra}，元信息不符 {changed}',
+        'paxck.inventory.missing':
+            '清单里有但归档中缺失的成员：{name}',
+        'paxck.inventory.extra':
+            '归档里有但清单中没有的成员：{name}',
+        'paxck.inventory.changed':
+            '清单与归档的同名成员不一致：{name}（{detail}）',
+        'paxck.inventory.duplicate':
+            '同一条路径在归档里出现多次：{name}',
+        'paxck.inventory.absent':
+            '归档没有 {member} 成员（旧版本生成的？）：无法判断成员是否缺失/多余；'
+            '若确认可接受，用 --allow-missing-inventory 跳过',
+        'paxck.inventory.unparsable':
+            '成员清单无法解析（记录：{detail}）',
+        'paxck.inventory.version':
+            '成员清单版本不是 {expected}（读到 {found}）',
+        'paxck.inventory.self_mismatch':
+            '成员清单自身的 SHA-256 不符（记录 {expected}，实际 {actual}）',
+        'paxck.err.inventory_name_taken':
+            '源目录里有名为 {name} 的文件，与归档清单成员同名；请改名后重试',
+        'paxck.err.inventory_duplicate':
+            '同一条路径在归档里出现多次，无法生成清单：{name}',
         # ---- paxck.py: command line --------------------------------------
         'paxck.cli.description':
             '创建/校验带 pax 内嵌 SHA-256 的 tar 归档（流式，仅用标准库）',
@@ -161,6 +186,9 @@ MESSAGES = {
         'paxck.cli.verify_help': '校验归档（自动识别 xz/gzip）',
         'paxck.cli.extract_help': '提取归档（默认校验 SHA-256 后原子发布）',
         'paxck.cli.path_help': '归档路径；省略则从 stdin 读',
+        'paxck.cli.inventory_help':
+            '接受没有成员清单（PAXCK.manifest）的旧归档；默认缺少清单即判失败，'
+            '因为那样无法发现成员被整条删除或插入',
         'paxck.cli.input_help': '同位置参数，归档路径',
         'paxck.cli.directory_help': '默认模式的尚不存在目标目录；直接模式可为已有目录',
         'paxck.cli.direct_help': '直接调用 tarfile 写入目标；跳过校验和原子性，只用于可信归档',
@@ -391,10 +419,12 @@ MESSAGES = {
         'backup.done.tree': '已写出目录树：{path}（{count} 个条目）',
         'backup.done.verify': '归档校验通过：{path}',
         'backup.err.verify_failed_path': '归档校验未通过：{path}',
+        'backup.err.extract_failed':
+            '提取失败：{path} -> {directory}',
         'backup.label.stdin': '标准输入',
         'backup.cli.description':
-            'AndBackup 主控：按功能执行流式归档、列举、校验与维护'
-            '（backup / tree / verify / clean）',
+            'AndBackup 主控：按功能执行流式归档、列举、校验、恢复与维护'
+            '（backup / tree / verify / extract / clean）',
         'backup.cli.config_help':
             '配置文件路径（默认脚本目录中的 backup-android.yaml；'
             '覆盖 BACKUP_CONFIG_FILE）',
@@ -406,6 +436,11 @@ MESSAGES = {
         'backup.cli.verify_help':
             '校验已有归档（不接触设备，不改动任何文件）',
         'backup.cli.verify_path_help': '归档路径；省略则从 stdin 读',
+        'backup.cli.extract_help':
+            '从归档恢复到新目录（默认校验通过后才原子发布）',
+        'backup.cli.unknown_function':
+            '未知功能：{name}（可选 {functions}）；本工具没有的功能请直接调用 '
+            'paxck.py',
         'backup.cli.clean_help': '清理缓存：设备端 Python 环境或主机端下载缓存',
         'backup.cli.clean_target_help':
             '要清理的缓存：env=设备端 Python 环境，host-cache=主机端下载/解压'
@@ -581,6 +616,35 @@ MESSAGES = {
         'paxck.done.direct_extracted':
             'extracted directly with tarfile to {path} (PAX SHA-256 not '
             'verified, non-atomic)',
+        # ---- trailing inventory member (shared by verify and extract) ----
+        'paxck.inventory.summary':
+            'member inventory: {listed} listed, {found} in the archive; '
+            '{missing} missing, {extra} extra, {changed} changed',
+        'paxck.inventory.missing':
+            'listed in the inventory but missing from the archive: {name}',
+        'paxck.inventory.extra':
+            'in the archive but not listed in the inventory: {name}',
+        'paxck.inventory.changed':
+            'the inventory and the archive disagree about {name} ({detail})',
+        'paxck.inventory.duplicate':
+            'the same path occurs more than once in the archive: {name}',
+        'paxck.inventory.absent':
+            'the archive has no {member} member (made by an older version?): '
+            'a missing or added member cannot be detected; pass '
+            '--allow-missing-inventory if that is acceptable',
+        'paxck.inventory.unparsable':
+            'the member inventory cannot be parsed (record: {detail})',
+        'paxck.inventory.version':
+            'the member inventory is version {found}, not {expected}',
+        'paxck.inventory.self_mismatch':
+            'the member inventory itself fails its SHA-256 (record {expected}, '
+            'actual {actual})',
+        'paxck.err.inventory_name_taken':
+            'the source directory contains a file named {name}, which collides '
+            'with the archive inventory member; rename it and retry',
+        'paxck.err.inventory_duplicate':
+            'the same path occurs more than once in the archive, so no '
+            'inventory can be written: {name}',
         # ---- paxck.py: command line --------------------------------------
         'paxck.cli.description':
             'create/verify tar archives with an embedded PAX SHA-256 '
@@ -592,6 +656,10 @@ MESSAGES = {
         'paxck.cli.extract_help':
             'extract an archive (verified and atomic by default)',
         'paxck.cli.path_help': 'archive path; stdin is read when omitted',
+        'paxck.cli.inventory_help':
+            'accept an older archive that has no member inventory '
+            '(PAXCK.manifest); by default a missing inventory is a failure, '
+            'because a whole member could then be deleted or inserted unobserved',
         'paxck.cli.input_help': 'same as the positional argument: archive path',
         'paxck.cli.directory_help':
             'default mode: a destination that must not exist yet; direct mode: '
@@ -879,10 +947,12 @@ MESSAGES = {
         'backup.done.tree': 'wrote the directory tree to {path} ({count} entries)',
         'backup.done.verify': 'archive verified: {path}',
         'backup.err.verify_failed_path': 'archive verification failed: {path}',
+        'backup.err.extract_failed':
+            'extraction failed: {path} -> {directory}',
         'backup.label.stdin': 'standard input',
         'backup.cli.description':
             'AndBackup controller: streaming archives and maintenance, one '
-            'function at a time (backup / tree / verify / clean)',
+            'function at a time (backup / tree / verify / extract / clean)',
         'backup.cli.config_help':
             'config file path (defaults to backup-android.yaml next to the script; '
             'overrides BACKUP_CONFIG_FILE)',
@@ -896,6 +966,12 @@ MESSAGES = {
         'backup.cli.verify_help':
             'verify an existing archive (no device, nothing is modified)',
         'backup.cli.verify_path_help': 'archive path; without it, stdin is read',
+        'backup.cli.extract_help':
+            'recover an archive into a new directory (verified before it is '
+            'published atomically)',
+        'backup.cli.unknown_function':
+            'unknown function: {name} (choose {functions}); for a function this '
+            'launcher does not have, call paxck.py directly',
         'backup.cli.clean_help':
             'clean caches: the device Python environment or the host download cache',
         'backup.cli.clean_target_help':
