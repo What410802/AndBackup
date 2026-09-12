@@ -19,7 +19,12 @@ All notable changes to this project are recorded in this file.
 
   The inventory is **required by default**, so `verify`/`extract` refuse an
   archive made by an older version with a hint to pass
-  `--allow-missing-inventory`, which keeps content checking only. Honest limits,
+  `--allow-missing-inventory`, which keeps content checking only. Both of our
+  extraction modes treat it as bookkeeping and do not write it into the
+  destination; other tar tools (7-Zip, WinRAR, Explorer, GNU tar) will list it
+  and extract it as a file of that name, which is unavoidable for a regular
+  member -- and it has to be a regular member to carry its own checksum.
+  Honest limits,
   documented in `docs/flow.md`: there is no key and no signature, so a
   determined attacker who rebuilds the whole archive stays self-consistent, and
   the inventory writes every member path into the archive (~`path length + 60`

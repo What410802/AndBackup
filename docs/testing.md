@@ -102,7 +102,7 @@ flowchart LR
 `auto` 优先用设备端 Python、假设备不支持一次性时回退并告警、未知模式报错）、
 `verify`（成功归档返回 0 且不产生任何 adb 调用、`-i` 与 `--log-level quiet` 静默、
 内容被改动的归档报 1 并给出 `[FAIL]` 行、不存在/不可读的归档报 1）、
-`extract`（还原内容正确、清单成员不写进还原结果、成员被删时拒绝且不留暂存目录、
+`extract`（还原内容正确、两种提取模式都不把清单成员写进还原结果、成员被删时拒绝且不留暂存目录、
 旧归档需 `--allow-missing-inventory`）、非功能名的首词报“未知功能”而不是变成备份参数、
 `source_mode: host`（主机目录备份：归档内容与源一致、无任何 adb 调用、源目录不存在报错、
 `--prune-source` 被拒绝）、`--prune-source`（只删已打包条目、跳过的保留、演练、`--prune-dry-run` 需与 `--prune-source` 同用、device-python 走远端清单）、`clean env`/`clean host-cache`/`clean`（缺省 all）、`--clean-env`/`--clean-host-cache` 作为备份收尾（`backup --clean-host-cache` 在成功备份后清理）、旧的 `--list-tree`/`--clean-*` 报错并提示新写法、`device-python` 上传/回读/清理、缺少 `DEVICE_PYTHON` 报错与不自动回退，以及输出目标预检（只读的已存在目标、路径某段是文件时立即失败，不产生任何 adb 调用且原文件字节不变）与已存在目标的处理（无 `-f` 保留原文件并报错退出，带 `-f` 覆写且归档可校验） |

@@ -1019,6 +1019,18 @@ class TestExtract(T.BaseCase):
         self.assertFalse(os.path.lexists(os.path.join(self.tmp,
                                                       'PAXCK.manifest')))
 
+    def test_direct_extraction_skips_the_inventory_member_too(self):
+        """直接模式同样不把清单当内容写出去。"""
+        destination = os.path.join(self.tmp, 'direct-restore')
+        rc, out, err = T.run_cli(
+            ['extract', '--direct-tarfile', '-C', destination],
+            stdin=T.make_tar(self.root))
+        self.assertEqual(rc, 0, err.decode('utf-8', 'replace'))
+        self.assertFalse(os.path.lexists(
+            os.path.join(destination, 'PAXCK.manifest')))
+        self.assertTrue(os.path.isfile(
+            os.path.join(destination, '测试.d', 'readme.txt')))
+
     def test_an_archive_without_an_inventory_needs_the_flag(self):
         raw = rebuild_tar(T.make_tar(self.root),
                           mutate=lambda m, d: m.name != 'PAXCK.manifest')

@@ -278,6 +278,19 @@ type/mode/size/mtime/uid/gid/link target (changed), and the same path twice
 before this version fails with a hint to pass `--allow-missing-inventory`, which
 gives up the membership layer and keeps only content checking.
 
+**It is not a hidden member.** The inventory sits at the archive root as an
+ordinary member (named `PAXCK.manifest`, mode `0644`, `mtime` pinned to 0 so the
+same input yields the same bytes), so 7-Zip, WinRAR, Explorer and GNU tar all
+list it, and extracting with them writes a file of that name. That is
+deliberate: only a regular member can carry its own PAX record (the "carries its
+own record" point above). Both of this tool's extraction modes -- the default
+and `--direct-tarfile` -- treat it as bookkeeping and **do not write it into the
+destination**; third-party tools will, and deleting it only affects those tools'
+view of set membership, never the archive's contents (our verifier then reports
+the missing inventory). If you want archives without that member at all (giving
+up membership protection, and making verification need
+`--allow-missing-inventory`), say so -- that switch does not exist yet.
+
 | Tampering | Result | Layer |
 |---|---|---|
 | Change a file's bytes (record kept) | **fails** with `SHA-256 mismatch` | per-file hash |
@@ -327,8 +340,9 @@ archive made before the inventory existed.
 `paxck.py extract --direct-tarfile` (or `--direct`) deliberately delegates to
 Python `tarfile` with its traditional trusted-archive semantics. It permits an
 existing destination, skips PAX checksum validation, is non-atomic, and may
-leave partial files on an error. It is useful for known/trusted conventional
-tar archives, not for backup recovery from untrusted data.
+leave partial files on an error. It still treats the trailing inventory member
+as bookkeeping and does not write it out. It is useful for known/trusted
+conventional tar archives, not for backup recovery from untrusted data.
 
 ## Device-Side Tar Alternative
 

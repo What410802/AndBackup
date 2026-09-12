@@ -339,7 +339,8 @@ def cmd_extract_direct(infile, directory):
     This intentionally has tarfile's direct-write semantics: ``directory`` may
     already exist and a failure may leave files behind.  It is for trusted
     archives and interoperability only; the default ``extract`` path above is
-    the backup-recovery path.
+    the backup-recovery path.  The one thing both modes share is that the
+    trailing inventory member is treated as bookkeeping and not written out.
     """
     destination = os.path.abspath(directory)
     fail_tag = i18n.tag('fail')
@@ -376,13 +377,19 @@ def cmd_extract_direct(infile, directory):
         try:
             stream = open_archive_stream(src)
             tf = tarfile.open(fileobj=stream, mode='r|')
+            # The inventory member is bookkeeping, not content: it is skipped in
+            # both extraction modes, so a recovery never grows a stray
+            # ``PAXCK.manifest`` file that was not in the source tree.
+            members = (member for member in tf
+                       if member.name != INVENTORY_NAME)
             # Python 3.12+ changed extraction-filter defaults.  Direct mode is
             # explicitly requested for trusted archives, so preserve tarfile's
             # traditional unrestricted extraction semantics on every version.
             if hasattr(tarfile, 'fully_trusted_filter'):
-                tf.extractall(destination, filter='fully_trusted')
+                tf.extractall(destination, members=members,
+                              filter='fully_trusted')
             else:
-                tf.extractall(destination)
+                tf.extractall(destination, members=members)
             _drain_archive_stream(stream)
         except (lzma.LZMAError, tarfile.TarError, EOFError) as e:
             sys.stderr.write(fail_tag + ' '
