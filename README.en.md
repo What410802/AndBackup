@@ -32,10 +32,10 @@ other; see “Modes and Architecture” below.
 uses Python 3.14+'s `compression.zstd` when available, otherwise a `zstd`
 executable on `PATH`.
 
-At v0.2.0 release preparation the full offline suite passed on Windows
-CPython 3.13.15 (153 tests, 0 failures); cross-platform selector cases (the
-3.14 stdlib `compression.zstd` and the older system-`tar` extraction paths)
-were run on WSL Ubuntu CPython 3.14.4. Python 3.12 is the declared minimum and
+At v0.3.0 release preparation the full offline suite passed on Windows
+CPython 3.13.15 (322 tests, 0 failures, 48 skipped) and on WSL Ubuntu CPython
+3.14.4 (322 tests, 0 failures, 66 skipped; the extra skips are the
+Windows-only CMD/`fake-adb` suites). Python 3.12 is the declared minimum and
 is covered by the post-push CI matrix, but was not installed locally solely for
 this release. Ubuntu 24.04 ships Python 3.12; Debian 12 ships Python 3.11, so
 Debian 12 users need to provide a separate Python 3.12+ interpreter.
@@ -419,6 +419,6 @@ and [architecture notes](docs/flow.en.md) for pipeline and metadata details.
 ## License
 
 Released under the [MIT License](LICENSE). See [CHANGELOG.md](CHANGELOG.md)
-for version history, [release-0.2.0.md](docs/release-0.2.0.md) for the current
-release notes/checklist, and [release-0.1.0.md](docs/release-0.1.0.md) for the
-initial release.
+for version history, [release-0.3.0.md](docs/release-0.3.0.md) for the current
+release notes/checklist, and [release-0.2.0.md](docs/release-0.2.0.md) /
+[release-0.1.0.md](docs/release-0.1.0.md) for the earlier releases.

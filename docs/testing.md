@@ -134,10 +134,11 @@ flowchart LR
 用例需要 PATH 中的 `zstd`，3.14 可验证标准库 `compression.zstd` 路径。xz、gzip 和裸 tar
 不需要任何第三方 Python 包。
 
-当前本地实际验证版本为 Windows CPython 3.13.15（完整离线套件）和 WSL Ubuntu CPython
-3.14.4（跨平台选择用例）。Python 3.12 是最低支持版本，未为发布准备额外安装到本机；CI
-会在提交后覆盖。Ubuntu 24.04 默认 Python 3.12，而 Debian 12 默认 Python 3.11，后者需
-自行提供 3.12+ 解释器。
+当前本地实际验证版本为 Windows CPython 3.13.15（完整离线套件：322 项、0 失败、48 skip）
+和 WSL Ubuntu CPython 3.14.4（同一套用例：322 项、0 失败、66 skip，多出的 skip 是仅
+Windows 可跑的 CMD/替身 ADB 用例）。Python 3.12 是最低支持版本，未为发布准备额外安装到
+本机；CI 会在提交后覆盖。Ubuntu 24.04 默认 Python 3.12，而 Debian 12 默认 Python 3.11，
+后者需自行提供 3.12+ 解释器。
 
 `paxck.py create` 的样例树包含普通文件、空文件、跨 1 MiB 边界的大文件、中文和空格名、
 指向文件/目录的符号链接、断链以及 FIFO。测试确认：

@@ -27,7 +27,9 @@ CI runs the offline suite on Ubuntu and Windows with Python 3.12, 3.13, and
 absent, so they do not make CI depend on hardware.
 
 Local release preparation has run the complete offline suite on Windows
-CPython 3.13.15 and selected cross-platform tests on WSL Ubuntu CPython 3.14.4.
+CPython 3.13.15 (322 tests, 0 failures, 48 skipped) and the same suite on WSL
+Ubuntu CPython 3.14.4 (322 tests, 0 failures, 66 skipped; the extra skips are
+the Windows-only CMD/`fake-adb` suites).
 Python 3.12 is the minimum supported version and is not installed locally for
 this preparation. Ubuntu 24.04 ships 3.12; Debian 12 ships 3.11 and needs a
 separate 3.12+ interpreter.

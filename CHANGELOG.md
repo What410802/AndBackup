@@ -2,7 +2,7 @@
 
 All notable changes to this project are recorded in this file.
 
-## [Unreleased]
+## [0.3.0] - 2026-09-12
 
 ### Added
 
@@ -120,44 +120,6 @@ All notable changes to this project are recorded in this file.
   cannot be written (directory, special file, unwritable parent, read-only or
   held open on Windows) still fail before any transfer.
 
-### Fixed
-
-- `backup.py tree` no longer drops to the very slow per-entry fallback (one adb
-  round trip per entry) because of a **normal** non-zero device exit code: on
-  Android, `find` reports the failures of the batched `stat` calls, and toybox
-  returns 127 when a subdirectory is unreadable (routine under
-  `Android/data/*`), even though every readable entry was listed. A non-zero
-  exit now only matters when it produced no record at all; partial results are
-  kept, and the affected entries simply show as `[?]` (the header still reports
-  the exit code). Likewise, unparsable records are counted and warned about
-  instead of aborting the pass.
-- Messages no longer mix two languages. Two causes are gone: on Windows the
-  automatic language now follows the **user interface language** instead of
-  `locale.getlocale()`, which UTF-8 mode reports as English on a Chinese system
-  (so a Chinese system now prints Chinese, as it does for its own error text);
-  and OS error strings are translated by `i18n.os_error` from the `errno`
-  (`error.errno.*`) instead of being embedded verbatim from `OSError.strerror`,
-  so `--lang en` on a Chinese Windows no longer produces an English sentence
-  with a Chinese error inside. Only an unrecognized `errno` keeps the raw OS
-  text.
-- Prompts are only shown when a console can answer them: `i18n.can_prompt`
-  replaces the bare `sys.stdin.isatty()` checks (Windows reports a NUL/DEVNULL
-  stdin as a TTY). An automated run therefore fails with one clear message
-  instead of printing a question nobody can answer, and the prune plan is
-  printed whether or not the prompt is shown.
-- An unusable output target no longer wastes a whole transfer. `backup.py` now
-  creates the `OUT.partial.*` placeholder, and hence validates the destination,
-  *before* any ADB command: a target that already exists and is a directory, is
-  not a regular file (pipe/device), lies under a path component that is an
-  existing file, sits in an unwritable directory or (on Windows) is read-only
-  or held open by another program now fails immediately with a clear message.
-  An interactive terminal prints the reason and asks for a new `out` path
-  instead of losing the run; non-interactive runs (or `log_level` `quiet`/
-  `error`) fail as before.
-- If publishing fails after the archive has already been verified, the verified
-  archive is kept next to the target as `<name>.partial.*` and its path is
-  printed, so a completed transfer plus verification is never thrown away.
-
 ### Changed
 
 - Archives grew by one member (the inventory) and are no longer byte-identical
@@ -171,12 +133,12 @@ All notable changes to this project are recorded in this file.
   non-regular members (directories, symlinks) together with regular files that
   carry no `PAXCK.checksum.sha256`, and nothing in the archive stores it --
   only the per-file records exist. `docs/flow.md`/`docs/flow.en.md` now spell
-  out how the number is computed and what the layer really protects: content
-  (per-file hash, broken/truncated stream) but **not** set membership, so a
-  member deleted together with its record, or one planted with a record
-  consistent with its own bytes, verifies clean. The documented (unimplemented)
-  remedy is a trailing inventory member that `verify` would compare in both
-  directions, which `tests/test_paxck_unit.py::TestVerifyScope` pins until then.
+  out how the number is computed and what both layers really protect: content
+  (per-file hash, broken/truncated stream) plus, through the trailing inventory
+  member, set membership. The remaining limit is stated as well: there is no key
+  and no signature, so an attacker who rebuilds the whole archive stays
+  self-consistent, and `--allow-missing-inventory` gives the membership layer up
+  for archives made before it existed.
 - **Breaking**: the controller and the Android data source now follow the
   `executable FUNCTION [options…]` grammar instead of encoding the function in
   options, so a command line says what it does:
@@ -223,8 +185,6 @@ All notable changes to this project are recorded in this file.
   existing `[FAIL]`) instead of the localized `[错误]`/`[完成]`/`[进度]`/`[缓存]`/
   `[清理]`/`[调试]`, so logs, tests and scripts match them in any language.
 
-### Changed
-
 - ADB device selectors are now named after adb itself: the YAML key and
   environment variable are `serial`/`SERIAL` (equivalent to `adb -s SERIAL`,
   plus the ambient `ANDROID_SERIAL`), while `device_id`, `DEVICE_ID`, `device`,
@@ -238,6 +198,42 @@ All notable changes to this project are recorded in this file.
   written still fails hard with exit code `3`.
 
 ### Fixed
+
+- `backup.py tree` no longer drops to the very slow per-entry fallback (one adb
+  round trip per entry) because of a **normal** non-zero device exit code: on
+  Android, `find` reports the failures of the batched `stat` calls, and toybox
+  returns 127 when a subdirectory is unreadable (routine under
+  `Android/data/*`), even though every readable entry was listed. A non-zero
+  exit now only matters when it produced no record at all; partial results are
+  kept, and the affected entries simply show as `[?]` (the header still reports
+  the exit code). Likewise, unparsable records are counted and warned about
+  instead of aborting the pass.
+- Messages no longer mix two languages. Two causes are gone: on Windows the
+  automatic language now follows the **user interface language** instead of
+  `locale.getlocale()`, which UTF-8 mode reports as English on a Chinese system
+  (so a Chinese system now prints Chinese, as it does for its own error text);
+  and OS error strings are translated by `i18n.os_error` from the `errno`
+  (`error.errno.*`) instead of being embedded verbatim from `OSError.strerror`,
+  so `--lang en` on a Chinese Windows no longer produces an English sentence
+  with a Chinese error inside. Only an unrecognized `errno` keeps the raw OS
+  text.
+- Prompts are only shown when a console can answer them: `i18n.can_prompt`
+  replaces the bare `sys.stdin.isatty()` checks (Windows reports a NUL/DEVNULL
+  stdin as a TTY). An automated run therefore fails with one clear message
+  instead of printing a question nobody can answer, and the prune plan is
+  printed whether or not the prompt is shown.
+- An unusable output target no longer wastes a whole transfer. `backup.py` now
+  creates the `OUT.partial.*` placeholder, and hence validates the destination,
+  *before* any ADB command: a target that already exists and is a directory, is
+  not a regular file (pipe/device), lies under a path component that is an
+  existing file, sits in an unwritable directory or (on Windows) is read-only
+  or held open by another program now fails immediately with a clear message.
+  An interactive terminal prints the reason and asks for a new `out` path
+  instead of losing the run; non-interactive runs (or `log_level` `quiet`/
+  `error`) fail as before.
+- If publishing fails after the archive has already been verified, the verified
+  archive is kept next to the target as `<name>.partial.*` and its path is
+  printed, so a completed transfer plus verification is never thrown away.
 
 - `--list-tree` and `adb_source.py` share one exec-out protocol: remote stderr
   is discarded on the device and a NUL status trailer is stripped on the host,
