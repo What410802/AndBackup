@@ -18,7 +18,9 @@ ADB 可以通过 USB 有线链路或 TCP 无线链路承载，两种模式遵循
 - `adb_source.py pack <Android目录>` 只负责以 `adb exec-out` 枚举/读取设备目录，并把
   条目交给 `paxck.py` 的通用 PAX writer。它的 stdout 是裸 tar，不负责压缩或最终落盘。
   这是 `host-adb` 模式的数据源（`pack` 是它的功能名：它是管道里的数据源阶段）。
-- `backup.py` 是 Android 组合入口：读取 `source_mode` 选择数据源，启动数据源与压缩器、
+- `backup.py` 是 Android 组合入口：读取 `source_mode` 选择数据源（`host-adb` 经
+  `adb_source.py pack` 读设备、`device-python` 在设备端打包、`host` 直接用
+  `paxck.py create` 读主机目录，完全不碰 ADB），启动数据源与压缩器、
   检查两个子进程的退出码，写入并校验 `OUT.partial.*` 后再原子替换最终输出。`.bat` 和
   `.sh` 仅转发到它。开工前它会用该占位文件预检输出目标（目标不可用、或已存在而未加
   `-f`/`--force` 且无法询问时立即失败，不浪费一次传输）。`source_mode: device-python` 时，
@@ -54,7 +56,7 @@ Python `tarfile`，可写入已有目录，不校验 PAX SHA-256，不保证原�
 | 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别压缩，校验普通文件的 PAX SHA-256。 |
 | 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | 默认已验证、暂存、原子发布；可加 `--direct-tarfile` 改为可信归档直接模式。 |
 | Android 数据源 | `adb_source.py pack [--adb ADB] DIRECTORY` | 设备目录写为 stdout 裸 PAX tar。 |
-| Android 主控 | `backup.py backup [--config PATH]`、`backup.py tree [--tree-out PATH] [--tree-mode …]`、`backup.py clean [目标]` | 读取 YAML/环境，完成 ADB 管道、校验和原子输出；`tree` 只输出源目录详细信息树（模式、属主/组、大小、时间、符号链接目标；默认设备端 Python 一次列举，未部署时用设备端一次性遍历）；`clean` 只删缓存。 |
+| Android 主控 | `backup.py backup [--config PATH]`、`backup.py tree [--tree-out PATH] [--tree-mode …]`、`backup.py verify [ARCHIVE]`、`backup.py clean [目标]` | 读取 YAML/环境，完成 ADB 管道、校验和原子输出；`tree` 只输出源目录详细信息树（模式、属主/组、大小、时间、符号链接目标；默认设备端 Python 一次列举，未部署时用设备端一次性遍历）；`verify` 只重新校验已有归档（纯本地，不接触设备）；`clean` 只删缓存。 |
 | 平台包装 | `backup-android.sh [ARGS...]` / `backup-android.bat [ARGS...]` | 将参数转发给同目录 `backup.py`。 |
 
 三个 Python 入口都支持 `--version`。`backup.py` 识别 YAML 键 `adb`、`host`、`serial`、

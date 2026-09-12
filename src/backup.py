@@ -43,6 +43,12 @@ DEFAULTS = {'ADB': 'adb', 'SOURCE_DIR': '/sdcard/DCIM',
             'PROGRESS_INTERVAL': '5', 'SHOW_RATE': '0', 'FORCE': '0',
             'TREE_MODE': 'auto'}
 
+# Where the bytes come from.  Every mode ends in the same pipeline (PAX tar ->
+# compressor -> verify -> atomic publish); they only differ in who reads the
+# source: the host through adb (`host-adb`), the device with an uploaded
+# interpreter (`device-python`), or the host from its own filesystem (`host`).
+SOURCE_MODES = ('host-adb', 'device-python', 'host')
+
 
 def _enabled(value):
     """Interpret a config/env boolean (`true`/`yes`/`on`/`1`)."""
@@ -173,6 +179,65 @@ def _stream_android_archive(source, adb, compress, output, env,
                    *(('--show-rate',) if show_rate else ()),
                    *(('--packed-manifest', manifest) if manifest else ()),
                    source]
+    _compose_archive(source_args, compress, output, env)
+
+
+def _stream_local_archive(source, compress, output, env, log_level='info',                          progress_interval='5', show_rate=False):
+    """Compose the local-directory source and the generic compressor.
+
+    The host writes the same PAX tar the Android source produces, so an
+    archive made from a local directory is indistinguishable from one made from
+    a device directory -- including its per-file SHA-256 records.
+    """
+    source_args = [sys.executable, os.path.join(_script_dir(), 'paxck.py'),
+                   'create', os.path.abspath(source)]
+    progress = device_python.DeviceProgress(
+        log_level, progress_interval, show_rate,
+        sent_key='backup.progress.local_written',
+        done_key='backup.progress.local_done')
+    stop = threading.Event()
+
+    def watch_output():
+        """Report the growing archive instead of relaying its bytes.
+
+        A local source needs no host-side pump -- the compressor reads it
+        through an OS pipe at full speed -- so progress is taken from the file
+        the compressor writes.  Same accounting, no extra copy.
+        """
+        size = 0
+        while not stop.wait(progress.interval):
+            try:
+                current = os.path.getsize(output.name)
+            except OSError:
+                continue
+            progress.on_bytes(max(0, current - size))
+            size = current
+
+    watcher = threading.Thread(target=watch_output, daemon=True)
+    watcher.start()
+    completed = False
+    try:
+        _compose_archive(source_args, compress, output, env,
+                         message_key='backup.err.transfer_failed_local')
+        completed = True
+    finally:
+        stop.set()
+        watcher.join(timeout=2.0)
+        # Report the final size from the file itself (the last poll may never
+        # have fired); a failed run only drops the live line, since claiming
+        # "finished" would be a lie.
+        if completed:
+            try:
+                progress.finish(os.path.getsize(output.name))
+            except OSError:
+                progress.finish()
+        else:
+            progress.clear()
+
+
+def _compose_archive(source_args, compress, output, env,
+                     message_key='backup.err.transfer_failed'):
+    """Run ``SOURCE | paxck.py compress KIND > output``, relaying diagnostics."""
     source_process = subprocess.Popen(
         source_args,
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -219,8 +284,7 @@ def _stream_android_archive(source, adb, compress, output, env,
             details.append(compressor_stderr.decode('utf-8', 'replace').strip())
         detail = '\n'.join(part for part in details if part)
         raise RuntimeError(i18n.t(
-            'backup.err.transfer_failed', source=source_rc,
-            compressor=compressor.returncode,
+            message_key, source=source_rc, compressor=compressor.returncode,
             detail=i18n.t('i18n.detail_sep', detail=detail) if detail else ''))
 
 
@@ -410,9 +474,18 @@ def run(settings, prune_source=False, prune_dry_run=False):
         raise RuntimeError(i18n.t('prune.err.dry_run_needs_source'))
     if not source:
         raise RuntimeError(i18n.t('backup.err.source_dir_empty'))
-    if source_mode not in ('host-adb', 'device-python'):
-        raise RuntimeError(
-            i18n.t('backup.err.unknown_source_mode', mode=source_mode))
+    if source_mode not in SOURCE_MODES:
+        raise RuntimeError(i18n.t(
+            'backup.err.unknown_source_mode', mode=source_mode,
+            modes=' / '.join(SOURCE_MODES)))
+    if source_mode == 'host':
+        # A local source needs no device at all, and the prune step deletes
+        # entries with device shell commands, so it stays device-only.
+        if prune_source:
+            raise RuntimeError(i18n.t('backup.err.prune_needs_device'))
+        if not os.path.isdir(source):
+            raise RuntimeError(i18n.t('backup.err.source_dir_missing',
+                                     path=source))
     if log_level not in ('quiet', 'error', 'warn', 'info', 'debug', 'trace'):
         raise RuntimeError(
             i18n.t('backup.err.invalid_loglevel', level=log_level))
@@ -458,26 +531,33 @@ def run(settings, prune_source=False, prune_dry_run=False):
     published = False
     manifest_path = None
     try:
-        device = adbdevice.resolve_device(adb, settings, log_level)
-        env['ANDROID_SERIAL'] = device
+        if source_mode != 'host':
+            device = adbdevice.resolve_device(adb, settings, log_level)
+            env['ANDROID_SERIAL'] = device
 
-        if prune_source:
-            fd, manifest_path = tempfile.mkstemp(prefix='andbackup-packed-')
-            os.close(fd)
+            if prune_source:
+                fd, manifest_path = tempfile.mkstemp(prefix='andbackup-packed-')
+                os.close(fd)
 
-        result = adbdevice.run_adb(adb, ('get-state',), env)
-        if result.returncode:
-            raise RuntimeError(adbdevice.display_error(
-                i18n.t('backup.err.adb_unavailable', serial=device), result))
-
+            result = adbdevice.run_adb(adb, ('get-state',), env)
+            if result.returncode:
+                raise RuntimeError(adbdevice.display_error(
+                    i18n.t('backup.err.adb_unavailable', serial=device), result))
         if log_level not in ('quiet', 'error'):
-            print('[1/3] ' + i18n.t('backup.step.check'))
-            print('[2/3] ' + i18n.t('backup.step.stream'))
+            print('[1/3] ' + i18n.t(
+                'backup.step.check' if source_mode != 'host'
+                else 'backup.step.check_local'))
+            print('[2/3] ' + i18n.t(
+                'backup.step.stream' if source_mode != 'host'
+                else 'backup.step.stream_local'))
         with open(partial, 'wb') as fh:
             if source_mode == 'host-adb':
                 _stream_android_archive(source, adb, compress, fh, env,
                                         log_level, progress_interval, show_rate,
                                         manifest_path)
+            elif source_mode == 'host':
+                _stream_local_archive(source, compress, fh, env, log_level,
+                                      progress_interval, show_rate)
             else:
                 device_env = device_python.provision_env(
                     adb, env, local_python, log_level)
@@ -538,7 +618,7 @@ def run(settings, prune_source=False, prune_dry_run=False):
                     pass
 
 
-FUNCTIONS = ('backup', 'tree', 'clean')
+FUNCTIONS = ('backup', 'tree', 'verify', 'clean')
 CLEAN_ENV = 'env'
 CLEAN_HOST_CACHE = 'host-cache'
 CLEAN_ALL = 'all'
@@ -618,6 +698,20 @@ def _build_parser():
                       help=i18n.t('backup.cli.tree_mode_help'))
     cleanup(tree)
 
+    verify = sub.add_parser('verify', parents=[common],
+                            help=i18n.t('backup.cli.verify_help'),
+                            description=i18n.t('backup.cli.verify_help'))
+    # No --config: verification is purely local and reads no settings.  The
+    # log level still matters, because it decides how much detail is printed.
+    verify.add_argument('--log-level',
+                        choices=('quiet', 'error', 'warn', 'info',
+                                 'debug', 'trace'),
+                        help=i18n.t('backup.cli.log_level_help'))
+    verify.add_argument('path', nargs='?',
+                        help=i18n.t('backup.cli.verify_path_help'))
+    verify.add_argument('-i', '--input', dest='infile', metavar='PATH',
+                        help=i18n.t('paxck.cli.input_help'))
+
     clean = sub.add_parser('clean', parents=[common],
                            help=i18n.t('backup.cli.clean_help'),
                            description=i18n.t('backup.cli.clean_help'))
@@ -675,6 +769,38 @@ def cmd_clean(settings, clean_device, clean_host):
     return 0
 
 
+def cmd_verify(settings, path):
+    """Verify a local archive: no device, no transfer, no mutation.
+
+    The check runs ``paxck.py verify`` in its own process -- the very command
+    the backup pipeline uses on the archive it just produced -- so a manual
+    re-check runs the same code and prints the same diagnostics.  Its exit code
+    is reported as-is (nonzero when any record fails), and the archive is
+    opened read-only.
+    """
+    log_level = str(settings.get('LOG_LEVEL', 'info')).lower()
+    quiet = log_level in ('quiet', 'error')
+    env = dict(os.environ)
+    i18n.export(env)
+    argv = [sys.executable, os.path.join(_script_dir(), 'paxck.py'), 'verify']
+    if quiet:
+        argv.append('--quiet')
+    if path:
+        argv.append(path)
+    result = subprocess.run(argv, env=env, check=False)
+    label = path or i18n.t('backup.label.stdin')
+    if result.returncode:
+        if not quiet:
+            print(i18n.tag('error') + ' '
+                  + i18n.t('backup.err.verify_failed_path', path=label),
+                  file=sys.stderr)
+        return 1
+    if not quiet:
+        print(i18n.tag('done') + ' '
+              + i18n.t('backup.done.verify', path=label))
+    return 0
+
+
 def main(argv=None):
     paxck.configure_stdio_utf8()
     raw = list(sys.argv[1:] if argv is None else argv)
@@ -686,7 +812,7 @@ def main(argv=None):
         except LegacyInvocation as e:
             print(i18n.tag('error') + ' ' + str(e), file=sys.stderr)
             return 2
-        settings, _config = _settings(args.config)
+        settings, _config = _settings(getattr(args, 'config', None))
         if args.log_level is not None:
             settings['LOG_LEVEL'] = args.log_level
         clean_env = bool(getattr(args, 'clean_env', False))
@@ -695,6 +821,8 @@ def main(argv=None):
             target = args.target or CLEAN_ALL
             return cmd_clean(settings, target in (CLEAN_ENV, CLEAN_ALL),
                              target in (CLEAN_HOST_CACHE, CLEAN_ALL))
+        if args.function == 'verify':
+            return cmd_verify(settings, args.infile or args.path)
         if args.function == 'tree':
             if args.tree_mode:
                 settings['TREE_MODE'] = args.tree_mode

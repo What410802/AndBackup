@@ -30,10 +30,10 @@
 | `adb` | `adb` | `adb` 可执行文件或绝对路径 |
 | `host` | 空 → 不走无线 | 无线端点：`IP` 或 `IP:端口`；非空即自动 `adb connect`（别名 `address`/`ip`） |
 | `serial` | 空 → 自动选择 | ADB 序列号（`adb devices` 第一列，等价 `adb -s SERIAL`），如 `AERF6R4517018096`、`adb-…._adb-tls-connect._tcp`；留空自动选（单设备直连；多设备交互选择，非交互报错）。`-t` 传输 ID 仅在序列号重复时才需要。旧名 `device_id`/`device`/`adb_serial` 兼容 |
-| `source_dir` | `/sdcard/DCIM` | 设备上要备份的绝对目录 |
+| `source_dir` | `/sdcard/DCIM` | 要备份的源目录：`host-adb`/`device-python` 时是设备上的绝对路径，`source_mode: host` 时是主机路径（相对路径按启动目录解析） |
 | `out` | 空 → 当前目录 `backup.tar.<后缀>` | 输出目标：目录（自动按 source_dir 尾部命名）或文件名，见下方“OUT 语义” |
 | `compress` | 空/缺省 → `none` | `xz`、`gzip`、`zstd` 或 `none`；为空/不存在时视为 `none`（不压缩） |
-| `source_mode` | `host-adb` | `host-adb`（主机逐条读）或 `device-python`（设备端打包） |
+| `source_mode` | `host-adb` | `host-adb`（主机逐条读设备）、`device-python`（设备端打包）或 `host`（备份主机本地目录，完全不碰 ADB） |
 | `device_python` | 未设置 | `device-python` 用：本机 Android ARM64 Python——单文件解释器，或含 `bin/`+`lib/` 的 prefix 目录 |
 | `download_device_python` | `device-python` 时 `true`（否则 `false`） | 无可用 `DEVICE_PYTHON` 时自动下载到主机缓存 |
 | `device_python_url` | 固定上游 `.tar.zst` | 覆盖下载地址；可为本地 `.tar.zst` 文件路径（离线复用） |
@@ -110,7 +110,7 @@ Windows 上的“系统区域设置”取的是**用户界面语言**（Win32 �
 文本管道）。三个 Python 入口都支持 `--version`。
 
 **语法：`可执行文件 功能 [选项…]`**——第一个非选项词选择**功能（子命令）**，其余参数只属于
-该功能，因此“这次是列举、备份，还是清理”在命令行里一目了然：
+该功能，因此“这次是列举、备份、校验，还是清理”在命令行里一目了然：
 
 | 入口 | 功能 | 用法 | 行为 |
 |---|---|---|---|
@@ -122,6 +122,7 @@ Windows 上的“系统区域设置”取的是**用户界面语言**（Win32 �
 | `backup.py` | 备份 | `backup.py backup [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [-f|--force] [--prune-source] [--prune-dry-run] [--clean-env] [--clean-host-cache]` | 读取配置、组合源与压缩器、校验 `.partial` 后原子替换；最后两个选项表示“本次成功结束后顺带清理缓存” |
 | `backup.py` | 列举 | `backup.py tree [--config PATH] [--log-level …] [--tree-out PATH] [--tree-mode {auto,device-python,oneshot,per-entry}] [--clean-env] [--clean-host-cache]` | 只列出源目录的详细信息树（模式、数字属主/组 UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out PATH` 写入文件。不写入归档；枚举方式与进度见下 |
 | `backup.py` | 清理 | `backup.py clean [{env,host-cache,all}] [--config PATH] [--log-level …]` | 只清理缓存后退出：`env`=设备端 Python 环境，`host-cache`=主机下载/解压缓存，`all`=两者（缺省） |
+| `backup.py` | 校验 | `backup.py verify [ARCHIVE]` 或 `-i ARCHIVE` | 重新校验已有归档，用的就是备份管道校验自己产物时的那条命令。纯本地：不接触设备、不需要 `--config`（没有可读的配置），不写不改任何文件；任何条目校验失败即以退出码 1 结束 |
 | 平台包装 | — | `backup-android.sh [功能 选项…]`；`backup-android.bat [功能 选项…]` | 把所有参数转发给同目录 `backup.py` |
 
 `backup.py` 不带功能时等同于 `backup`（双击包装脚本/无参数运行仍然直接备份）；`--help` 与
@@ -145,6 +146,37 @@ Windows 上的“系统区域设置”取的是**用户界面语言**（Win32 �
 
 `backup.py` 的其余选项（`--config`、`--log-level`、`--progress-interval`、`--show-rate`、
 `-f`/`--force`、`--prune-source`、`--prune-dry-run`）本来就是 `backup` 功能的选项，写法不变。
+
+### 主机目录备份（`source_mode: host`）
+
+`source_dir` 不一定是 Android 路径。把 `source_mode` 设为 `host` 即表示
+“源是主机上的一个目录”，整条链路一模一样：还是 `paxck.py create` 写带逐文件
+`PAXCK.checksum.sha256` 的 PAX tar，还是 `paxck.py compress`，还是
+“校验通过后原子发布”，因此主机备份与设备备份在格式上完全不可区分，
+`backup.py verify`、`paxck.py extract` 两种归档都能直接吃下。
+
+```yaml
+source_mode: host
+source_dir: D:/Photos/2026      # 主机路径；相对路径按启动目录解析
+out: E:/backup/                 # 目录：自动命名为 2026.tar.xz
+compress: xz
+```
+
+要点：
+
+- **完全不碰 ADB**：不解析 `serial`、不 `get-state`、不需要 `adb` 可执行文件
+  （`adb`/`host`/`serial`/`device_python`/`keep_android_env` 等键在 `host` 模式下无条件忽略）。
+- **`source_dir` 必须存在且是目录**（否则立即报错，不会产生任何输出文件），
+  相对路径按启动时的工作目录解析（与 `out`/`--config` 一致）。
+- **保留同一套安全网**：目标预检/占位文件、已存在目标默认不覆写（`-f`/`--force`
+  或交互确认）、失败不留残形（`.partial.*` 被清掉）、成功才原子替换、
+  完成后打印大小。
+- **`--prune-source` 不适用于 `host` 模式**：它是用设备端 shell 删除源条目的，
+  主机模式会直接报错退出（请自行删除已归档的主机文件）。
+- **进度**：`--progress-interval`/`--show-rate` 可用，数值是
+  **已写入归档的字节数**（即压缩后的量）。高压缩比的数据增长很慢并不代表卡住；
+  设备模式下的字节进度是另外的 `backup.progress.device_*` 计数。
+- `tree` 仍只面向设备（主机目录直接看文件系统即可），`verify` 则与模式无关。
 
 ### 目录树枚举方式与进度（`tree --tree-mode`）
 

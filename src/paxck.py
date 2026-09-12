@@ -681,6 +681,23 @@ def _drain_archive_stream(stream):
 
 # Extraction (cmd_extract / cmd_extract_direct and their helpers) moved to
 # paxextract.py; paxck.py imports it lazily in main().
+def _swallow_broken_pipe():
+    """Stop a second traceback when the next stage already closed our stdout.
+
+    A dying compressor (an unavailable `zstd`, a full disk) closes its stdin, so
+    the writer's final flush raises ``BrokenPipeError``.  The compressor's own
+    message is the useful one; pointing stdout at the null device keeps
+    CPython's exit-time flush from printing an "Exception ignored" traceback on
+    top of it.
+    """
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        os.close(devnull)
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
 def main(argv=None):
     configure_stdio_utf8()
     i18n.set_language(i18n.resolve(cli=i18n.prescan_lang(argv)))
@@ -724,7 +741,11 @@ def main(argv=None):
 
     args = ap.parse_args(argv)
     if args.cmd == 'create':
-        return cmd_create(args.directory, args.packed_manifest)
+        try:
+            return cmd_create(args.directory, args.packed_manifest)
+        except BrokenPipeError:
+            _swallow_broken_pipe()
+            return 1
     if args.cmd == 'compress':
         return cmd_compress(args.kind)
     # Verification and extraction live in their own modules so the writer (the

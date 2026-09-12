@@ -6,6 +6,27 @@ All notable changes to this project are recorded in this file.
 
 ### Added
 
+- `source_mode: host` (or `SOURCE_MODE=host`): back up a directory on the host
+  itself, with no ADB involved at all -- no `adb` binary, no `serial`
+  resolution, no `get-state` (those keys are simply ignored in this mode).
+  `source_dir` is then a host path (a relative one resolves against the launch
+  directory) and must be an existing directory, checked before anything is
+  created. The pipeline is otherwise the same one: `paxck.py create` writes the
+  PAX tar with per-file `PAXCK.checksum.sha256`, the compressor runs, the
+  archive is verified and published atomically, and the destination pre-flight
+  and overwrite guard (`-f`/`--force`) apply as usual -- so a host backup is
+  indistinguishable from a device backup and `backup.py verify` re-checks it
+  directly. `--prune-source` is refused (it deletes through the device shell),
+  and `--progress-interval`/`--show-rate` report the bytes written into the
+  archive (after compression) instead of transferred device payload.
+- `backup.py verify [ARCHIVE]` (or `-i ARCHIVE`): re-check an existing archive
+  with the same command the backup pipeline runs on the archive it just
+  produced, so a manual check and the pipeline's own post-transfer check are
+  literally the same code and print the same diagnostics. It is purely local
+  -- no device, no configuration (it does not even accept `--config`, because
+  there is nothing to read) -- it never writes or modifies anything, it
+  accepts stdin when no path is given, `--log-level quiet|error` keeps only the
+  fatal lines, and it exits `1` when any record fails to verify.
 - `backup.py tree --tree-mode device-python` (and, when the environment is
   already deployed, the default `auto`): the device lists its own tree with the
   uploaded `tree_device.py`, which walks it with `os.scandir` + `os.lstat`,

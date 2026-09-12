@@ -35,10 +35,10 @@ is a tiny top-level `key: value` subset (single/double-quoted strings,
 | `adb` | `adb` | ADB executable or absolute path |
 | `host` | empty → no wireless | wireless endpoint: `IP` or `IP:port`; non-empty runs `adb connect` automatically (aliases `address`/`ip`) |
 | `serial` | empty → auto | ADB serial (`adb devices` first column, equivalent to `adb -s SERIAL`; e.g. `AERF6R4517018096`, `adb-…._adb-tls-connect._tcp`); empty auto-selects (one device directly; multiple listed for an interactive choice, error when non-interactive). The `-t` transport id is only needed when serials repeat. Legacy `device_id`/`device`/`adb_serial` still map here. |
-| `source_dir` | `/sdcard/DCIM` | absolute device directory to back up |
+| `source_dir` | `/sdcard/DCIM` | directory to back up: a device path for `host-adb`/`device-python`, a host path for `source_mode: host` (a relative path resolves against the launch directory) |
 | `out` | empty → `backup.tar.<suffix>` in cwd | output target: a directory (auto-named from the source_dir tail) or a file; see “OUT semantics” |
 | `compress` | empty/absent → `none` | `xz`, `gzip`, `zstd`, or `none`; empty/absent means `none` (uncompressed) |
-| `source_mode` | `host-adb` | `host-adb` (host reads) or `device-python` (device packs) |
+| `source_mode` | `host-adb` | `host-adb` (the host reads the device), `device-python` (the device packs) or `host` (back up a directory on the host itself, with no ADB involved) |
 | `device_python` | unset | `device-python`: local Android ARM64 Python, a single file or a prefix dir (`bin/`+`lib/`) |
 | `download_device_python` | `true` for `device-python` (else `false`) | fetch the interpreter when no usable `device_python` exists |
 | `device_python_url` | pinned upstream `.tar.zst` | override the download URL; may be a local `.tar.zst` |
@@ -137,7 +137,7 @@ All three Python entry points support `--version`.
 
 **Grammar: `executable FUNCTION [options…]`** — the first non-option word picks
 the **function** (subcommand) and every later argument belongs to it, so the
-command line says whether this run lists, backs up or cleans:
+command line says whether this run lists, backs up, verifies or cleans:
 
 | Entry | Function | Usage | Contract |
 |---|---|---|---|
@@ -148,6 +148,7 @@ command line says whether this run lists, backs up or cleans:
 | `adb_source.py` | data source | `adb_source.py pack [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] [--show-rate] DIRECTORY` | `host-adb`: raw PAX tar to stdout (the pipeline stage) |
 | `backup.py` | backup | `backup.py backup [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [-f|--force] [--prune-source] [--prune-dry-run] [--clean-env] [--clean-host-cache]` | run + verify + atomic replace; the last two options mean "also clean these caches after a successful run" |
 | `backup.py` | tree | `backup.py tree [--config PATH] [--log-level …] [--tree-out PATH] [--tree-mode {auto,device-python,oneshot,per-entry}] [--clean-env] [--clean-host-cache]` | list only the detailed tree of the source directory (mode, numeric owner/group UID/GID, size, time, symlink targets) to stdout, or to `--tree-out PATH`. Writes no archive; enumeration modes and progress are described below |
+| `backup.py` | verify | `backup.py verify [ARCHIVE]` or `-i ARCHIVE` | re-verify an existing archive with the same code the backup pipeline uses on the archive it just produced. Purely local: no device, no `--config` (nothing to read), and nothing is written or changed; the exit code is 1 when any record fails |
 | `backup.py` | clean | `backup.py clean [{env,host-cache,all}] [--config PATH] [--log-level …]` | clean caches and exit: `env` = device Python environment, `host-cache` = host download/unpack cache, `all` = both (default) |
 | Wrappers | — | `backup-android.sh [FUNCTION options…]` / `backup-android.bat [FUNCTION options…]` | forward all args to `backup.py` |
 
@@ -155,6 +156,45 @@ Without a function, `backup.py` behaves like `backup` (so double-clicking a
 wrapper or running it bare still backs up); bare `--help`/`--version` show the
 **top-level** help (the function list), while `backup.py backup --help` shows the
 backup options. `--lang` is accepted before or after the function.
+
+### Backing up a host directory (`source_mode: host`)
+
+`source_dir` does not have to be an Android path. Setting `source_mode` to
+`host` means "the source is a directory on this machine", and the pipeline is
+identical: the same `paxck.py create` writes the PAX tar with a per-file
+`PAXCK.checksum.sha256`, the same `paxck.py compress` compresses it, and the
+same verified-and-atomic publish finishes it. A host backup is therefore
+indistinguishable from a device backup, and both `backup.py verify` and
+`paxck.py extract` accept either.
+
+```yaml
+source_mode: host
+source_dir: D:/Photos/2026      # a host path; a relative one uses the launch dir
+out: E:/backup/                 # a directory: named 2026.tar.xz automatically
+compress: xz
+```
+
+What matters:
+
+- **ADB is never touched**: no `serial` resolution, no `get-state`, and no `adb`
+  executable is needed (`adb`, `host`, `serial`, `device_python`,
+  `keep_android_env` and friends are simply ignored in this mode).
+- **`source_dir` must exist and be a directory** (otherwise the run fails
+  immediately and no output file is created); a relative path resolves against
+  the launch directory, like `out` and `--config`.
+- **The same safety net applies**: destination pre-flight and placeholder,
+  an existing target that is never replaced without `-f`/`--force` or an
+  interactive confirmation, no leftovers on failure (`.partial.*` is removed),
+  atomic replacement only on success, and the final size report.
+- **`--prune-source` does not apply**: it deletes source entries through the
+  device shell, so `host` mode refuses it outright (delete the archived host
+  files yourself).
+- **Progress**: `--progress-interval`/`--show-rate` still work, and the number
+  is the **bytes written to the archive** (i.e. after compression). Slow growth
+  on highly compressible data does not mean a stall; the device modes report
+  their own `backup.progress.device_*` counting instead.
+- `tree` still targets devices only (a host directory can be browsed directly),
+  while `verify` is mode-independent.
 
 ### Migrating from the old spelling
 

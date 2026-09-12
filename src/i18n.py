@@ -268,7 +268,13 @@ MESSAGES = {
         'backup.err.unknown_compressor':
             '未知压缩类型：{kind}（可选 xz / gzip / zstd / none）',
         'backup.err.unknown_source_mode':
-            '未知 SOURCE_MODE：{mode}（可选 host-adb / device-python）',
+            '未知 SOURCE_MODE：{mode}（可选 {modes}）',
+        'backup.err.source_dir_missing':
+            '主机源目录不存在或不是目录：{path}'
+            '（source_mode: host 时 source_dir 是主机路径）',
+        'backup.err.prune_needs_device':
+            '--prune-source 只在设备源下可用：删除动作是通过设备端 shell 执行的'
+            '（source_mode: host 请自行删除已归档的主机文件）',
         'backup.err.invalid_loglevel':
             '无效日志级别：{level}（可选 quiet/error/warn/info/debug/trace）',
         'backup.err.invalid_progress_interval':
@@ -277,6 +283,8 @@ MESSAGES = {
             '传输失败：Android 源退出码 {source}，压缩器退出码 {compressor}{detail}',
         'backup.err.transfer_failed_device':
             '传输失败：设备 Python 源退出码 {source}，压缩器退出码 {compressor}{detail}',
+        'backup.err.transfer_failed_local':
+            '传输失败：主机源退出码 {source}，压缩器退出码 {compressor}{detail}',
         'backup.err.verify_failed': '归档校验未通过：{detail}',
         'backup.err.no_entries': '未列出任何条目：{source}',
         'backup.err.fatal': '{err}',
@@ -313,8 +321,13 @@ MESSAGES = {
             '归档已校验通过，但无法写入目标 {path}：{err}。'
             '校验过的归档保留在 {partial}，可手动移动或改名后使用。',
         'backup.step.check': '检查 ADB 与源目录...',
+        'backup.step.check_local': '检查主机源目录...',
         'backup.step.stream': '通过 PAX tar 与压缩器流式传输 Android 源...',
+        'backup.step.stream_local':
+            '通过 PAX tar 与压缩器流式打包主机目录...',
         'backup.step.verify': '校验归档...',
+        'backup.progress.local_written': '主机目录打包中，已写出 {size}{rate}',
+        'backup.progress.local_done': '主机目录打包完成，共写出 {size}',
         'backup.done.archive': '{path}',
         'backup.info.size': '大小: {size} 字节',
         'backup.progress.device_sending': '设备端打包中，已接收 {size}{rate}',
@@ -375,8 +388,12 @@ MESSAGES = {
         'backup.tree.warn.mismatch':
             '设备端一次性枚举与目录枚举不一致（{count} != {expected}），已退回逐条 stat',
         'backup.done.tree': '已写出目录树：{path}（{count} 个条目）',
+        'backup.done.verify': '归档校验通过：{path}',
+        'backup.err.verify_failed_path': '归档校验未通过：{path}',
+        'backup.label.stdin': '标准输入',
         'backup.cli.description':
-            'AndBackup 主控：按功能执行流式归档与维护（backup / tree / clean）',
+            'AndBackup 主控：按功能执行流式归档、列举、校验与维护'
+            '（backup / tree / verify / clean）',
         'backup.cli.config_help':
             '配置文件路径（默认脚本目录中的 backup-android.yaml；'
             '覆盖 BACKUP_CONFIG_FILE）',
@@ -385,6 +402,9 @@ MESSAGES = {
             '未知的 tree 枚举方式：{mode}（可选 auto / oneshot / per-entry）',
         'backup.cli.backup_help': '备份设备目录到主机归档（默认功能）',
         'backup.cli.tree_help': '只列出源目录的详细信息树（不备份）',
+        'backup.cli.verify_help':
+            '校验已有归档（不接触设备，不改动任何文件）',
+        'backup.cli.verify_path_help': '归档路径；省略则从 stdin 读',
         'backup.cli.clean_help': '清理缓存：设备端 Python 环境或主机端下载缓存',
         'backup.cli.clean_target_help':
             '要清理的缓存：env=设备端 Python 环境，host-cache=主机端下载/解压'
@@ -705,7 +725,14 @@ MESSAGES = {
         'backup.err.unknown_compressor':
             'unknown compressor: {kind} (choose xz / gzip / zstd / none)',
         'backup.err.unknown_source_mode':
-            'unknown source_mode: {mode} (choose host-adb / device-python)',
+            'unknown source_mode: {mode} (choose {modes})',
+        'backup.err.source_dir_missing':
+            'the host source directory is missing or not a directory: {path} '
+            '(with source_mode: host, source_dir is a host path)',
+        'backup.err.prune_needs_device':
+            '--prune-source only works with a device source: it deletes through '
+            'the device shell (with source_mode: host, delete the archived host '
+            'files yourself)',
         'backup.err.invalid_loglevel':
             'invalid log level: {level} (choose quiet/error/warn/info/debug/trace)',
         'backup.err.invalid_progress_interval':
@@ -715,6 +742,9 @@ MESSAGES = {
             'exit code {compressor}{detail}',
         'backup.err.transfer_failed_device':
             'transfer failed: device Python source exit code {source}, compressor '
+            'exit code {compressor}{detail}',
+        'backup.err.transfer_failed_local':
+            'transfer failed: host source exit code {source}, compressor '
             'exit code {compressor}{detail}',
         'backup.err.verify_failed': 'archive verification failed: {detail}',
         'backup.err.no_entries': 'no entries were listed: {source}',
@@ -761,13 +791,20 @@ MESSAGES = {
             'the archive verified, but {path} could not be written: {err}. The '
             'verified archive was kept at {partial}; move or rename it manually.',
         'backup.step.check': 'checking ADB and the source directory...',
+        'backup.step.check_local': 'checking the host source directory...',
         'backup.step.stream':
             'streaming the Android source through PAX tar and the compressor...',
+        'backup.step.stream_local':
+            'packing the host directory through PAX tar and the compressor...',
         'backup.step.verify': 'verifying the archive...',
         'backup.done.archive': '{path}',
         'backup.info.size': 'size: {size} bytes',
         'backup.progress.device_sending': 'packing on the device, received {size}{rate}',
         'backup.progress.rate': ', rate {rate}/s',
+        'backup.progress.local_written':
+            'packing the host directory, wrote {size}{rate}',
+        'backup.progress.local_done':
+            'finished packing the host directory, wrote {size}',
         'backup.progress.device_start': 'the device Python is starting to pack...',
         'backup.progress.device_done': 'device packing finished, received {size}',
         'backup.warn.device_selfcheck':
@@ -838,9 +875,12 @@ MESSAGES = {
             'the one-shot device listing disagrees with the directory listing '
             '({count} != {expected}); falling back to one stat per entry',
         'backup.done.tree': 'wrote the directory tree to {path} ({count} entries)',
+        'backup.done.verify': 'archive verified: {path}',
+        'backup.err.verify_failed_path': 'archive verification failed: {path}',
+        'backup.label.stdin': 'standard input',
         'backup.cli.description':
             'AndBackup controller: streaming archives and maintenance, one '
-            'function at a time (backup / tree / clean)',
+            'function at a time (backup / tree / verify / clean)',
         'backup.cli.config_help':
             'config file path (defaults to backup-android.yaml next to the script; '
             'overrides BACKUP_CONFIG_FILE)',
@@ -851,6 +891,9 @@ MESSAGES = {
             'per-entry)',
         'backup.cli.backup_help': 'back up a device directory to a host archive (default)',
         'backup.cli.tree_help': 'list the detailed source tree only (no backup)',
+        'backup.cli.verify_help':
+            'verify an existing archive (no device, nothing is modified)',
+        'backup.cli.verify_path_help': 'archive path; without it, stdin is read',
         'backup.cli.clean_help':
             'clean caches: the device Python environment or the host download cache',
         'backup.cli.clean_target_help':

@@ -34,10 +34,10 @@ copy src\backup-android.example.yaml src\backup-android.yaml
 
 | 键 | 内置默认 | 模板 | 作用 |
 |---|---|---|---|
-| `source_dir` | `/sdcard/DCIM` | `/storage/emulated/0/DCIM` | 设备上要备份的绝对目录 |
+| `source_dir` | `/sdcard/DCIM` | `/storage/emulated/0/DCIM` | 要备份的目录：设备路径，或 `source_mode: host` 时的主机路径（相对路径按运行目录解析） |
 | `out` | 空 → 当前目录 `backup.tar.<后缀>` | `./backups/`（目录） | 输出目标，见下方 `out` 语义 |
 | `compress` | 空/缺省 → `none`（不压缩） | `xz` | `xz`/`gzip`/`zstd`/`none` |
-| `source_mode` | `host-adb` | `device-python` | 主机逐条读，或设备端打包（见上） |
+| `source_mode` | `host-adb` | `device-python` | `host`：主机逐条读设备 / 设备端打包 / **备份主机本地目录**（不碰 ADB，见上） |
 | `device_python` | 未设置 | 未设置 | `device-python` 用：本机 Android ARM64 Python（单文件或含 `bin/`+`lib/` 的 prefix 目录）；模板留空以便自动下载 |
 | `download_device_python` | `host-adb` 时 `false` | `device-python` 时默认 `true` | 无可用解释器时自动下载到主机缓存 |
 | `device_python_url` | 固定上游 | 同内置 | 覆盖下载地址；也可填本地 `.tar.zst` 离线复用 |
@@ -63,6 +63,12 @@ copy src\backup-android.example.yaml src\backup-android.yaml
 设备选择：`host` 管无线端点（`IP` 或 `IP:端口`，非空即自动 `adb connect`）；`serial` 是
 ADB 序列号（`adb devices` 第一列，等价 `adb -s SERIAL`；`-t` 传输 ID 仅在序列号重复时才需要）。
 两者留空则自动——单设备直接使用，多设备在交互终端列出选择（非交互报错）。
+
+主机目录备份：`source_mode: host` 时 `source_dir` 就是本机目录，全程不碰 ADB（无需 `adb`、
+`serial`、`host`）。归档格式与设备备份完全一致（逐文件 `PAXCK.checksum.sha256`、
+失败不留残形、校验后原子发布），`backup.py verify` 可直接重新校验；`--prune-source` 不适用。
+进度报告的字节数是“已写入归档”的量（即压缩后），详见
+[docs/configuration.md](docs/configuration.md#主机目录备份source_mode-host)。
 
 USB 有线 ADB（单设备时 `host`/`serial` 都可留空）：
 
@@ -133,7 +139,7 @@ src\backup-android.bat --config D:\backup-config\site-backup.yaml
 环境变量的场景。同名业务环境变量（如 `OUT`、`HOST`、`SERIAL`）始终优先于 YAML 内的值
 （旧名 `device_id`/`device`/`ADB_SERIAL` 仍兼容）。
 
-完整的 YAML 键、环境变量、命令行（`backup`/`tree`/`clean` 三个功能）、缓存与清理、
+完整的 YAML 键、环境变量、命令行（`backup`/`tree`/`verify`/`clean` 四个功能）、缓存与清理、
 压缩/zstd 说明见 **[docs/configuration.md](docs/configuration.md)**；数据流与元数据边界见
 [docs/flow.md](docs/flow.md)，测试说明见 [docs/testing.md](docs/testing.md)。
 
@@ -301,7 +307,7 @@ Python 3.14+ 用标准库 `compression.zstd`，否则用外部 `zstd`，否则�
 [docs/configuration.md](docs/configuration.md)；归档元信息字段、时间精度与 Android 权限边界、
 以及与“上传独立 tar 二进制到设备端”的差异对比见 [docs/flow.md](docs/flow.md)。三个入口都采用
 **`可执行文件 功能 [选项…]`** 语法：`paxck.py create|compress|verify|extract`、
-`adb_source.py pack`、`backup.py backup|tree|clean`，因此“这次是列举、备份还是清理”在命令行里
+`adb_source.py pack`、`backup.py backup|tree|verify|clean`，因此“这次是列举、备份、校验还是清理”在命令行里
 一目了然（旧写法 `--list-tree`/`--clean-*` 会报错并给出新写法）。此外
 `backup.py tree [--tree-out PATH] [--tree-mode {auto,device-python,oneshot,per-entry}]` 可只列出源目录的详细信息树（模式、数字属主/组
 UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out` 写入文件，不产生归档。速度上分三层：
@@ -340,7 +346,7 @@ src/
   device_python.py         device-python 子系统：设备端环境放置/校验/清理与远程打包
   sourcetree.py            tree 功能：源目录详细信息树（设备端 Python / 设备端一次性 / 逐条）
   tree_device.py           设备端 Python 列举脚本（上传到设备解释器环境里执行）
-  backup.py                跨平台 Android 主控（backup/tree/clean 三个功能，配置、host-adb 管道、原子输出与校验）
+  backup.py                跨平台 Android 主控（backup/tree/verify/clean 四个功能，配置、host-adb 管道、原子输出与校验）
   backup-android.sh        POSIX 启动包装（转发至 backup.py）
   backup-android.bat       Windows CMD 启动包装（转发至 backup.py）
   backup-android.example.yaml  无现场信息的配置模板

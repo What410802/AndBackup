@@ -44,13 +44,24 @@ def _format_size(value):
 
 
 class DeviceProgress:
-    """Host-side byte/rate progress for the device-python tar stream."""
+    """Host-side byte/rate progress for a tar stream.
 
-    def __init__(self, log_level='info', interval=5.0, show_rate=False):
+    Driven by ``on_bytes`` from whoever moves the bytes: the device-python
+    transfer counts what it receives, and ``source_mode: host`` feeds it the
+    growth of the archive being written (no relay needed there, so it polls the
+    file instead).  ``sent_key``/``done_key`` carry the wording, because the
+    same accounting describes a remote send or a local write.
+    """
+
+    def __init__(self, log_level='info', interval=5.0, show_rate=False,
+                 sent_key='backup.progress.device_sending',
+                 done_key='backup.progress.device_done'):
         name = str(log_level or 'info').lower()
         self.level = _DEVICE_LOG_LEVELS.get(name, _DEVICE_LOG_LEVELS['info'])
         self.interval = max(0.1, float(interval))
         self.show_rate = bool(show_rate)
+        self.sent_key = sent_key
+        self.done_key = done_key
         self.received = 0
         self._last = 0.0
         self._rate_at = time.monotonic()
@@ -77,19 +88,24 @@ class DeviceProgress:
                                 rate=_format_size(rate))
                          if self.show_rate else '')
             line = i18n.tag('progress') + ' ' + i18n.t(
-                'backup.progress.device_sending',
-                size=_format_size(self.received), rate=rate_text)
+                self.sent_key, size=_format_size(self.received), rate=rate_text)
             if self._live.live:
                 self._live.update(line)
             else:
                 self.emit('info', line)
 
-    def finish(self):
+    def clear(self):
+        """Drop the live line without claiming the work finished."""
+        self._live.clear()
+
+    def finish(self, size=None):
+        if size is not None:
+            self.received = size
         if self._live.live:
             self._live.clear()
             return
         self.emit('info', i18n.tag('progress') + ' ' + i18n.t(
-            'backup.progress.device_done', size=_format_size(self.received)))
+            self.done_key, size=_format_size(self.received)))
 
 
 def pump_source_to_compressor(source_stdout, compressor_stdin, progress):

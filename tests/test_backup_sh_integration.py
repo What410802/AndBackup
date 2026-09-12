@@ -187,9 +187,51 @@ class TestBackupScriptHappyPath(HarnessMixin, unittest.TestCase):
         self.assertNotIn('push ', log)
         self.assertNotIn('forward ', log)
 
+    def test_host_source_mode_archives_a_local_directory(self):
+        """source_mode: host 只读主机目录：整个流程不碰 adb。"""
+        host = os.path.join(self.case, 'host dir')
+        os.makedirs(os.path.join(host, 'inner'))
+        with open(os.path.join(host, 'host.txt'), 'wb') as fh:
+            fh.write(b'host bytes\n')
+        with open(os.path.join(host, 'inner', 'deep.txt'), 'wb') as fh:
+            fh.write(b'deep\n')
+        target = os.path.join(self.case, 'host.tar.xz')
+        r = self.run_script(SOURCE_MODE='host', SOURCE_DIR=host, OUT=target,
+                            ADB='this-adb-does-not-exist')
+        text = r.stdout.decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 0, text)
+        members = T.list_members(T.read_bytes(target))
+        self.assertEqual(members['host dir/host.txt'][2], b'host bytes\n')
+        self.assertEqual(members['host dir/inner/deep.txt'][2], b'deep\n')
+        self.assertFalse(os.path.exists(self.log), 'host mode 调用了 adb')
+
     def test_adb_exec_out_is_requested(self):
         self.assertEqual(self.run_script().returncode, 0)
         self.assertIn('exec-out sh -c find', self.adb_log_text())
+
+    def test_verify_rechecks_the_archive_without_any_adb_call(self):
+        """`verify` 是纯本地操作：不接触设备，也不改动归档。"""
+        self.assertEqual(self.run_script().returncode, 0)
+        before = T.read_bytes(self.out)
+        os.remove(self.log)
+        r = self.run_script(_args=('verify', self.out))
+        text = r.stdout.decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 0, text)
+        self.assertIn('归档校验通过：' + self.out, text)
+        self.assertNotIn('[FAIL]', text)
+        self.assertFalse(os.path.exists(self.log), 'verify 调用了 adb')
+        self.assertEqual(T.read_bytes(self.out), before)
+
+    def test_verify_fails_on_a_modified_archive(self):
+        plain = os.path.join(self.case, 'plain.tar')
+        self.assertEqual(self.run_script(COMPRESS='none', OUT=plain).returncode, 0)
+        blob = T.read_bytes(plain)
+        with open(plain, 'wb') as fh:
+            fh.write(blob.replace(b'hello\n', b'hellx\n', 1))
+        r = self.run_script(_args=('verify', plain))
+        text = r.stdout.decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 1, text)
+        self.assertIn('归档校验未通过：' + plain, text)
 
     def test_tree_reports_details_and_symlink_targets(self):
         """`tree` 只列目录树：模式、属主/组、大小、符号链接目标。"""

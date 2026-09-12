@@ -67,10 +67,10 @@ is `host-adb`, and `download_device_python` is `false` unless the mode is
 | `adb` | ADB executable, default `adb`. |
 | `host` | Wireless endpoint: `IP` or `IP:port`; non-empty runs `adb connect` automatically (aliases `address`/`ip`). |
 | `serial` | ADB serial as shown by `adb devices` (first column, equivalent to `adb -s SERIAL`; e.g. `AERF6R4517018096`, `adb-…._adb-tls-connect._tcp`); empty auto-selects (one device directly; multiple are listed for an interactive choice, error when non-interactive). The `-t` transport id is only needed when serials repeat. Legacy `device_id`/`device`/`adb_serial` still map here. |
-| `source_dir` | Android absolute directory to back up. |
+| `source_dir` | Directory to back up: an Android path, or a host path when `source_mode: host` (a relative one resolves against the launch directory). |
 | `out` | Host output archive path. |
 | `compress` | `xz`, `gzip`, `zstd`, or `none`; empty/absent means `none` (uncompressed). |
-| `source_mode` | `host-adb` (host reads entries) or `device-python` (device packs via an uploaded Python). The shipped template sets `device-python`. |
+| `source_mode` | `host-adb` (host reads entries), `device-python` (device packs via an uploaded Python) or `host` (back up a directory on this machine, with no ADB involved). The shipped template sets `device-python`. |
 | `device_python` | Used by `device-python`: a local path to an Android ARM64 Python — a standalone interpreter file or a python install prefix directory (`bin/` + `lib/`). |
 | `download_device_python` | Fetch the pinned upstream interpreter when `device_python` is empty. Defaults to `true` when `source_mode: device-python`, otherwise `false`. |
 | `device_python_url` | Overrides the pinned `device_python_url` download URL; may be a local `.tar.zst` path for offline reuse. |
@@ -81,6 +81,14 @@ connects automatically), and `serial` pins a specific adb device (USB serial or
 mDNS id; equivalent to `adb -s SERIAL`). With both empty, one online device is
 used directly and several are listed for an interactive choice (an error when
 non-interactive).
+
+Host directories: with `source_mode: host`, `source_dir` is a local directory and
+ADB is never involved (no `adb`, `serial` or `host` needed). The archive is
+identical in shape to a device backup (per-file `PAXCK.checksum.sha256`, no
+leftovers on failure, verified before the atomic publish), so `backup.py verify`
+re-checks it directly; `--prune-source` does not apply. The progress number is
+the bytes written into the archive (after compression) — see
+[docs/configuration.en.md](docs/configuration.en.md#backing-up-a-host-directory-source_mode-host).
 
 USB configuration normally leaves both `host` and `serial` empty for one
 connected device, or sets `serial` to the USB serial for a multi-device host:
@@ -283,8 +291,9 @@ comparison against uploading an independent tar binary to the device live in
 [docs/flow.en.md](docs/flow.en.md). Every entry point uses the
 **`executable FUNCTION [options…]`** grammar: `paxck.py
 create|compress|verify|extract`, `adb_source.py pack`, `backup.py
-backup|tree|clean`, so the command line says whether this run lists, backs up or
-cleans (the old `--list-tree`/`--clean-*` spellings fail with the new form).
+backup|tree|verify|clean`, so the command line says whether this run lists, backs
+up, verifies or cleans (the old `--list-tree`/`--clean-*` spellings fail with
+the new form).
 `backup.py tree [--tree-out PATH] [--tree-mode {auto,device-python,oneshot,per-entry}]`
 lists just the detailed tree of the source directory (mode, numeric owner/group
 UID:GID, size, time, symlink targets) to stdout or to a file, and writes no

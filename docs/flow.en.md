@@ -15,9 +15,12 @@ The project separates source acquisition from archive handling:
   paths, reads metadata, reads symlink targets, and streams regular-file bytes
   through `adb exec-out`. This is the `host-adb` data source, and `pack` is its
   function name (the data-source stage of a pipeline).
-- `backup.py` is the Android production controller. It merges configuration,
-  performs an optional TCP `adb connect`, selects the source mode, runs the
-  source and compressor, verifies a unique host-side partial archive, then
+- `backup.py` is the production controller. It merges configuration,
+  performs an optional TCP `adb connect`, selects the source mode (`host-adb`
+  reads the device through `adb_source.py pack`, `device-python` packs on the
+  device, and `host` feeds `paxck.py create` a local directory with no ADB
+  involved), runs the source and compressor, verifies a unique host-side
+  partial archive, then
   atomically replaces the requested output. That partial file doubles as a
   pre-flight check of the destination: a target that cannot be written, or that
   already exists and could not be confirmed (`-f`/`--force`, an interactive
@@ -27,7 +30,9 @@ The project separates source acquisition from archive handling:
   `paxck.py create` on the device. `backup.py tree [--tree-out PATH]`
   bypasses the pipeline and only prints the detailed source tree (mode,
   owner/group, size, time, symlink targets) for pre-backup permission checks,
-  and `backup.py clean [env|host-cache|all]` only removes the caches.
+  `backup.py verify [ARCHIVE]` re-runs the very check the pipeline makes on its
+  own output (local only: no device, nothing modified), and
+  `backup.py clean [env|host-cache|all]` only removes the caches.
 - `backup-android.sh` and `backup-android.bat` are deliberately thin POSIX and
   CMD forwarding wrappers.
 - Controller-side helpers (none of which `paxck.py` depends on):

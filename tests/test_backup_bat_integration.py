@@ -322,6 +322,50 @@ class TestBackupBatch(unittest.TestCase):
         result = self.run_script(_args=('tree', '--tree-mode', 'teleport'))
         self.assertEqual(result.returncode, 2)
 
+    def test_verify_rechecks_an_archive_without_touching_the_device(self):
+        self.assertEqual(self.run_script().returncode, 0)
+        if os.path.exists(self.log):
+            os.remove(self.log)
+        result = self.run_script(_args=('verify', self.out))
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 0, text)
+        self.assertIn('归档校验通过：' + self.out, text)
+        self.assertNotIn('[FAIL]', text)
+        # Verification is purely local: not one adb invocation may happen.
+        self.assertFalse(os.path.exists(self.log), 'verify used the device')
+
+    def test_verify_accepts_the_input_flag_and_a_quiet_log_level(self):
+        self.assertEqual(self.run_script().returncode, 0)
+        result = self.run_script(_args=('verify', '-i', self.out,
+                                        '--log-level', 'quiet'))
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 0, text)
+        self.assertNotIn('[DONE]', text)
+
+    def test_verify_detects_a_modified_archive(self):
+        """The PAX SHA-256 records must catch content that changed later."""
+        plain = os.path.join(self.case, 'plain.tar')
+        result = self.run_script(COMPRESS='none', OUT=plain)
+        self.assertEqual(result.returncode, 0,
+                         result.stdout.decode('utf-8', 'replace'))
+        blob = T.read_bytes(plain)
+        marker = b'hello\n'
+        self.assertIn(marker, blob)
+        with open(plain, 'wb') as fh:
+            fh.write(blob.replace(marker, b'hellx\n', 1))
+        result = self.run_script(_args=('verify', plain))
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 1, text)
+        self.assertIn('归档校验未通过：' + plain, text)
+        self.assertIn('[FAIL]', text)
+
+    def test_verify_reports_an_unreadable_archive(self):
+        missing = os.path.join(self.case, 'nope.tar.xz')
+        result = self.run_script(_args=('verify', missing))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('归档校验未通过：' + missing,
+                      result.stdout.decode('utf-8', 'replace'))
+
     def test_tree_can_write_to_a_named_file(self):
         target = os.path.join(self.case, 'tree.txt')
         result = self.run_script(_args=('tree', '--tree-out', target))
@@ -529,6 +573,54 @@ class TestBackupBatch(unittest.TestCase):
         result = self.run_script(SOURCE_MODE='bad-source-mode')
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(os.path.exists(self.out))
+
+    def test_host_source_mode_backs_up_a_local_directory(self):
+        """source_mode: host archives a host directory, with no device at all."""
+        host = os.path.join(self.case, 'host source')
+        os.makedirs(os.path.join(host, 'sub'))
+        with open(os.path.join(host, 'host.txt'), 'wb') as fh:
+            fh.write(b'from the host\n')
+        with open(os.path.join(host, 'sub', 'deep.bin'), 'wb') as fh:
+            fh.write(bytes(range(256)) * 4)
+        target = os.path.join(self.case, 'host.tar.xz')
+        result = self.run_script(SOURCE_MODE='host', SOURCE_DIR=host, OUT=target,
+                                 ADB='this-adb-does-not-exist')
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertEqual(result.returncode, 0, text)
+        # The archive goes through the same verify-and-publish path.
+        self.assertEqual(T.run_cli(['verify', target])[0], 0)
+        members = T.list_members(T.read_bytes(target))
+        self.assertEqual(members['host source/host.txt'][2], b'from the host\n')
+        self.assertEqual(members['host source/sub/deep.bin'][2],
+                         bytes(range(256)) * 4)
+        # Not one adb invocation: the fake adb would have written this log.
+        self.assertFalse(os.path.exists(self.log), 'host mode used adb')
+
+    def test_host_source_mode_rejects_a_missing_directory(self):
+        missing = os.path.join(self.case, 'no-such-dir')
+        result = self.run_script(SOURCE_MODE='host', SOURCE_DIR=missing,
+                                 OUT=os.path.join(self.case, 'x.tar.xz'))
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertNotEqual(result.returncode, 0, text)
+        self.assertIn('主机源目录不存在', text)
+        self.assertFalse(os.path.exists(os.path.join(self.case, 'x.tar.xz')))
+
+    def test_host_source_mode_refuses_prune_source(self):
+        host = os.path.join(self.case, 'host')
+        os.makedirs(host)
+        with open(os.path.join(host, 'keep.txt'), 'wb') as fh:
+            fh.write(b'keep me\n')
+        target = os.path.join(self.case, 'x.tar.xz')
+        result = self.run_script(_args=('backup', '--prune-source'),
+                                 SOURCE_MODE='host', SOURCE_DIR=host,
+                                 OUT=target)
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertNotEqual(result.returncode, 0, text)
+        self.assertIn('--prune-source', text)
+        # Refused before anything was created or deleted.
+        self.assertFalse(os.path.exists(target))
+        with open(os.path.join(host, 'keep.txt'), 'rb') as fh:
+            self.assertEqual(fh.read(), b'keep me\n')
 
     def test_device_python_without_interpreter_and_download_fails(self):
         result = self.run_script(SOURCE_MODE='device-python',

@@ -18,6 +18,15 @@
 # 明确报错，不会自动退回 host-adb。键值完整说明见 README.md 与 docs/configuration.md
 # （English: docs/configuration.en.md）。
 #
+# 也可以备份主机自己的目录（完全不碰 ADB）：source_mode: host，此时 source_dir 是
+# 主机路径（相对路径按运行目录解析，必须存在且是目录），serial/host/adb 等键一律忽略。
+# 归档格式、校验与原子发布流程与设备备份完全一致（backup.py verify 能直接校验）。
+# 该模式不支持 --prune-source（那是用设备端 shell 删除源条目的）。例如：
+#   source_mode: host
+#   source_dir: D:/Photos/2026
+#   out: E:/backup/
+#   compress: xz
+#
 # 刻意不提供的配置项：删除源条目只在命令行给出（backup.py backup --prune-source
 # [--prune-dry-run]），避免配置一次后每次备份都静默删除设备上的源文件。
 
