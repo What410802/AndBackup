@@ -25,7 +25,8 @@ ADB 可以通过 USB 有线链路或 TCP 无线链路承载，两种模式遵循
   它上传 `DEVICE_PYTHON` 二进制与 `paxck.py`/`i18n.py` 到设备并在设备端运行 `paxck.py create`。
 - 主控的辅助模块（都不被 `paxck.py` 依赖）：`adbdevice.py` 负责 ADB 调用、设备选择与
   exec-out 状态尾标协议；`device_python.py` 负责设备端 Python 环境与远程打包；
-  `sourcetree.py` 实现 `tree` 功能（设备端一次性 `find -exec stat` 遍历，失败回退逐条 stat）；`prune.py` 实现 `backup --prune-source` 的清单解析、
+  `sourcetree.py` 实现 `tree` 功能（设备端 Python 一次列举 / 设备端一次性 `find -exec stat` 遍历，
+  后者结构性失败才退回逐条 stat）；`prune.py` 实现 `backup --prune-source` 的清单解析、
   删除计划与执行。
 
 因此 `paxck.py` 可以完全脱离 Android 使用；Android 手动组合为
@@ -53,7 +54,7 @@ Python `tarfile`，可写入已有目录，不校验 PAX SHA-256，不保证原�
 | 校验 | `paxck.py verify [ARCHIVE]` 或 `-i ARCHIVE`，可加 `-q` | 自动识别压缩，校验普通文件的 PAX SHA-256。 |
 | 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | 默认已验证、暂存、原子发布；可加 `--direct-tarfile` 改为可信归档直接模式。 |
 | Android 数据源 | `adb_source.py pack [--adb ADB] DIRECTORY` | 设备目录写为 stdout 裸 PAX tar。 |
-| Android 主控 | `backup.py backup [--config PATH]`、`backup.py tree [--tree-out PATH] [--tree-mode …]`、`backup.py clean [目标]` | 读取 YAML/环境，完成 ADB 管道、校验和原子输出；`tree` 只输出源目录详细信息树（模式、属主/组、大小、时间、符号链接目标，默认设备端一次性遍历，失败回退逐条 stat）；`clean` 只删缓存。 |
+| Android 主控 | `backup.py backup [--config PATH]`、`backup.py tree [--tree-out PATH] [--tree-mode …]`、`backup.py clean [目标]` | 读取 YAML/环境，完成 ADB 管道、校验和原子输出；`tree` 只输出源目录详细信息树（模式、属主/组、大小、时间、符号链接目标；默认设备端 Python 一次列举，未部署时用设备端一次性遍历）；`clean` 只删缓存。 |
 | 平台包装 | `backup-android.sh [ARGS...]` / `backup-android.bat [ARGS...]` | 将参数转发给同目录 `backup.py`。 |
 
 三个 Python 入口都支持 `--version`。`backup.py` 识别 YAML 键 `adb`、`host`、`serial`、

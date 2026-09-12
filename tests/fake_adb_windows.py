@@ -129,6 +129,63 @@ def _stat(device_path, fmt):
     sys.stdout.buffer.write((_stat_text(device_path, fmt) + '\n').encode('ascii'))
 
 
+def _tree_device_python(command, wrapped):
+    """Emulate `TZ=.. INTERP tree_device.py ROOT 2>ERR` (device-python tree).
+
+    The uploaded lister is a plain script, so the host interpreter can run it
+    against the fake device tree; its records are then rewritten back to device
+    paths, exactly like the packing script.
+    """
+    tokens = shlex.split(command, posix=True)
+    index = next(i for i, token in enumerate(tokens)
+                 if token.endswith('/tree_device.py'))
+    source = tokens[index + 1]
+    local_source = _local_path(source)
+    timezone = 'UTC'
+    if tokens and tokens[0].startswith('TZ='):
+        timezone = tokens[0][3:]
+    error_match = re.search(r'2>(\S+)', command)
+    if os.environ.get('FAKE_ADB_TREE_DEVICE_PYTHON_FAIL'):
+        result = subprocess.CompletedProcess([], 3, b'')
+        stderr = b'fake: the device lister failed\n'
+    else:
+        env = dict(os.environ, TZ=timezone)
+        result = subprocess.run(
+            [sys.executable,
+             os.path.join(os.path.dirname(__file__), '..', 'src', 'tree_device.py'),
+             local_source], env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=False)
+        stderr = result.stderr
+    if error_match:
+        remote_error = error_match.group(1).strip("'\"")
+        os.makedirs(os.path.dirname(_remote_path(remote_error)), exist_ok=True)
+        with open(_remote_path(remote_error), 'wb') as fh:
+            fh.write(stderr)
+    prefix = local_source.encode('utf-8', 'surrogateescape')
+    out = b''
+    for record in result.stdout.split(b'\0'):
+        if not record:
+            continue
+        mark, payload = record[:1], record[1:]
+        if mark in (b'\x01', b'\x02', b'\x03'):
+            if mark == b'\x02' and payload.startswith(prefix):
+                payload = _device_path(
+                    source, local_source,
+                    payload.decode('utf-8', 'surrogateescape')).encode(
+                        'utf-8', 'surrogateescape')
+            out += mark + payload + b'\0'
+        elif record.startswith(prefix):
+            out += _device_path(source, local_source,
+                                record.decode('utf-8',
+                                              'surrogateescape')).encode(
+                'utf-8', 'surrogateescape') + b'\0'
+        else:
+            out += record + b'\0'
+    sys.stdout.buffer.write(out)
+    if wrapped:
+        _write_status(result.returncode)
+
+
 def _cat(device_path):
     limit = os.environ.get('FAKE_ADB_TRUNCATE')
     remaining = int(limit) if limit else None
@@ -299,6 +356,9 @@ def main(args):
                 fh.write(str(result.returncode))
             return result.returncode
         command, wrapped = _unwrap_protocol(raw_command)
+        if '/tree_device.py' in command:
+            _tree_device_python(command, wrapped)
+            return 0
         words = shlex.split(command, posix=True)
         if words[:1] == ['find'] and words[-1:] == ['-print0']:
             _find(words[1])
@@ -306,6 +366,10 @@ def main(args):
             _find_exec(words[1], words)
         elif words[:2] == ['stat', '-c'] and len(words) == 5 and words[3] == '--':
             _stat(words[4], words[2])
+        elif words == ['stat', '-c', '%y', '/']:
+            # The timezone probe `tree` makes before running the device lister:
+            # this fake device is UTC, exactly like _stat_text reports.
+            sys.stdout.write('1970-01-01 00:00:00.000000000 +0000\n')
         elif words[:2] == ['readlink', '-n'] and len(words) == 4 and words[2] == '--':
             sys.stdout.buffer.write(os.readlink(_local_path(words[3])).encode(
                 'utf-8', 'surrogateescape'))

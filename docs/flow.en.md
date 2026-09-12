@@ -32,9 +32,11 @@ The project separates source acquisition from archive handling:
   CMD forwarding wrappers.
 - Controller-side helpers (none of which `paxck.py` depends on):
   `adbdevice.py` (ADB invocation, device selection, the exec-out status-trailer
-  protocol), `device_python.py` (the device-side interpreter environment and
-  remote packing), `sourcetree.py` (the `tree` function), and `prune.py`
-  (manifest parsing, deletion planning and execution for `--prune-source`).
+  protocol), `device_python.py` (the device-side interpreter environment, its
+  uploaded payload and remote packing), `sourcetree.py` (the `tree` function:
+  the device-Python lister, the shell one-shot, and the per-entry fallback),
+  and `prune.py` (manifest parsing, deletion planning and execution for
+  `--prune-source`).
 
 ```text
 Android files -- adb exec-out --> adb_source.py pack -- raw PAX --> paxck.py compress

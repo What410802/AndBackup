@@ -85,6 +85,7 @@ class TestBackupBatch(unittest.TestCase):
         env.pop('FAKE_ADB_DEVICES', None)
         env.pop('FAKE_ADB_DEVICE_NOT_FOUND', None)
         env.pop('FAKE_ADB_NO_ONESHOT', None)
+        env.pop('FAKE_ADB_TREE_DEVICE_PYTHON_FAIL', None)
         # Operational keys a developer may have exported in their shell must not
         # leak into tests that do not set them explicitly (e.g. SOURCE_MODE).
         env.pop('SOURCE_MODE', None)
@@ -268,6 +269,54 @@ class TestBackupBatch(unittest.TestCase):
         self.assertEqual(result.returncode, 0, text)
         self.assertIn('# listing: per-entry', text)
         self.assertNotIn('[WARN]', text)
+
+    def test_tree_device_python_mode_matches_the_shell_one_shot(self):
+        """The device interpreter lists the same tree as the shell one-shot."""
+
+        def body(args, filename):
+            target = os.path.join(self.case, filename)
+            result = self.run_script(_args=('tree', '--tree-out', target, *args),
+                                     DEVICE_PYTHON=self.device_python,
+                                     KEEP_ANDROID_ENV='0')
+            text = result.stdout.decode('utf-8', 'replace')
+            self.assertEqual(result.returncode, 0, text)
+            with open(target, encoding='utf-8') as fh:
+                written = fh.read()
+            self.assertIn('readme.txt', written)
+            self.assertNotIn('[WARN]', text)
+            return sorted(line for line in written.splitlines()
+                          if not line.startswith('#')), written
+
+        device_body, device_text = body(('--tree-mode', 'device-python'),
+                                       'tree-device.txt')
+        self.assertIn('# listing: device-python', device_text)
+        shell_body, shell_text = body(('--tree-mode', 'oneshot'),
+                                      'tree-oneshot.txt')
+        self.assertIn('# listing: oneshot', shell_text)
+        self.assertEqual(device_body, shell_body)
+
+    def test_tree_auto_prefers_the_cached_device_interpreter(self):
+        """Once the environment is deployed, auto mode uses it -- no download."""
+        first = self.run_script(_args=('tree', '--tree-mode', 'device-python'),
+                                DEVICE_PYTHON=self.device_python,
+                                KEEP_ANDROID_ENV='1')
+        self.assertEqual(first.returncode, 0,
+                         first.stdout.decode('utf-8', 'replace'))
+        second = self.run_script(_args=('tree',), DEVICE_PYTHON=self.device_python)
+        text = second.stdout.decode('utf-8', 'replace')
+        self.assertEqual(second.returncode, 0, text)
+        self.assertIn('# listing: device-python', text)
+        self.assertIn('readme.txt', text)
+
+    def test_tree_device_python_failure_is_reported(self):
+        result = self.run_script(_args=('tree', '--tree-mode', 'device-python'),
+                                 DEVICE_PYTHON=self.device_python,
+                                 FAKE_ADB_TREE_DEVICE_PYTHON_FAIL='1',
+                                 KEEP_ANDROID_ENV='0')
+        text = result.stdout.decode('utf-8', 'replace')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('设备端 Python 列举失败', text)
+        self.assertIn('the device lister failed', text)
 
     def test_tree_rejects_an_unknown_mode(self):
         result = self.run_script(_args=('tree', '--tree-mode', 'teleport'))

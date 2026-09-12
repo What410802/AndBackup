@@ -285,15 +285,21 @@ comparison against uploading an independent tar binary to the device live in
 create|compress|verify|extract`, `adb_source.py pack`, `backup.py
 backup|tree|clean`, so the command line says whether this run lists, backs up or
 cleans (the old `--list-tree`/`--clean-*` spellings fail with the new form).
-`backup.py tree [--tree-out PATH] [--tree-mode {auto,oneshot,per-entry}]`
+`backup.py tree [--tree-out PATH] [--tree-mode {auto,device-python,oneshot,per-entry}]`
 lists just the detailed tree of the source directory (mode, numeric owner/group
-UID:GID, size, time, symlink targets) to stdout or to a file, writes no archive,
-and now enumerates **on the device in one pass** (the device batches `find
-exec stat`; the host only streams the records back): a 5093-entry directory
-lists in ~1.6 s instead of ~17 minutes. When the ROM refuses that or its output
-disagrees with the directory listing it falls back to one `stat` per entry with
-a `[WARN]`; force either strategy with `--tree-mode` (or the `tree_mode` YAML
-key). `[PROGRESS]` lines go to stderr at `progress_interval` while it runs.
+UID:GID, size, time, symlink targets) to stdout or to a file, and writes no
+archive. It has three speeds: **one device-side Python pass** (`auto` picks it
+whenever the device interpreter is already deployed -- the script walks on the
+device, reports its own progress, keeps the listing in memory and returns it in
+one write; a 70394-entry `com.tencent.mobileqq` directory lists in ~6 s), **one
+device-side shell pass** (the device batches `find -exec stat` and the host only
+streams the records back: a 5093-entry directory in ~1.6 s instead of ~17
+minutes), and **one `stat` per entry** as the fallback, which is taken with a
+`[WARN]` only when the device cannot do better. A non-zero `find` exit code --
+normal on Android, where unreadable subdirectories make toybox return 127 -- no
+longer triggers that fallback: partial results are always kept. Force a strategy
+with `--tree-mode` (or the `tree_mode` YAML key). `[PROGRESS]` lines go to stderr
+at `progress_interval` while it runs.
 
 `backup.py backup --prune-source [--prune-dry-run]` deletes the source entries that
 were really packed **after the archive was verified and published**, to free

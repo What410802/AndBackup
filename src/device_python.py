@@ -185,6 +185,13 @@ def _sha256_file(path):
 
 
 def local_payload():
+    """The files uploaded next to the device interpreter.
+
+    ``paxck.py`` is the packer, ``i18n.py`` its message catalog, and the
+    ``tree`` function additionally uses ``tree_device.py``: the same upload
+    serves both, and the cache stamp hashes every file listed here, so adding
+    one invalidates older device caches automatically.
+    """
     """Device-side Python files as ``(remote name, local path)`` pairs.
 
     ``device-python`` mode uploads ``paxck.py`` (the packer) plus ``i18n.py``
@@ -192,7 +199,8 @@ def local_payload():
     of them, so replacing either file invalidates an older cached environment.
     """
     return [('paxck.py', os.path.join(_script_dir(), 'paxck.py')),
-            ('i18n.py', os.path.join(_script_dir(), 'i18n.py'))]
+            ('i18n.py', os.path.join(_script_dir(), 'i18n.py')),
+            ('tree_device.py', os.path.join(_script_dir(), 'tree_device.py'))]
 
 
 def _device_python_plan(local_python):
@@ -267,6 +275,24 @@ def _place_device_env(adb, env, local_python, plan, env_dir):
     adbdevice.run_adb_checked(adb, ('shell', 'chmod', '700',
                                     env_dir + '/' + interp_rel), env,
                               i18n.t('backup.err.chmod_python'))
+
+
+def cached_env_state(adb, env, local_python):
+    """The deployed device env when it already matches, else ``None``.
+
+    ``tree`` uses this to prefer the device interpreter without ever paying for
+    a download: it only reports an environment that is already there and
+    valid.
+    """
+    local_python = os.path.abspath(os.path.expanduser(local_python))
+    if not os.path.exists(local_python):
+        return None
+    plan = _device_python_plan(local_python)
+    if not _device_env_valid(adb, env, ANDROID_ENV_DIR, plan['interp_rel'],
+                            _env_stamp_text(local_python, plan)):
+        return None
+    return {'env_dir': ANDROID_ENV_DIR, 'interp': plan['interp_rel'],
+            'uploaded': False}
 
 
 def _write_env_stamp(adb, env, env_dir, stamp):

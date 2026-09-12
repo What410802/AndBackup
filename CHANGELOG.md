@@ -6,20 +6,33 @@ All notable changes to this project are recorded in this file.
 
 ### Added
 
+- `backup.py tree --tree-mode device-python` (and, when the environment is
+  already deployed, the default `auto`): the device lists its own tree with the
+  uploaded `tree_device.py`, which walks it with `os.scandir` + `os.lstat`,
+  **keeps the whole listing in memory**, reports its own progress while walking
+  and hands everything over in **one write**. Measured on a real device: a
+  70394-entry `Android/data/com.tencent.mobileqq` directory lists in ~6 seconds,
+  where the per-entry fallback needs hours, and it gets metadata for all 70394
+  entries where the shell one-shot can only `stat` 6803 of them (scoped storage
+  denies the rest). Records are NUL-framed with the metadata and the path in two
+  separate records, so a newline, `|` or tab inside a name cannot confuse them.
+  `auto` uses the deployed environment when there is one (two cheap probes; it
+  never downloads an interpreter just to list) and otherwise the shell one-shot.
+  The device interpreter's timestamps are aligned with `stat` by probing the
+  device UTC offset once (`stat -c %y /`) and passing it as `TZ=UTC-8`, since
+  `adb shell` exports no `TZ` and Android has no `zoneinfo` for musl to read.
 - `backup.py tree` now enumerates the device directory in **one device-side
   pass** by default: the device runs `find ROOT -exec stat -c '…|%n' -- {} +`
   (plus one `find -type l -exec sh -c …` pass for symlink targets) and the host
   streams the records back, so a tree of N entries costs a handful of adb round
   trips instead of N. Measured on a real device: 5093 entries went from ~17
-  minutes to ~1.6 seconds. `--tree-mode {auto,oneshot,per-entry}` (or the
-  `tree_mode`/`TREE_MODE` setting) picks the strategy; `auto` falls back to the
-  old per-entry loop with a `[WARN]` when the ROM refuses the batched pass or
-  when its output disagrees with the directory listing (e.g. a path containing
-  a newline, which a line-based record cannot carry). The listing header now
-  records the strategy as `# listing: oneshot|per-entry`.
+  minutes to ~1.6 seconds. `--tree-mode {auto,device-python,oneshot,per-entry}`
+  (or the `tree_mode`/`TREE_MODE` setting) picks the strategy. The listing
+  header now records it as `# listing: device-python|oneshot|per-entry`.
 - `backup.py tree` reports progress on stderr at `progress_interval`: the
   enumeration phase shows the bytes and entries received, the one-shot phase
-  shows `received/total`, and the per-entry fallback shows `collected/total`.
+  shows `received/total`, the device-Python phase shows the entries the script
+  itself has done, and the per-entry fallback shows `collected/total`.
   The listing itself (stdout or `--tree-out`) stays free of progress text.
 - `backup.py backup --prune-source` (command-line only): after the archive has
   been verified and atomically published, delete the source entries that really
@@ -54,6 +67,15 @@ All notable changes to this project are recorded in this file.
 
 ### Fixed
 
+- `backup.py tree` no longer drops to the very slow per-entry fallback (one adb
+  round trip per entry) because of a **normal** non-zero device exit code: on
+  Android, `find` reports the failures of the batched `stat` calls, and toybox
+  returns 127 when a subdirectory is unreadable (routine under
+  `Android/data/*`), even though every readable entry was listed. A non-zero
+  exit now only matters when it produced no record at all; partial results are
+  kept, and the affected entries simply show as `[?]` (the header still reports
+  the exit code). Likewise, unparsable records are counted and warned about
+  instead of aborting the pass.
 - Messages no longer mix two languages. Two causes are gone: on Windows the
   automatic language now follows the **user interface language** instead of
   `locale.getlocale()`, which UTF-8 mode reports as English on a Chinese system

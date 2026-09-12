@@ -40,7 +40,7 @@
 | `keep_android_env` | 未设置 | `device-python` 保留设备端解释器缓存：`true`/`false`，未设置则交互询问、非交互删除 |
 | `log_level` | `info` | `quiet`、`error`、`warn`、`info`、`debug`、`trace` |
 | `force` | `false` | 目标文件已存在时直接覆写，不再询问（别名 `overwrite`；等同命令行 `-f`/`--force`） |
-| `tree_mode` | `auto` | `tree` 的枚举方式：`auto`（默认，优先设备端一次性）/ `oneshot` / `per-entry` |
+| `tree_mode` | `auto` | `tree` 的枚举方式：`auto`（默认：设备端 Python 环境已部署则用它，否则设备端一次性） / `device-python` / `oneshot` / `per-entry` |
 | `progress_interval` | `5` | 进度输出最小间隔（秒），最小 `0.1` |
 | `show_rate` | `false` | 在定期进度行显示有效载荷速率 |
 
@@ -120,7 +120,7 @@ Windows 上的“系统区域设置”取的是**用户界面语言**（Win32 �
 | `paxck.py` | 提取 | `paxck.py extract [ARCHIVE] -C DEST` 或 `-i ARCHIVE` | 默认：校验后暂存原子发布，`DEST` 须不存在；`--direct-tarfile` 为可信归档直接模式 |
 | `adb_source.py` | 数据源 | `adb_source.py pack [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] [--show-rate] DIRECTORY` | `host-adb`：经 `adb exec-out` 写裸 PAX tar 到 stdout（管道阶段） |
 | `backup.py` | 备份 | `backup.py backup [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [-f|--force] [--prune-source] [--prune-dry-run] [--clean-env] [--clean-host-cache]` | 读取配置、组合源与压缩器、校验 `.partial` 后原子替换；最后两个选项表示“本次成功结束后顺带清理缓存” |
-| `backup.py` | 列举 | `backup.py tree [--config PATH] [--log-level …] [--tree-out PATH] [--tree-mode {auto,oneshot,per-entry}] [--clean-env] [--clean-host-cache]` | 只列出源目录的详细信息树（模式、数字属主/组 UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out PATH` 写入文件。不写入归档；枚举方式与进度见下 |
+| `backup.py` | 列举 | `backup.py tree [--config PATH] [--log-level …] [--tree-out PATH] [--tree-mode {auto,device-python,oneshot,per-entry}] [--clean-env] [--clean-host-cache]` | 只列出源目录的详细信息树（模式、数字属主/组 UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out PATH` 写入文件。不写入归档；枚举方式与进度见下 |
 | `backup.py` | 清理 | `backup.py clean [{env,host-cache,all}] [--config PATH] [--log-level …]` | 只清理缓存后退出：`env`=设备端 Python 环境，`host-cache`=主机下载/解压缓存，`all`=两者（缺省） |
 | 平台包装 | — | `backup-android.sh [功能 选项…]`；`backup-android.bat [功能 选项…]` | 把所有参数转发给同目录 `backup.py` |
 
@@ -155,15 +155,31 @@ Windows 上的“系统区域设置”取的是**用户界面语言**（Win32 �
   `find ROOT -exec stat -c '…|%n' -- {} +` 把 `stat` 批量跑完，主机只把结果流式接回来；
   符号链接再用一次 `find -type l -exec sh -c …` 取目标。整棵树总共几次 adb 往返，
   实测同一个 5093 条目的目录约 1.6 秒（约 600×）。
+- **`device-python`**：在**设备端用 Python 一次列举**。把新增的 `tree_device.py`（与
+  `paxck.py`、`i18n.py` 同一次上传）交给设备端解释器，脚本自己 `os.scandir` +
+  `os.lstat` 走完整棵树，**把结果先存在内存里**，边走边报自身进度，最后**一次性写回**。
+  实测 70394 个条目的 `Android/data/com.tencent.mobileqq` 约 6 秒；同一目录下 shell
+  一次性枚举只能拿到 6803 条元数据（其余 `stat` 被 scoped storage 拒绝），而这个模式
+  70394 条全部有元数据。名字里的换行、`|`、制表符都不会混淆记录，因为记录是 NUL 分帧、
+  元数据与路径分成两条。
 - **`per-entry`**：原来的逐条模式（每条一次 adb 往返），兼容性最好，作为回退保留。
-- **`auto`（默认）**：先试 `oneshot`，若设备拒绝（例如 toybox/`find` 不支持 `-exec … +`）
-  或结果与目录枚举不一致（例如路径里含换行，行式记录装不下），就打印一条 `[WARN]` 并退回
-  `per-entry`。`--tree-mode oneshot` 则要求必须成功，失败即报错，便于脚本强制走快路径。
+- **`auto`（默认）**：设备端 Python 环境**已经部署过**时直接用它（只做两次廉价的 adb
+  探测，绝不为了列举去下载解释器）；否则退回 `oneshot`；`oneshot` 结构性失败时再退回
+  `per-entry`，并打印 `[WARN]`。
+
+**部分结果一定会保留**：Android 上 `find` 遇到不可读子目录时退出码非 0（toybox 甚至返回
+127），但已经列出的条目是有效的。只有“结构性失败”才会回退：状态帧丢失、或根本没有产出
+任何记录。逐条回退是最后的兜底，因为它的代价是每条一次 adb 往返（实测每条约 90～190 ms）。
 
 两种模式都会在 **stderr** 上按 `progress_interval` 打印 `[PROGRESS]`：
-枚举阶段显示“已接收 X，N 个条目”，一次性枚举阶段显示“已接收 N/总数”，逐条模式显示
+枚举阶段显示“已接收 X，N 个条目”，一次性枚举阶段显示“已接收 N/总数”，设备端 Python 显示
+“已完成 N 个条目”（脚本自报，因此计数在整个列举期间都是最新的），逐条模式显示
 “已统计 N/总数”。输出文本（或 `--tree-out` 文件）仍然只含目录树，便于管道使用；
-文件头多了一行 `# listing: oneshot|per-entry` 说明本次用的哪种方式。
+文件头多了一行 `# listing: device-python|oneshot|per-entry` 说明本次用的哪种方式。
+
+设备端 Python 的时间戳：`adb shell` 不导出 `TZ`，Android 也没有 musl 能读的 `zoneinfo`，
+所以主机会先用一次 `stat -c %y /` 探出设备时区，再以 `TZ=UTC-8` 的形式传给解释器，
+让它的 `%z` 与 `stat` 的输出一致（进程内缓存，只探一次）。
 
 可用 YAML 键 `tree_mode` 或环境变量 `TREE_MODE` 设置默认值。
 

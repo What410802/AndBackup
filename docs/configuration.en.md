@@ -47,7 +47,7 @@ is a tiny top-level `key: value` subset (single/double-quoted strings,
 | `progress_interval` | `5` | minimum progress interval in seconds |
 | `show_rate` | `false` | include payload rate in periodic progress |
 | `force` | `false` | overwrite an existing target without asking (alias `overwrite`; same as `-f`/`--force`) |
-| `tree_mode` | `auto` | how `tree` enumerates: `auto` (default: prefer the one-shot device pass) / `oneshot` / `per-entry` |
+| `tree_mode` | `auto` | how `tree` enumerates: `auto` (default: the device Python when it is already deployed, else the one-shot device pass) / `device-python` / `oneshot` / `per-entry` |
 
 **OUT semantics**: empty → `backup.tar.<suffix>` in the current directory
 (suffix `.tar.xz`/`.tar.gz`/`.tar.zst`/`.tar` per `compress`). Pointing `out` at
@@ -147,7 +147,7 @@ command line says whether this run lists, backs up or cleans:
 | `paxck.py` | extractor | `paxck.py extract [ARCHIVE] -C DEST` | default verified/staged/atomic; `--direct-tarfile` for trusted archives |
 | `adb_source.py` | data source | `adb_source.py pack [--adb ADB] [--log-level LEVEL] [--progress-interval SECONDS] [--show-rate] DIRECTORY` | `host-adb`: raw PAX tar to stdout (the pipeline stage) |
 | `backup.py` | backup | `backup.py backup [--config PATH] [--log-level …] [--progress-interval …] [--show-rate] [-f|--force] [--prune-source] [--prune-dry-run] [--clean-env] [--clean-host-cache]` | run + verify + atomic replace; the last two options mean "also clean these caches after a successful run" |
-| `backup.py` | tree | `backup.py tree [--config PATH] [--log-level …] [--tree-out PATH] [--tree-mode {auto,oneshot,per-entry}] [--clean-env] [--clean-host-cache]` | list only the detailed tree of the source directory (mode, numeric owner/group UID/GID, size, time, symlink targets) to stdout, or to `--tree-out PATH`. Writes no archive; enumeration modes and progress are described below |
+| `backup.py` | tree | `backup.py tree [--config PATH] [--log-level …] [--tree-out PATH] [--tree-mode {auto,device-python,oneshot,per-entry}] [--clean-env] [--clean-host-cache]` | list only the detailed tree of the source directory (mode, numeric owner/group UID/GID, size, time, symlink targets) to stdout, or to `--tree-out PATH`. Writes no archive; enumeration modes and progress are described below |
 | `backup.py` | clean | `backup.py clean [{env,host-cache,all}] [--config PATH] [--log-level …]` | clean caches and exit: `env` = device Python environment, `host-cache` = host download/unpack cache, `all` = both (default) |
 | Wrappers | — | `backup-android.sh [FUNCTION options…]` / `backup-android.bat [FUNCTION options…]` | forward all args to `backup.py` |
 
@@ -189,21 +189,40 @@ about 17 minutes. The default is now:
   host only streams the records back; a second `find -type l -exec sh -c …`
   pass collects symlink targets. A whole tree costs a handful of adb round
   trips: the same 5093-entry directory now lists in ~1.6 s (~600x faster).
+- **`device-python`**: one **device-side Python pass**. The new `tree_device.py`
+  (uploaded together with `paxck.py`/`i18n.py`) walks the whole tree with
+  `os.scandir` + `os.lstat`, **keeps the listing in memory**, reports its own
+  progress while walking, and hands everything over in **one single write**.
+  A 70394-entry directory (`Android/data/com.tencent.mobileqq`) now lists in
+  about 6 s, where the shell one-shot could only stat 6803 of those entries
+  (scoped storage denies the rest) and this pass gets metadata for all 70394.
+  A newline, a `|` or a tab inside a name cannot confuse it, because records
+  are NUL-framed and the metadata and the path travel as two records.
 - **`per-entry`**: the original host-driven loop (one adb round trip per
-  entry). Kept as the fallback because it works on every ROM.
-- **`auto`** (the default): try `oneshot` first, and fall back to `per-entry`
-  with a `[WARN]` when the device refuses it (e.g. a `find` without
-  `-exec … +`) or when its output disagrees with the directory listing (a path
-  containing a newline cannot ride in a line-based record).
-  `--tree-mode oneshot` instead fails hard, so a script can insist on the fast
-  path.
+  entry). Kept as the last-resort fallback because it works on every ROM.
+- **`auto`** (the default): use the device interpreter when its environment is
+  **already deployed** (two cheap probes; it never downloads an interpreter
+  just to list), otherwise the shell `oneshot`, and fall back to `per-entry`
+  with a `[WARN]` only when `oneshot` fails structurally.
 
-Both strategies print `[PROGRESS]` lines on **stderr** at `progress_interval`:
-the enumeration phase shows "X received, N entries", the one-shot phase shows
-"N/total entries received", and the per-entry mode shows "N/total entries
-collected". The listing itself (stdout or `--tree-out`) stays pure, so it can
-still be piped; its header gained one line, `# listing: oneshot|per-entry`,
-recording which strategy ran.
+**Partial results are always kept**: on Android `find` exits non-zero (toybox
+returns 127) when some subdirectory is unreadable, yet every entry it did list
+is valid. Only a structural failure -- a lost status trailer, or not a single
+record -- falls back, because the per-entry fallback costs one adb round trip
+per entry (measured: 90-190 ms each).
+
+All strategies print `[PROGRESS]` lines on **stderr** at `progress_interval`:
+"X received, N entries" while enumerating, "N/total entries received" for the
+one-shot pass, "N entries done" for the device Python (reported by the script
+itself, so the count is live during the whole walk), and "N/total entries
+collected" per entry. The listing itself (stdout or `--tree-out`) stays pure,
+so it can still be piped; its header gained one line,
+`# listing: device-python|oneshot|per-entry`, recording which strategy ran.
+
+Timestamps on the device side: `adb shell` does not export `TZ` and Android has
+no `zoneinfo` tree for musl to read, so the host probes the device offset once
+with `stat -c %y /` and passes it as `TZ=UTC-8`, which makes the interpreter's
+`%z` agree with `stat` (cached for the life of the process).
 
 Set the default with the YAML key `tree_mode` or the environment variable
 `TREE_MODE`.

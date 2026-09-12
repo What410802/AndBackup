@@ -361,6 +361,15 @@ MESSAGES = {
             '已统计 {done}/{total} 个条目（每条一次 ADB 往返，大目录较慢）',
         'backup.tree.progress.links':
             '已读取 {done}/{total} 个符号链接',
+        'backup.tree.progress.device':
+            '设备端 Python 正在列举：已完成 {done} 个条目',
+        'backup.tree.err.device_python':
+            '设备端 Python 列举失败：{detail}',
+        'backup.tree.err.oneshot_unusable':
+            '设备端一次性枚举不可用（--tree-mode oneshot），未回退；'
+            '请去掉该选项以允许回退',
+        'backup.tree.warn.dropped':
+            '{count} 行枚举结果无法解析（例如路径含换行），对应条目显示为 [?]',
         'backup.tree.warn.fallback':
             '设备端一次性枚举不可用（{err}），已退回逐条 stat',
         'backup.tree.warn.mismatch':
@@ -389,8 +398,10 @@ MESSAGES = {
             '本次运行成功后，顺带删除主机端下载/解压缓存',
         'backup.cli.tree_out_help': '把目录树写入文件（默认写 stdout）',
         'backup.cli.tree_mode_help':
-            'tree 的枚举方式：auto（默认，设备端一次性，失败退回逐条）/ '
-            'oneshot（设备端一次性）/ per-entry（逐条 stat，最慢但最兼容）',
+            'tree 的枚举方式：auto（默认，设备端 Python 已部署时优先用它，'
+            '否则设备端一次性 find）/ device-python（用设备端 Python 一次性'
+            '自汇总，必要时上传解释器）/ oneshot（设备端一次性 find）/ '
+            'per-entry（逐条 stat，最慢但最兼容）',
         'backup.cli.force_help':
             '目标文件已存在时直接覆写，不再询问（非交互环境本来就会报错退出）',
         'backup.cli.legacy_flag':
@@ -810,6 +821,16 @@ MESSAGES = {
             'directories are slow)',
         'backup.tree.progress.links':
             'read {done}/{total} symlink targets',
+        'backup.tree.progress.device':
+            'the device Python is listing: {done} entries done',
+        'backup.tree.err.device_python':
+            'the device-side Python listing failed: {detail}',
+        'backup.tree.err.oneshot_unusable':
+            'the one-shot device listing is unavailable (--tree-mode oneshot) '
+            'and no fallback was allowed; drop the option to allow one',
+        'backup.tree.warn.dropped':
+            '{count} listing records could not be parsed (a newline in a path, '
+            'for instance); those entries show as [?]',
         'backup.tree.warn.fallback':
             'the one-shot device listing is unavailable ({err}); falling back to '
             'one stat per entry',
@@ -845,8 +866,11 @@ MESSAGES = {
             'after this run succeeds, also delete the host download/unpack cache',
         'backup.cli.tree_out_help': 'write the tree to a file (default: stdout)',
         'backup.cli.tree_mode_help':
-            'how tree enumerates: auto (default: one device-side pass, falling '
-            'back to per-entry) / oneshot / per-entry (slowest, most compatible)',
+            'how tree enumerates: auto (default: prefer the device Python when '
+            'it is already deployed, else the one-shot device find) / '
+            'device-python (one self-summarised pass on the device, uploading '
+            'an interpreter if needed) / oneshot (device-side find) / '
+            'per-entry (slowest, most compatible)',
         'backup.cli.force_help':
             'overwrite an existing target without asking (non-interactive runs '
             'fail instead)',

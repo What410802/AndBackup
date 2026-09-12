@@ -140,5 +140,91 @@ class TestProgress(unittest.TestCase):
         self.assertTrue(live.clear.called)
 
 
+class _Recorder:
+    """Progress stand-in that only records what it was told."""
+
+    def __init__(self):
+        self.notes = []
+
+    def note(self, message_key, **kwargs):
+        self.notes.append((message_key, kwargs))
+
+
+class TestDeviceListing(unittest.TestCase):
+    """The NUL-framed records `tree_device.py` sends back in one write."""
+
+    def setUp(self):
+        self.progress = _Recorder()
+        self.listing = tree.DeviceListing(self.progress)
+
+    def feed(self, *records):
+        for record in records:
+            self.listing.record(record)
+
+    def test_fields_then_path_build_one_entry(self):
+        self.feed('41ed|3452|1788797977|2026-09-08 00:19:37.011092854 +0800'
+                  '|2770|10142|1023', '/storage/emulated/0/Documents')
+        entry = self.listing.entries['/storage/emulated/0/Documents']
+        self.assertEqual(entry['size'], 3452)
+        self.assertEqual(entry['perm'], 0o2770)
+        self.assertEqual((entry['uid'], entry['gid']), ('10142', '1023'))
+        self.assertEqual(tree._tree_type_char(entry['mode']), 'd')
+        self.assertEqual(self.listing.count, 1)
+
+    def test_records_may_arrive_as_bytes(self):
+        self.feed(b'81a4|1|1788797977|2026-09-08 00:19:37.011092854 +0800'
+                  b'|644|0|0', b'/tmp/a')
+        self.assertEqual(self.listing.entries['/tmp/a']['size'], 1)
+
+    def test_a_newline_and_a_pipe_in_a_name_survive(self):
+        # The reason this strategy exists: NUL framing cannot be fooled by a
+        # name that would split the newline-framed shell one-shot.
+        names = ['/tmp/new\nline', '/tmp/pi|pe', '/tmp/ta\tb']
+        for name in names:
+            self.feed('81a4|3|1788797977|2026-09-08 00:19:37.011092854 '
+                      '+0800|600|0|0', name)
+        self.assertEqual(sorted(self.listing.entries), sorted(names))
+
+    def test_progress_records_only_report(self):
+        self.feed('\x01P200')
+        self.assertEqual(self.progress.notes,
+                         [('backup.tree.progress.device', {'done': '200'})])
+        self.assertEqual(self.listing.entries, {})
+
+    def test_an_unreadable_entry_keeps_its_place(self):
+        self.feed('\x02U/storage/emulated/0/Android/data/app/private')
+        self.assertEqual(self.listing.unreadable,
+                         ['/storage/emulated/0/Android/data/app/private'])
+        entry = self.listing.entries[
+            '/storage/emulated/0/Android/data/app/private']
+        self.assertIsNone(entry['mode'])
+
+    def test_a_link_record_attaches_to_the_entry_before_it(self):
+        self.feed('a1ff|4|1788797977|2026-09-08 00:19:37.011092854 +0800'
+                  '|777|0|0', '/tmp/link', '\x03L/tmp/target')
+        self.assertEqual(self.listing.links, {'/tmp/link': '/tmp/target'})
+
+    def test_a_garbage_fields_record_is_dropped_not_fatal(self):
+        self.feed('not a record', '/tmp/a')
+        self.feed('81a4|1|1788797977|2026-09-08 00:19:37.011092854 +0800'
+                  '|644|0|0', '/tmp/b')
+        self.assertEqual(list(self.listing.entries), ['/tmp/b'])
+        self.assertEqual(self.listing.count, 1)
+
+
+class TestDeviceTimezone(unittest.TestCase):
+    def test_the_offset_is_flipped_for_posix_tz(self):
+        self.assertEqual(tree._posix_timezone('2026-09-08 00:19:37 +0800'),
+                         'UTC-8')
+        self.assertEqual(tree._posix_timezone('2026-09-08 00:19:37 -0430'),
+                         'UTC+4:30')
+        self.assertEqual(tree._posix_timezone('2026-09-08 00:19:37 +0000'),
+                         'UTC-0')
+
+    def test_an_unusable_probe_answer_is_none(self):
+        for text in ('', '   ', 'Permission denied', 'stat: not found'):
+            self.assertIsNone(tree._posix_timezone(text), text)
+
+
 if __name__ == '__main__':
     unittest.main()

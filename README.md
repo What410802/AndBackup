@@ -303,11 +303,15 @@ Python 3.14+ 用标准库 `compression.zstd`，否则用外部 `zstd`，否则�
 **`可执行文件 功能 [选项…]`** 语法：`paxck.py create|compress|verify|extract`、
 `adb_source.py pack`、`backup.py backup|tree|clean`，因此“这次是列举、备份还是清理”在命令行里
 一目了然（旧写法 `--list-tree`/`--clean-*` 会报错并给出新写法）。此外
-`backup.py tree [--tree-out PATH] [--tree-mode {auto,oneshot,per-entry}]` 可只列出源目录的详细信息树（模式、数字属主/组
-UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out` 写入文件，不产生归档。默认在**设备端一次性遍历**（设备端 `find -exec stat` 批量取元数据，主机只把结果流式接回），
-实测 5093 个条目的目录约 1.6 秒（原逐条模式约 17 分钟）；设备不支持或结果与目录枚举不一致时
-自动退回逐条 stat 并打一条 `[WARN]`，也可用 `--tree-mode per-entry`（或 YAML `tree_mode`）强制。
-枚举过程中按 `progress_interval` 在 stderr 输出 `[PROGRESS]`（枚举/接收/统计三个阶段）。
+`backup.py tree [--tree-out PATH] [--tree-mode {auto,device-python,oneshot,per-entry}]` 可只列出源目录的详细信息树（模式、数字属主/组
+UID:GID、大小、时间、符号链接目标），默认写 stdout，`--tree-out` 写入文件，不产生归档。速度上分三层：
+**设备端 Python 一次列举**（已部署设备端解释器时 `auto` 自动选它：脚本在设备上边走边报进度、
+结果全部留在内存里，最后一次性回传，实测 70394 个条目的 `com.tencent.mobileqq` 约 6 秒）；
+**设备端一次性遍历**（设备端 `find -exec stat` 批量取元数据，主机只把结果流式接回，
+实测 5093 个条目的目录约 1.6 秒，而原逐条模式约 17 分钟）；设备端能力不足时自动退回
+**逐条 stat** 并打一条 `[WARN]`，也可用 `--tree-mode …`（或 YAML `tree_mode`）强制。
+取消目录不可读时 `find` 的非 0 退出码不再触发回退：已列出的部分成果一律保留。
+枚举过程中按 `progress_interval` 在 stderr 输出 `[PROGRESS]`（枚举/接收/设备端 Python/统计四个阶段）。
 
 `backup.py backup --prune-source [--prune-dry-run]` 在**归档通过校验并发布之后**删除设备上已成功
 打包的源条目以释放空间。这是**仅命令行**的选项（故意不提供 YAML 键，避免配置一次后每次
@@ -334,7 +338,8 @@ src/
   adbdevice.py             ADB 调用、设备选择与 exec-out 协议原语
   android_python.py        device-python 解释器引导：按需从 python-build-standalone 下载/解压
   device_python.py         device-python 子系统：设备端环境放置/校验/清理与远程打包
-  sourcetree.py            tree 功能：源目录详细信息树
+  sourcetree.py            tree 功能：源目录详细信息树（设备端 Python / 设备端一次性 / 逐条）
+  tree_device.py           设备端 Python 列举脚本（上传到设备解释器环境里执行）
   backup.py                跨平台 Android 主控（backup/tree/clean 三个功能，配置、host-adb 管道、原子输出与校验）
   backup-android.sh        POSIX 启动包装（转发至 backup.py）
   backup-android.bat       Windows CMD 启动包装（转发至 backup.py）
