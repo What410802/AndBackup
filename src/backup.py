@@ -87,7 +87,7 @@ def read_config(path):
             lines = list(fh)
     except OSError as e:
         raise OSError(i18n.t('backup.err.config_read', path=repr(path),
-                             err=e.strerror or e)) from e
+                             err=i18n.os_error(e))) from e
     for number, line in enumerate(lines, 1):
         text = line.strip()
         if not text or text.startswith('#'):
@@ -270,7 +270,7 @@ def output_problem(output_path):
                     pass
             except OSError as e:
                 return i18n.t('backup.err.out_locked', path=output_path,
-                              err=e.strerror or e)
+                              err=i18n.os_error(e))
     return None
 
 
@@ -299,7 +299,7 @@ def publish_archive(partial, output_path):
         os.replace(partial, output_path)
     except OSError as e:
         return i18n.t('backup.err.publish_failed', path=output_path,
-                      partial=partial, err=e.strerror or e)
+                      partial=partial, err=i18n.os_error(e))
     return None
 
 
@@ -337,7 +337,7 @@ def _choose_output_path(output_path, source, compress, log_level, force=False):
     reason and asks for another path (with permission to retry after an
     existing file was kept); anything else raises ``RuntimeError``.
     """
-    interactive = sys.stdin.isatty() and log_level not in ('quiet', 'error')
+    interactive = i18n.can_prompt(log_level)
     while True:
         try:
             partial = _open_placeholder(output_path)
@@ -346,7 +346,7 @@ def _choose_output_path(output_path, source, compress, log_level, force=False):
             # unusable; an interactive run may still pick a better path.
             parent = os.path.dirname(output_path) or os.curdir
             problem = i18n.t('backup.err.out_parent', path=parent,
-                             err=e.strerror or e)
+                             err=i18n.os_error(e))
         else:
             problem = output_problem(output_path)
             if problem is None and not force and os.path.lexists(output_path):
@@ -431,7 +431,7 @@ def run(settings, prune_source=False, prune_dry_run=False):
         # once whether to append the suffix. An EOF (closed/no console stdin,
         # which Windows also reports for DEVNULL) defaults to verbatim, i.e.
         # the safe choice when nobody can answer.
-        if sys.stdin.isatty() and log_level not in ('quiet', 'error'):
+        if i18n.can_prompt(log_level):
             suffix = _OUT_SUFFIX[compress]
             try:
                 answer = input(i18n.t(

@@ -99,6 +99,24 @@ non-interactive or `log_level` `quiet`/`error`), and zero is an error.
 
 ## Environment Variables
 
+**Language**: command-line output picks its language automatically and can be
+forced with `--lang zh|en|auto` (accepted by `paxck.py`, `adb_source.py` and
+`backup.py`; in `paxck.py` the flag works before or after the subcommand) or
+`ANDROBACKUP_LANG=zh|en`. The order is `--lang` → `ANDROBACKUP_LANG` →
+`LC_ALL`/`LC_MESSAGES`/`LANGUAGE`/`LANG` → the OS locale → `en`. The controller
+exports its choice to the child tools, so one run prints one language. Help
+text and error messages switch with it; argparse's own `usage:`/`error:`
+prefixes stay English.
+
+On Windows the "OS locale" is the **user interface language** (the Win32 UI
+language), not `locale.getlocale()`: the latter describes the process C locale,
+which UTF-8 mode reports as English on a Chinese system — that is what used to
+put Chinese OS error text inside an English template. OS error wording is now
+translated by this tool from the `errno` (`i18n.os_error`: file already exists,
+permission denied or in use, a path component is not a directory, read-only file
+system, ...), and only an unrecognized `errno` keeps the raw OS text, so a
+message never mixes two languages.
+
 The operational variables map 1:1 to the YAML keys above (e.g.
 `DEVICE_PYTHON_URL` ↔ `device_python_url`). Two selector variables:
 

@@ -173,7 +173,8 @@ def _adb_exec_status(adb, command):
             [adb, 'exec-out', 'sh', '-c', _protocol_command(command)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     except OSError as e:
-        raise OSError(i18n.t('adb.err.launch', adb=adb, err=e)) from e
+        raise OSError(i18n.t('adb.err.launch', adb=adb,
+                             err=i18n.os_error(e))) from e
     try:
         payload, remote_rc = _split_status(result.stdout, command)
     except OSError:
@@ -199,7 +200,8 @@ def _adb_open_command(adb, command, on_bytes=None, allow_remote_failure=False):
             [adb, 'exec-out', 'sh', '-c', _protocol_command(command)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError as e:
-        raise OSError(i18n.t('adb.err.launch', adb=adb, err=e)) from e
+        raise OSError(i18n.t('adb.err.launch', adb=adb,
+                             err=i18n.os_error(e))) from e
     return proc, _AdbPayloadReader(
         proc.stdout, command, on_bytes, allow_remote_failure)
 
@@ -419,7 +421,7 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
             reporter.finish_listing(len(paths))
     except OSError as e:
         sys.stderr.write(i18n.tag('error') + ' ' + i18n.t(
-            'adb.err.source_list_failed', err=e) + '\n')
+            'adb.err.source_list_failed', err=i18n.os_error(e)) + '\n')
         return 1
 
     parent = posixpath.dirname(root)
@@ -450,7 +452,8 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
             except OSError as e:
                 incomplete = True
                 listed.skipped(full)
-                warn(i18n.t('adb.warn.skip_metadata', path=full, err=e))
+                warn(i18n.t('adb.warn.skip_metadata', path=full,
+                            err=i18n.os_error(e)))
                 reporter.entry(full, skipped=True)
                 continue
 
@@ -475,7 +478,8 @@ def write_tar(root, adb='adb', out=None, log_level='info', progress_interval=5.0
                 except OSError as e:
                     incomplete = True
                     listed.skipped(full)
-                    warn(i18n.t('adb.warn.skip_symlink', name=relative, err=e))
+                    warn(i18n.t('adb.warn.skip_symlink', name=relative,
+                                err=i18n.os_error(e)))
                     reporter.entry(relative, skipped=True)
                 else:
                     listed.packed(full)

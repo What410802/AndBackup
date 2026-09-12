@@ -56,7 +56,9 @@ copy src\backup-android.example.yaml src\backup-android.yaml
 
 界面语言：命令行文本默认按环境自动选择（`--lang zh|en|auto` 或 `ANDROBACKUP_LANG` 可强制，
 回退英文；`backup.py` 会把选定语言传给它启动的子进程）。`--help`、错误与进度文本都会切换，
-而 `[ERROR]`/`[WARN]`/`[DONE]`/`[PROGRESS]` 这类标签保持语言无关，便于脚本匹配。
+而 `[ERROR]`/`[WARN]`/`[DONE]`/`[PROGRESS]` 这类标签保持语言无关，便于脚本匹配。检测依次看
+`--lang` → `ANDROBACKUP_LANG` → `LC_*`/`LANGUAGE`/`LANG` → 系统语言（Windows 取用户界面语言，
+中文系统就是中文）→ 英文；系统错误文本按 `errno` 自行翻译，所以一条消息不会中英夹杂。
 
 设备选择：`host` 管无线端点（`IP` 或 `IP:端口`，非空即自动 `adb connect`）；`serial` 是
 ADB 序列号（`adb devices` 第一列，等价 `adb -s SERIAL`；`-t` 传输 ID 仅在序列号重复时才需要）。

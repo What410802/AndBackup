@@ -88,6 +88,12 @@ TTY，或 `log_level` 为 `quiet`/`error`）直接按原文件名写入，交互
 语言导出给子进程（即 `backup.py` 调用 `adb_source.py`/`paxck.py` 时语言一致）。
 `--help`/错误提示文本同样随之切换；`argparse` 自身的 `usage:`/`error:` 前缀保持英文。
 
+Windows 上的“系统区域设置”取的是**用户界面语言**（Win32 的 UI language），而不是
+`locale.getlocale()`：后者描述的是进程 C 区域，UTF-8 模式会把中文系统报成英文，于是英文
+模板里会嵌进中文的系统错误文本。系统错误的措辞同样由本工具自己按 `errno` 翻译
+（`i18n.os_error`：文件已存在/权限不足或被占用/路径某段不是目录/只读文件系统……），只有
+认不出的 `errno` 才原样保留系统文本，因此一条消息不会中英夹杂。
+
 与 YAML 键同名、语义相同（`DEVICE_PYTHON_URL`↔`device_python_url` 等）。另有两个选择类变量：
 
 | 变量 | 说明 |

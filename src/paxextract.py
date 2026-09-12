@@ -80,14 +80,14 @@ def _restore_metadata(path, member, follow_symlinks=True):
         except OSError as e:
             sys.stderr.write(warn_tag + ' '
                              + i18n.t('paxck.warn.chmod_failed', name=member.name,
-                                      err=e) + '\n')
+                                      err=i18n.os_error(e)) + '\n')
     try:
         os.utime(path, (member.mtime, member.mtime),
                  follow_symlinks=follow_symlinks)
     except (NotImplementedError, OSError) as e:
         sys.stderr.write(warn_tag + ' '
                          + i18n.t('paxck.warn.utime_failed', name=member.name,
-                                  err=e) + '\n')
+                                  err=i18n.os_error(e)) + '\n')
 
 
 def _copy_verified_member(tf, member, destination):
@@ -137,7 +137,7 @@ def _extract_to_stage(infile, stage):
             except OSError as e:
                 raise _ArchiveInputError(
                     i18n.t('paxck.err.archive_unreadable', path=infile,
-                           err=e.strerror or e)) from e
+                           err=i18n.os_error(e))) from e
         else:
             src = _bin_in()
         stream = open_archive_stream(src)
@@ -264,7 +264,8 @@ def cmd_extract(infile, directory):
         return 1
     except OSError as e:
         sys.stderr.write(fail_tag + ' '
-                         + i18n.t('paxck.extract.write_failed', err=e) + '\n')
+                         + i18n.t('paxck.extract.write_failed',
+                                  err=i18n.os_error(e)) + '\n')
         return 3
     finally:
         if stage is not None:
@@ -291,7 +292,8 @@ def cmd_extract_direct(infile, directory):
         os.makedirs(destination, exist_ok=True)
     except OSError as e:
         sys.stderr.write(fail_tag + ' '
-                         + i18n.t('paxck.direct.mkdir_failed', err=e) + '\n')
+                         + i18n.t('paxck.direct.mkdir_failed',
+                                  err=i18n.os_error(e)) + '\n')
         return 3
 
     src = None
@@ -305,7 +307,7 @@ def cmd_extract_direct(infile, directory):
                 sys.stderr.write(
                     fail_tag + ' '
                     + i18n.t('paxck.err.archive_unreadable', path=infile,
-                             err=e.strerror or e) + '\n')
+                             err=i18n.os_error(e)) + '\n')
                 return 1
         else:
             src = _bin_in()
@@ -327,7 +329,8 @@ def cmd_extract_direct(infile, directory):
             return 1
         except OSError as e:
             sys.stderr.write(fail_tag + ' '
-                             + i18n.t('paxck.direct.failed', err=e) + '\n')
+                             + i18n.t('paxck.direct.failed',
+                                      err=i18n.os_error(e)) + '\n')
             return 3
     finally:
         if tf is not None:

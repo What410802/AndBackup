@@ -19,7 +19,8 @@ All notable changes to this project are recorded in this file.
 - Message localization (Chinese/English) for every command-line entry point:
   `--lang zh|en|auto` on `paxck.py`, `adb_source.py` and `backup.py`, plus the
   `ANDROBACKUP_LANG` environment variable. The order is CLI flag, environment,
-  `LC_ALL`/`LC_MESSAGES`/`LANGUAGE`/`LANG`, OS locale, then English. `backup.py`
+  `LC_ALL`/`LC_MESSAGES`/`LANGUAGE`/`LANG`, the OS language (on Windows the user
+  interface language), then English. `backup.py`
   exports its choice to the child tools it spawns, so one run prints one
   language. Help text, interactive prompts, progress and errors are all
   translated; `src/i18n.py` holds the catalog and `device-python` mode uploads
@@ -38,6 +39,20 @@ All notable changes to this project are recorded in this file.
 
 ### Fixed
 
+- Messages no longer mix two languages. Two causes are gone: on Windows the
+automatic language now follows the **user interface language** instead of
+`locale.getlocale()`, which UTF-8 mode reports as English on a Chinese system
+(so a Chinese system now prints Chinese, as it does for its own error text);
+and OS error strings are translated by `i18n.os_error` from the `errno`
+(`error.errno.*`) instead of being embedded verbatim from `OSError.strerror`,
+so `--lang en` on a Chinese Windows no longer produces an English sentence
+with a Chinese error inside. Only an unrecognized `errno` keeps the raw OS
+text.
+- Prompts are only shown when a console can answer them: `i18n.can_prompt`
+replaces the bare `sys.stdin.isatty()` checks (Windows reports a NUL/DEVNULL
+stdin as a TTY). An automated run therefore fails with one clear message
+instead of printing a question nobody can answer, and the prune plan is
+printed whether or not the prompt is shown.
 - An unusable output target no longer wastes a whole transfer. `backup.py` now
   creates the `OUT.partial.*` placeholder, and hence validates the destination,
   *before* any ADB command: a target that already exists and is a directory, is

@@ -39,7 +39,7 @@ def cmd_verify(quiet=False, infile=None):
                 sys.stderr.write(
                     '  ' + fail_tag + ' '
                     + i18n.t('paxck.verify.unreadable', path=infile,
-                             err=e.strerror or e) + '\n')
+                             err=i18n.os_error(e)) + '\n')
                 return 1
         else:
             src = _bin_in()
@@ -49,7 +49,8 @@ def cmd_verify(quiet=False, infile=None):
             tf = tarfile.open(fileobj=stream, mode='r|')
         except (lzma.LZMAError, OSError, tarfile.TarError) as e:
             sys.stderr.write('  ' + fail_tag + ' '
-                             + i18n.t('paxck.verify.unparsable', err=e) + '\n')
+                             + i18n.t('paxck.verify.unparsable',
+                                      err=i18n.os_error(e)) + '\n')
             sys.stderr.write('        ' + i18n.t('paxck.verify.truncated_hint')
                              + '\n')
             return 1
@@ -91,7 +92,8 @@ def cmd_verify(quiet=False, infile=None):
             # 流在中途损坏/截断：已校验的部分仍有效，但整体必须判失败
             truncated = True
             failures.append(
-                i18n.t('paxck.verify.stream_broken', count=total, err=e))
+                i18n.t('paxck.verify.stream_broken', count=total,
+                       err=i18n.os_error(e)))
             bad += 1
     finally:
         if tf is not None:

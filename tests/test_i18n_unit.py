@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Unit tests for the message catalog and language selection (``src/i18n.py``)."""
+import errno
 import io
 import os
 import re
 import string
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -151,17 +153,56 @@ class TestLanguageSelection(unittest.TestCase):
 
     def test_resolve_falls_back_to_english(self):
         from unittest import mock
-        with mock.patch.object(i18n.locale, 'getlocale', return_value=(None, None)):
-            with mock.patch.object(i18n.locale, 'getdefaultlocale',
-                                   return_value=(None, None)):
-                self.assertEqual(i18n.resolve(cli=None, env={}), 'en')
+        # No locale env, no OS language, and no process locale left to read.
+        with mock.patch.object(i18n, '_os_language_name', return_value=None):
+            with mock.patch.object(i18n.locale, 'getlocale', return_value=(None, None)):
+                with mock.patch.object(i18n.locale, 'getdefaultlocale',
+                                       return_value=(None, None)):
+                    self.assertEqual(i18n.resolve(cli=None, env={}), 'en')
 
     def test_resolve_uses_the_os_locale(self):
         from unittest import mock
-        with mock.patch.object(i18n.locale, 'getlocale',
-                               return_value=('Chinese (Simplified)_China',
-                                             'cp936')):
-            self.assertEqual(i18n.resolve(cli=None, env={}), 'zh')
+        with mock.patch.object(i18n, '_os_language_name', return_value=None):
+            with mock.patch.object(i18n.locale, 'getlocale',
+                                   return_value=('Chinese (Simplified)_China',
+                                                 'cp936')):
+                self.assertEqual(i18n.resolve(cli=None, env={}), 'zh')
+
+    def test_os_language_wins_over_the_process_locale(self):
+        """Windows under UTF-8 mode reports an English process locale.
+
+        The OS language is what the system writes into error strings, so it
+        has to win; otherwise one message mixes two languages.
+        """
+        from unittest import mock
+        with mock.patch.object(i18n, '_os_language_name',
+                               return_value='zh_CN'):
+            with mock.patch.object(i18n.locale, 'getlocale',
+                                   return_value=('English_United States',
+                                                 'utf8')):
+                self.assertEqual(i18n._detect(env={}), 'zh')
+        # An explicit environment still outranks the OS language.
+        with mock.patch.object(i18n, '_os_language_name',
+                               return_value='zh_CN'):
+            self.assertEqual(i18n._detect(env={'LANG': 'en_US.UTF-8'}), 'en')
+
+    def test_os_error_prefers_the_catalog_text(self):
+        """OS error strings must not leak a second language into a message."""
+        i18n.set_language('en')
+        existing = OSError(errno.EEXIST, '当文件已存在时，无法创建该文件。')
+        self.assertEqual(i18n.os_error(existing), 'the file or directory already exists')
+        i18n.set_language('zh')
+        self.assertEqual(i18n.os_error(existing), '文件或目录已存在')
+        denied = PermissionError(errno.EACCES, 'Access is denied.')
+        self.assertNotIn('Access is denied', i18n.os_error(denied))
+
+    def test_os_error_keeps_unknown_text(self):
+        unknown = OSError(99999, 'something exotic')
+        self.assertEqual(i18n.os_error(unknown), 'something exotic')
+        # Exceptions that are not OS errors keep their own message.
+        self.assertEqual(i18n.os_error(RuntimeError('boom')), 'boom')
+        self.assertEqual(i18n.os_error(OSError('plain message')),
+                         'plain message')
 
     def test_set_language_rejects_unknown_values(self):
         with self.assertRaises(ValueError):
@@ -189,6 +230,38 @@ class TestLanguageSelection(unittest.TestCase):
         self.assertEqual(i18n.prescan_lang(['--lang=en']), 'en')
         self.assertEqual(i18n.prescan_lang(['create', '/tmp']), None)
         self.assertEqual(i18n.prescan_lang(['--lang']), None)
+
+
+class _FakeTty(io.StringIO):
+    """A stdin that claims to be a terminal but has no OS handle."""
+
+    def isatty(self):
+        return True
+
+
+class TestCanPrompt(unittest.TestCase):
+    """Prompts must only be shown when a console can answer them."""
+
+    def test_quiet_and_error_never_prompt(self):
+        with mock.patch.object(sys, 'stdin', _FakeTty()):
+            self.assertFalse(i18n.can_prompt('quiet'))
+            self.assertFalse(i18n.can_prompt('error'))
+            self.assertTrue(i18n.can_prompt('info'))
+
+    def test_non_tty_and_missing_stdin_never_prompt(self):
+        with mock.patch.object(sys, 'stdin', io.StringIO('')):
+            self.assertFalse(i18n.can_prompt('info'))
+        with mock.patch.object(sys, 'stdin', None):
+            self.assertFalse(i18n.can_prompt('info'))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows reports NUL as a TTY')
+    def test_nul_stdin_is_not_a_console_on_windows(self):
+        # The trap this probe exists for: `isatty()` is True for NUL/DEVNULL,
+        # so `input()` would print a question nobody can answer.
+        with open(os.devnull, 'rb') as devnull:
+            self.assertTrue(devnull.isatty())
+            with mock.patch.object(sys, 'stdin', devnull):
+                self.assertFalse(i18n.can_prompt('info'))
 
 
 class TestLocalizedCommands(unittest.TestCase):

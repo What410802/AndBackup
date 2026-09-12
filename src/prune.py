@@ -126,22 +126,21 @@ def describe_plan(to_delete, kept):
 
 
 def confirm(to_delete, kept, log_level='info'):
-    """Ask once before deleting, when an interactive terminal is available.
+    """Log the plan and ask once before deleting, when a console can answer.
 
     ``--prune-source`` on the command line *is* the authorization: the prompt
-    exists only as a last chance to answer ``n`` at a real terminal.  A closed
-    stdin (``input`` raises EOF, which Windows also reports for a NUL stdin
-    that still looks like a TTY) therefore proceeds rather than silently
-    skipping, so automation behaves predictably.
+    exists only as a last chance to answer ``n`` at a real terminal, so a
+    non-interactive run (or an EOF at the prompt) proceeds rather than
+    silently skipping.  The plan is printed either way, because it is the only
+    record of what the deletion removed.
     """
-    import sys
-    if log_level in ('quiet', 'error') or not sys.stdin.isatty():
-        return True
     print(describe_plan(to_delete, kept))
     for path in to_delete[:10]:
         print('  ' + path)
     if len(to_delete) > 10:
         print('  ...')
+    if not i18n.can_prompt(log_level):
+        return True
     try:
         answer = input(i18n.t('prune.prompt.confirm', count=len(to_delete)))
     except EOFError:

@@ -329,10 +329,12 @@ def write_regular(tf, ti, expected_size, measure, open_stream, label,
     except OSError as e:
         if strict_before_write:
             sys.stderr.write(error_tag + ' '
-                             + i18n.t('paxck.err.read_failed', label=label, err=e)
+                             + i18n.t('paxck.err.read_failed', label=label,
+                                      err=i18n.os_error(e))
                              + '\n')
             return 3, False
-        warn(i18n.t('paxck.warn.skip_read', label=label, err=e.strerror or e))
+        warn(i18n.t('paxck.warn.skip_read', label=label,
+                    err=i18n.os_error(e)))
         return 0, False
 
     if actual_size != expected_size:
@@ -352,9 +354,10 @@ def write_regular(tf, ti, expected_size, measure, open_stream, label,
         if strict_before_write:
             sys.stderr.write(error_tag + ' '
                              + i18n.t('paxck.err.reopen_failed', label=label,
-                                      err=e) + '\n')
+                                      err=i18n.os_error(e)) + '\n')
             return 3, False
-        warn(i18n.t('paxck.warn.skip_read', label=label, err=e.strerror or e))
+        warn(i18n.t('paxck.warn.skip_read', label=label,
+                    err=i18n.os_error(e)))
         return 0, False
 
     ti.size = actual_size
@@ -488,7 +491,7 @@ def cmd_create(root, manifest=None):
 
     def walk_error(e):
         warn(i18n.t('paxck.warn.walk_failed',
-                    name=getattr(e, 'filename', '?'), err=e.strerror or e))
+                    name=getattr(e, 'filename', '?'), err=i18n.os_error(e)))
         listed.incomplete(1)
 
     listed = PackedManifest(manifest)

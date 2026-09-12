@@ -23,7 +23,7 @@ def run_adb(adb, args, env):
                               check=False)
     except OSError as e:
         raise RuntimeError(i18n.t('backup.err.adb_launch', adb=repr(adb),
-                                  err=e)) from e
+                                  err=i18n.os_error(e))) from e
 
 
 def run_adb_checked(adb, args, env, label):
@@ -69,7 +69,7 @@ def choose_device(devices, log_level, hint=None):
     """Pick one device from several, interactively when possible."""
     if len(devices) == 1:
         return devices[0]
-    if not sys.stdin.isatty() or log_level in ('quiet', 'error'):
+    if not i18n.can_prompt(log_level):
         message = i18n.t('backup.err.multi_device',
                          devices='、'.join(devices))
         raise RuntimeError(i18n.t('backup.err.with_hint', hint=hint,

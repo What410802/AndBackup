@@ -133,7 +133,8 @@ def _find_prefix_interpreter(prefix):
         names = os.listdir(bin_dir)
     except OSError as e:
         raise RuntimeError(
-            i18n.t('backup.err.prefix_bin_unreadable', err=e)) from e
+            i18n.t('backup.err.prefix_bin_unreadable',
+                   err=i18n.os_error(e))) from e
     candidates = []
     for name in names:
         full = os.path.join(bin_dir, name)
@@ -360,7 +361,7 @@ def _decide_keep_device_env(settings, log_level):
     explicit = keep_env_explicit(settings.get('KEEP_ANDROID_ENV', ''))
     if explicit is not None:
         return explicit
-    if log_level in ('quiet', 'error') or not sys.stdin.isatty():
+    if not i18n.can_prompt(log_level):
         return False
     try:
         answer = input(i18n.t('backup.prompt.keep_env'))

@@ -13,14 +13,19 @@ Language selection order (first match wins):
 2. ``ANDROBACKUP_LANG`` — a parent process exports this so its child tools
    (``adb_source.py``, ``paxck.py``) print the same language;
 3. ``LC_ALL``, ``LC_MESSAGES``, ``LANGUAGE``, ``LANG``;
-4. the OS locale (``locale.getlocale()``);
-5. ``en``.
+4. the OS locale — on Windows the *user interface* language, because that is
+   also the language the OS writes into ``OSError.strerror``;
+5. ``locale.getlocale()``, then ``locale.getdefaultlocale()``;
+6. ``en``.
 
 Message keys are dotted and grouped by module (``paxck.err.empty``,
 ``backup.warn.adb_missing``, ...).  Templates use ``str.format`` placeholders.
 Status tags (``[ERROR]``/``[WARN]``/``[DONE]``/...) are intentionally
 language-neutral so logs and tests can parse them regardless of the language.
+OS-supplied error text is passed through :func:`os_error`, which prefers our
+own catalog over ``strerror`` so a message never mixes two languages.
 """
+import errno
 import locale
 import os
 import sys
@@ -48,6 +53,16 @@ TAGS = {
 
 MESSAGES = {
     'zh': {
+        # ---- OS errors (i18n.os_error) ------------------------------------
+        'error.errno.exists': '文件或目录已存在',
+        'error.errno.denied': '权限不足或被其他程序占用',
+        'error.errno.not_found': '路径不存在',
+        'error.errno.not_a_dir': '路径中的某一段不是目录',
+        'error.errno.is_a_dir': '目标是一个目录',
+        'error.errno.no_space': '设备或磁盘空间不足',
+        'error.errno.read_only_fs': '文件系统是只读的',
+        'error.errno.busy': '文件正被占用',
+        'error.errno.name_too_long': '路径过长',
         # ---- shared command line ------------------------------------------
         'i18n.cli.lang_help':
             '界面语言：zh / en / auto（默认按环境自动检测，回退 en）',
@@ -376,6 +391,16 @@ MESSAGES = {
             '把本次成功打包/跳过的条目写成 NUL 分隔清单（供 --prune-source 使用）',
     },
     'en': {
+        # ---- OS errors (i18n.os_error) ------------------------------------
+        'error.errno.exists': 'the file or directory already exists',
+        'error.errno.denied': 'permission denied or held open by another program',
+        'error.errno.not_found': 'no such file or directory',
+        'error.errno.not_a_dir': 'a path component is not a directory',
+        'error.errno.is_a_dir': 'the target is a directory',
+        'error.errno.no_space': 'not enough space left on the device or disk',
+        'error.errno.read_only_fs': 'the file system is read-only',
+        'error.errno.busy': 'the file is in use',
+        'error.errno.name_too_long': 'the path is too long',
         # ---- shared command line ------------------------------------------
         'i18n.cli.lang_help':
             'message language: zh / en / auto (default: auto-detect, falls back to en)',
@@ -831,6 +856,32 @@ def normalize(value):
     return None
 
 
+def _os_language_name():
+    """Return the OS language tag (e.g. ``zh_CN``) that is worth trusting.
+
+    On Windows, ``locale.getlocale()`` describes the *process* C locale, which
+    Python's UTF-8 mode forces to English even on a Chinese system, while the
+    system message tables — and therefore ``OSError.strerror`` — follow the
+    user interface language.  Asking Win32 keeps both halves of a message in
+    the same language.  Other platforms have no such split, so they use the
+    locale modules instead (see :func:`_detect`).
+    """
+    if os.name != 'nt':
+        return None
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+    except (ImportError, AttributeError, OSError):
+        return None
+    name = locale.windows_locale.get(kernel32.GetUserDefaultUILanguage())
+    if name:
+        return name
+    buffer = ctypes.create_unicode_buffer(85)  # LOCALE_NAME_MAX_LENGTH
+    if kernel32.GetUserDefaultLocaleName(buffer, len(buffer)):
+        return buffer.value
+    return None
+
+
 def _detect(env=None):
     """Guess the language from locale environment variables, then the OS."""
     env = os.environ if env is None else env
@@ -838,17 +889,18 @@ def _detect(env=None):
         found = normalize(env.get(name))
         if found:
             return found
-    try:
-        found = normalize(locale.getlocale()[0])
-    except (TypeError, ValueError):
-        found = None
+    found = normalize(_os_language_name())
     if found:
         return found
-    try:
-        found = normalize(locale.getdefaultlocale()[0])
-    except (TypeError, ValueError, AttributeError):
-        found = None
-    return found
+    for probe in (lambda: locale.getlocale()[0],
+                  lambda: locale.getdefaultlocale()[0]):
+        try:
+            found = normalize(probe())
+        except (TypeError, ValueError, AttributeError):
+            found = None
+        if found:
+            return found
+    return None
 
 
 def resolve(cli=None, env=None):
@@ -906,6 +958,71 @@ def export(env=None):
     env = os.environ if env is None else env
     env[ENV_VAR] = language()
     return env
+
+
+# errno -> catalog key.  Built defensively because not every platform defines
+# every errno name.
+_ERRNO_KEYS = {
+    getattr(errno, name): key for name, key in (
+        ('EEXIST', 'error.errno.exists'),
+        ('EACCES', 'error.errno.denied'),
+        ('EPERM', 'error.errno.denied'),
+        ('ENOENT', 'error.errno.not_found'),
+        ('ENOTDIR', 'error.errno.not_a_dir'),
+        ('EISDIR', 'error.errno.is_a_dir'),
+        ('ENOSPC', 'error.errno.no_space'),
+        ('EROFS', 'error.errno.read_only_fs'),
+        ('EBUSY', 'error.errno.busy'),
+        ('ENAMETOOLONG', 'error.errno.name_too_long'),
+    ) if getattr(errno, name, None) is not None
+}
+
+
+def os_error(error):
+    """Localize an ``OSError`` into one short phrase.
+
+    ``OSError.strerror`` is written by the OS in the OS language, so embedding
+    it verbatim would mix languages whenever the user picked another one (a
+    Chinese Windows error inside an English sentence).  Known errnos are
+    therefore rendered from our own catalog; unknown ones keep the OS text,
+    which is the only description available.
+    """
+    message_key = _ERRNO_KEYS.get(getattr(error, 'errno', None))
+    if message_key is not None:
+        return t(message_key)
+    return getattr(error, 'strerror', None) or str(error)
+
+
+def can_prompt(log_level='info'):
+    """True when a console can really answer a localized prompt.
+
+    Lives here because every prompt is a translated question, and every
+    command module already imports this one; ``quiet``/``error`` never ask.
+    ``sys.stdin.isatty()`` alone is not enough on Windows: a NUL/DEVNULL stdin
+    is reported as a TTY, so an automated run would print questions nobody can
+    answer.  A real console handle is required there instead.
+    """
+    if str(log_level).lower() in ('quiet', 'error'):
+        return False
+    stdin = sys.stdin
+    try:
+        if stdin is None or not stdin.isatty():
+            return False
+    except (AttributeError, ValueError, OSError):
+        return False
+    if os.name != 'nt':
+        return True
+    try:
+        import ctypes
+        import msvcrt
+        handle = msvcrt.get_osfhandle(stdin.fileno())
+        mode = ctypes.c_uint32()
+        return bool(ctypes.windll.kernel32.GetConsoleMode(
+            ctypes.c_void_p(handle), ctypes.byref(mode)))
+    except (ImportError, AttributeError, ValueError, OSError):
+        # No console probe (or a stdin without an OS handle, such as a test
+        # double): trust ``isatty()`` rather than losing interactivity.
+        return True
 
 
 def lang_help():

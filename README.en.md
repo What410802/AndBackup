@@ -154,7 +154,11 @@ Message language: command-line text follows the environment by default
 (`--lang zh|en|auto` or `ANDROBACKUP_LANG` forces it; the fallback is English,
 and `backup.py` passes the chosen language to the tools it spawns). Help text,
 errors and progress all switch, while the tags `[ERROR]`/`[WARN]`/`[DONE]`/
-`[PROGRESS]` stay language-neutral so scripts can match them.
+`[PROGRESS]` stay language-neutral so scripts can match them. Detection tries
+`--lang`, then `ANDROBACKUP_LANG`, `LC_*`/`LANGUAGE`/`LANG`, the OS language (on
+Windows the *user interface* language, so a Chinese Windows prints Chinese),
+then English; OS error wording is translated from the `errno`, so a message
+never mixes two languages.
 
 ## Modes and Architecture
 
